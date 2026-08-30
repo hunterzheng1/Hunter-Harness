@@ -4,7 +4,7 @@
  * 为附加定位字段。默认不含 stack/敏感值；retryable 显式给出。
  */
 
-export type PlanErrorStage = "boundary" | "intent" | "artifacts" | "layer1" | "layer2" | "layer3" | "finalize";
+export type PlanErrorStage = "boundary" | "intent" | "decision" | "artifacts" | "layer1" | "layer2" | "layer3" | "finalize";
 
 export interface PlanErrorEnvelope {
   readonly ok: false;
@@ -22,11 +22,17 @@ const STAGE_BY_PREFIX: readonly [RegExp, PlanErrorStage][] = [
   [/^PLAN_(RUN_ID|TIME|SCOPE)_/u, "boundary"],
   [/^PLAN_REVIEW_/u, "layer3"],
   [/^PLANNING_/u, "intent"],
+  [/^PLAN_DECISION_/u, "decision"],
   [/^PLAN_ARTIFACT_/u, "artifacts"],
   [/^PLAN_FINALIZE_DETERMINISTIC/u, "layer1"],
   [/^PLAN_FINALIZATION_/u, "finalize"],
   [/^PLAN_QUALITY_/u, "layer3"]
 ];
+
+/** 按稳定码前缀推导阶段；catch 块里应用 reason_code（core 码）而不是信封码推导。 */
+export function planStageForCode(code: string): PlanErrorStage {
+  return STAGE_BY_PREFIX.find(([pattern]) => pattern.test(code))?.[1] ?? "finalize";
+}
 
 export function planErrorEnvelope(input: {
   readonly code: string;
@@ -38,8 +44,7 @@ export function planErrorEnvelope(input: {
   readonly stage?: PlanErrorStage;
   readonly extra?: Readonly<Record<string, unknown>>;
 }): PlanErrorEnvelope {
-  const stage = input.stage ??
-    STAGE_BY_PREFIX.find(([pattern]) => pattern.test(input.code))?.[1] ?? "finalize";
+  const stage = input.stage ?? planStageForCode(input.code);
   return Object.freeze({
     ok: false as const,
     code: input.code,

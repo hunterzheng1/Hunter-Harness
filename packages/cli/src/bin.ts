@@ -17,6 +17,7 @@ import { runConnect, type ConnectOptions } from "./commands/connect.js";
 import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
+import { runPlanReviewRecord, type PlanReviewRecordOptions } from "./commands/plan-review-record.js";
 import { runArchiveOutboxGc, type ArchiveOutboxGcOptions } from "./commands/archive-outbox-gc.js";
 import { composeArchiveProduction } from "./archive-production/compose.js";
 import { runPush, type PushOptions } from "./commands/push.js";
@@ -574,6 +575,14 @@ export async function runCli(
         return;
       }
       exitCode = await runPlanEvidencePack(options, dependencies);
+    });
+  planCmd.command("review-record")
+    .description("记录对抗评审收据：内部算权威 input_hash/findings_hash 并写回证据包（assurance 发布前用）")
+    .requiredOption("--input <file>", "证据包 JSON（plan evidence-pack 的产物）")
+    .requiredOption("--receipt <file>", "收据草稿 JSON：{ reviewer_identity, review_mode?, findings?, completed_at? }")
+    .option("--output <file>", "写回路径（缺省覆盖 --input）")
+    .action(async (options: PlanReviewRecordOptions) => {
+      exitCode = await runPlanReviewRecord(options, dependencies);
     });
   planCmd.command("finalize")
     .description("v2 Plan 最终化：质量门 + FS 发布 + 事件 outbox（输入为编排方产出的结构化证据包）")

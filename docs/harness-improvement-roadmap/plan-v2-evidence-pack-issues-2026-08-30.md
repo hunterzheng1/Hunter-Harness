@@ -5,6 +5,19 @@
 > 报告人：pi（主会话实测）
 > 版本：hunter-harness 0.4.7（npm 缓存实测）
 
+## 修复状态（2026-08-30，hunter-harness 0.4.8 / workflow-harness 0.4.4）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| P0-1 对抗评审收据链路 | ✅ 已修 | 新增 `plan review-record` 子命令（内部代算 input_hash/findings_hash 并写回 pack）；evidence-pack 顶层透传 `adversarial_review`；`PLAN_REVIEW_REQUIRED` 报错自曝 `expected_review.input_hash`（公开契约）；reference.md 已文档化 |
+| P0-2 校验报错缺定位 | ✅ 已修 | 边界新增 intent/approval.content/decision_nodes/uncertainties 覆盖/affected_paths 形态/adversarial_review 形状校验，统一 `PLAN_EVIDENCE_INPUT_INVALID` + `field_path` + `problems[]`；错误信封 stage 改按 core reason_code 推导 |
+| P1-1 uncertainties | ✅ 已修 | 非空时边界直接列出必须提供的 `intent_uncertainty:<id>` 决策节点；模板与 reference.md 写明契约（配齐 decision node 后全链路可通过，有测试冻结） |
+| P1-2 模板 run_id 占位 | ✅ 核实不成立 | 现有占位 `plan_replace-with-your-plan-run-id` 满足 `^[a-z][a-z0-9_.:-]{0,159}$`，模板不改一字通过 evidence-pack 的不变量本就有回归测试冻结（实测复跑通过）；报错信息已补收到的值与完整 pattern |
+| P1-3 affected_paths 目录 | ✅ 已修 | 边界逐条报 `field_path` 与写法说明（正斜杠、不以 / 结尾、目录请列具体文件） |
+| P1-4 scope 集合等价往返 | ✅ 已修 | approval.content 的 in_scope/out_of_scope 未显式给出时从 intent 继承，成功输出 `warnings: ["approval_scope_inherited:..."]` |
+| P1-5 bootstrap-plan 误导 | ✅ 已修 | `.harness/` 存在但 `changes/` 缺失时自动补建；仅 `.harness/` 不存在才报 PROJECT_ROOT_INVALID + init 提示 |
+
+
 ## TL;DR
 
 plan 阶段一次通过的目标是可达的，但本次实际跑了 **~15 次 evidence-pack + 3 次 finalize** 才发布成功。约 60% 时间耗在二分定位无定位信息的校验错误，25% 耗在 assurance 档对抗评审收据的链路断裂。下面按严重度排列，每条附实测证据。

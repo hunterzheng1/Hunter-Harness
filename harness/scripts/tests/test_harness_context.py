@@ -1118,6 +1118,32 @@ class HarnessContextBootstrapPlanTest(unittest.TestCase):
             self.assertEqual(second["changeBase"], first["changeBase"])
             self.assertNotEqual(second["head"], first["changeBase"])
 
+    def test_bootstrap_plan_autocreates_changes_dir_for_initialized_project(self) -> None:
+        """已 init 但从未建过 change 的项目：自动补建 changes/，不再误导去跑 init。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            (project / ".harness").mkdir()
+            self.assertFalse((project / ".harness/changes").exists())
+
+            result = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "PLAN_BOOTSTRAPPED")
+            self.assertTrue((project / ".harness/changes/demo-change").is_dir())
+
+    def test_bootstrap_plan_uninitialized_project_reports_init_hint(self) -> None:
+        """`.harness` 本身不存在才是未初始化——保留 PROJECT_ROOT_INVALID 与 init 提示。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+
+            result = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PROJECT_ROOT_INVALID")
+            self.assertIn("hunter-harness init", result["error"])
+
 
 class V2PlanHandoffBootstrapTests(unittest.TestCase):
     """v2 plan finalize 不写 context 交接凭证，run 阶段因此必然卡死。

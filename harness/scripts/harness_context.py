@@ -909,13 +909,19 @@ def bootstrap_plan(
     import harness_state as hs
 
     project = Path(project).resolve()
-    changes_root = project / ".harness" / "changes"
+    harness_root = project / ".harness"
+    changes_root = harness_root / "changes"
     if not changes_root.is_dir():
-        return {
-            "ok": False,
-            "code": "PROJECT_ROOT_INVALID",
-            "error": f"{changes_root} 不存在——先在该项目运行 hunter-harness init",
-        }
+        if harness_root.is_dir():
+            # 项目已 init 但从未建过 change——changes/ 目录此前没有任何脚本负责创建，
+            # 不该把用户误导去重跑 init（init 是空白项目用的）
+            changes_root.mkdir(parents=True, exist_ok=True)
+        else:
+            return {
+                "ok": False,
+                "code": "PROJECT_ROOT_INVALID",
+                "error": f"{harness_root} 不存在——该项目尚未初始化，先运行 hunter-harness init",
+            }
 
     # 新 change 的目录此前没有任何脚本负责创建，靠的是后续 Write 的副作用；
     # 引导阶段显式建立骨架，prepare 才有 contract 可读

@@ -360,9 +360,33 @@ status: approved
 # 1) 规划自然产出 → 证据包（结构化身份/哈希全由冻结模块推导）
 npx hunter-harness plan evidence-pack --input .harness/changes/<cn>/meta/plan-evidence-input.json \
   --output .harness/changes/<cn>/meta/plan-evidence.json
-# 2) 证据包 → 质量门 + 原子发布 + 事件 outbox
+# 2) assurance / 高风险计划：记录对抗评审收据（0.4.8+；非 assurance 可跳过）
+npx hunter-harness plan review-record --input .harness/changes/<cn>/meta/plan-evidence.json \
+  --receipt .harness/changes/<cn>/meta/plan-review-draft.json
+# 3) 证据包 → 质量门 + 原子发布 + 事件 outbox
 npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidence.json
 ```
+
+**对抗评审收据（assurance 必做，0.4.8 起有正式链路）**：profile.mode 被推到 `assurance`
+（auth/concurrency/migration 等风险信号自动推断）或任一场景 `risk_level: "high"` 时，
+finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PLAN_REVIEW_REQUIRED` fail closed。
+收据的 `input_hash` 绑定产物 + 语义投影 + capabilities + 高风险发现 + 透镜（全在 CLI 内部管线，
+外部不可预计算），所以**不要手拼收据**：
+
+1. 先完成阶段 7.5 对抗评审，把结论写成草稿 `meta/plan-review-draft.json`：
+   `{ "reviewer_identity": "inline:<标识>", "findings": [] }`
+   （`review_mode` 缺省 `inline`；`completed_at` 缺省取当前时间；`findings` 为空数组表示无发现）
+2. 跑 `plan review-record`：CLI 内部重跑 layer1/layer2/layer3 算出权威 `input_hash`，
+   代算 `findings_hash`，把完整收据写回证据包顶层 `adversarial_review`（缺省覆盖 `--input`，
+   可用 `--output` 写到别处）。stdout 的 `review_required: false` 表示该包未触发评审、收据不会被消费。
+3. 再跑 `plan finalize`。
+
+两条公开契约（不再需要从 dist 里翻）：
+
+- `PLAN_REVIEW_REQUIRED` 报错的 `expected_review.input_hash` 就是绑定期望值——校验器自曝期望，
+  手工构造收据时用它；`findings_hash` 是你端 `findings` 数组 canonical JSON 的 sha256。
+- 收据绑定**证据包内容**：`review-record` 写回后任何对 pack 的修改（包括重跑 evidence-pack）
+  都使收据失效，必须重跑 `review-record`。墙钟时间不进 `input_hash`，不必担心时间戳漂移。
 
 **自然输入文件**（`meta/plan-evidence-input.json`，权威定义 `packages/cli/src/commands/plan-evidence-pack.ts` 的 `EvidencePackInputFile`）由规划阶段逐步沉淀，各字段定稿时点不得倒置。
 
@@ -388,10 +412,13 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 - `structured_input.scenarios` **至少 3 条**——八维度缺项由命令补 `not_applicable`，但场景总数不能少于 3
 - `intent.acceptance_examples` 2~5 条，`approval.content.acceptance_examples` 3~7 条 → 取 3 条同时满足
 - `key_alternatives` / `invariants` / `failure_behaviors` / `compatibility_boundaries` 各至少 1 条
-- `intent.in_scope`/`out_of_scope` 与 `approval.content` 同名字段必须**集合相等**
+- `intent.in_scope`/`out_of_scope` 与 `approval.content` 同名字段必须**集合相等**；0.4.8 起 approval 侧可以**整项省略**（从 intent 继承，成功输出的 `warnings` 会标 `approval_scope_inherited`），写了就必须相等
+- `intent.uncertainties` 非空时，每一项都会生成未决决策 `intent_uncertainty:<sha256(文本)>`，必须在 `decision_nodes` 提供**同 id** 的节点（通常是一条 `product_decision`，`status: "resolved"` + `resolution`/`resolved_by: "user"`/`resolved_at` 三元）；不想走决策图就留空数组。缺节点时边界报错会直接列出期望的决策 id
+- `tasks[].affected_paths` 必须是**文件形态**的相对路径：正斜杠分隔、不能以 `/` 结尾、不含 `.`/`..` 段、不接受盘符/绝对路径。目录路径会被拒——改为列出其中的具体文件
 - tasks 只写 `task_id/objective/affected_paths/owner_phase`，六个 refs 数组由命令接线；多写 `cluster`/`title` 这类键会因精确键集被拒
 - scenarios 只写 `scenario_id/title/acceptance/coverage_dimension/execution_level/evidence_requirements/risk_level`（+可选 `verification_command`）；`priority`/`test_file` 这类计划表列不属于本输入
 - `machine.worktree_policy` ∈ `project_default | required | forbidden`（没有 `none`）
+- `decision_nodes[]` 的 `type` ∈ `fact | engineering_default | product_decision | risk_decision`，`status` ∈ `pending | resolved | blocked | superseded`；`status: "resolved"` 必须带 `resolution`/`resolved_by`/`resolved_at` 三元，且 `resolved_by` 与类型推导的解决者一致（fact→evidence、engineering_default→engineering_default、产品/风险决策→user）
 
 > **结构错了怎么读报错**：命令在边界返回 `code:"PLAN_EVIDENCE_INPUT_INVALID"`（`stage:"boundary"`），
 > `field_path` 指向第一处问题，`problems[]` 逐条给 `missing_keys`/`unexpected_keys`/`message`。
@@ -428,7 +455,7 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 > 可执行三元是**可选**的，但要么整组给全、要么整组省略。ledger 场景全部带齐 → manifest 声明
 > `schemaVersion 2`，关门可绑结构化执行收据；否则降为 1。
 
-- **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。
+- **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。唯一的例外是 `adversarial_review` 顶层字段——它由 `plan review-record`（或手工构造的合规收据）写入，evidence-pack 构建时也会透传自然输入里已有的该字段。
 - **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。
 - **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
 - **legacy 收据**：v2 路径不写 `plan-finalization.json`；消费方若读历史 legacy receipt，`harness_plan_finalize.py verify` 保持可读。0.3.0 起 v2 无 legacy 回退——自然输入不完整先补齐（例如补真实审批记录），不得走已删除的 Python finalizer。

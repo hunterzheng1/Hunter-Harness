@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalJson, isValidPlanRunId, LEGACY_PLAN_PHASE_ALIASES } from "@hunter-harness/contracts";
 
-import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
+import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -70,6 +70,8 @@ const EVIDENCE_PACK_TEMPLATE = {
     constraints: [],
     // intent 要 2~5 条、approval 要 3~7 条，取 3 条同时满足
     acceptance_examples: ["<验收例子 1>", "<验收例子 2>", "<验收例子 3>"],
+    // 非空时每一项都会生成未决决策 intent_uncertainty:<sha256(文本)>，必须在
+    // decision_nodes 里提供同 id 的节点（冻结校验器硬要求），否则只能留空数组
     uncertainties: []
   },
   approval: {
@@ -111,6 +113,8 @@ const EVIDENCE_PACK_TEMPLATE = {
       {
         task_id: "<T1>",
         objective: "<这个任务要达成什么>",
+        // 必须是文件形态的相对路径（正斜杠、不能以 / 结尾、不含 ./.. 段）；
+        // 目录请改为列出其中的具体文件，目录路径会被 canonicalPath 拒绝
         affected_paths: ["<相对路径，如 src/module/file.ts>"],
         owner_phase: "execute"
       }
@@ -202,11 +206,30 @@ interface EvidencePackInputFile {
     uncertainties?: readonly string[];
   };
   approval: {
-    content: ApprovalContentInput;
+    // in_scope/out_of_scope 未显式给出时从 intent 继承（HP-14；两边必须集合相等，
+    // 继承消掉"同一份边界抄两遍抄错"的纯往返）
+    content: Omit<ApprovalContentInput, "in_scope" | "out_of_scope"> & {
+      in_scope?: readonly string[];
+      out_of_scope?: readonly string[];
+    };
     approver_id: string;
     decided_at?: string;
   };
   decision_nodes?: readonly unknown[];
+  /**
+   * HP-15：对抗评审收据透传。评审必须在 evidence-pack 定稿后做（收据绑定
+   * 产物内容哈希，重跑 evidence-pack 即失效）；推荐用 `plan review-record`
+   * 由 CLI 内部算好 input_hash/findings_hash 写回，而不是手填这两个哈希。
+   */
+  adversarial_review?: {
+    readonly schema_version: 1;
+    readonly reviewer_identity: string;
+    readonly review_mode: "inline" | "delegated";
+    readonly input_hash: string;
+    readonly findings_hash: string;
+    readonly findings: readonly Record<string, unknown>[];
+    readonly completed_at: string;
+  };
   evidence_sources: readonly Record<string, unknown>[];
   structured_input: {
     tasks: readonly Record<string, unknown>[];
@@ -249,6 +272,29 @@ const RISK_LEVELS = ["low", "medium", "high"] as const;
 const SCENARIO_PRIORITIES = ["P0", "P1", "P2"] as const;
 const WORKTREE_POLICIES = ["project_default", "required", "forbidden"] as const;
 
+// 与冻结模块同源的契约常量（core 只抛无定位信息的稳定码，边界负责提前报清）
+const INTENT_REQUIRED_KEYS = ["source_input", "goal", "user_visible_outcome", "in_scope",
+  "out_of_scope", "acceptance_examples"] as const;
+const INTENT_OPTIONAL_KEYS = ["constraints", "uncertainties"] as const;
+const APPROVAL_KEYS = ["content", "approver_id"] as const;
+const APPROVAL_OPTIONAL_KEYS = ["decided_at"] as const;
+const APPROVAL_CONTENT_REQUIRED_KEYS = ["goal", "user_visible_outcome", "recommended_design",
+  "key_alternatives", "invariants", "failure_behaviors", "compatibility_boundaries", "risks",
+  "acceptance_examples"] as const;
+// in_scope/out_of_scope 可从 intent 继承，故不是必填键
+const APPROVAL_CONTENT_INHERITABLE_KEYS = ["in_scope", "out_of_scope"] as const;
+const DECISION_NODE_KEYS = ["schema_version", "decision_id", "decision_version", "type",
+  "depends_on", "status", "tradeoffs", "affected_behaviors", "evidence_refs"] as const;
+const DECISION_NODE_OPTIONAL_KEYS = ["question", "recommendation", "recommendation_reason",
+  "resolution", "resolved_by", "resolved_at"] as const;
+const DECISION_NODE_TYPES = ["fact", "engineering_default", "product_decision", "risk_decision"] as const;
+const DECISION_NODE_STATUSES = ["pending", "resolved", "blocked", "superseded"] as const;
+const REVIEW_RECEIPT_KEYS = ["schema_version", "reviewer_identity", "review_mode", "input_hash",
+  "findings_hash", "findings", "completed_at"] as const;
+const REVIEW_MODES = ["inline", "delegated"] as const;
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const IDENTITY_PATTERN = /^[a-z][a-z0-9_.:-]{0,159}$/u;
+
 interface InputProblem {
   readonly field_path: string;
   readonly missing_keys?: readonly string[];
@@ -285,6 +331,35 @@ function enumProblem(value: Record<string, unknown>, key: string, fieldPath: str
   return { field_path: `${fieldPath}.${key}`, message: `取值必须是 ${allowed.join(" | ")}` };
 }
 
+/** 字符串数组通用校验：条数上下限 + 非空字符串 + 去重（与 core strings() 同源）。 */
+function stringArrayProblem(value: unknown, fieldPath: string, minimum: number,
+  maximum: number): InputProblem | undefined {
+  if (!Array.isArray(value)) return { field_path: fieldPath, message: "必须是字符串数组" };
+  if (value.length < minimum || value.length > maximum) {
+    return { field_path: fieldPath, message: `必须是 ${minimum}~${maximum} 条（当前 ${value.length} 条）` };
+  }
+  const badIndex = value.findIndex((item) => typeof item !== "string" || item.trim() === "");
+  if (badIndex >= 0) {
+    return { field_path: `${fieldPath}[${badIndex}]`, message: "必须是非空字符串" };
+  }
+  if (new Set(value).size !== value.length) {
+    return { field_path: fieldPath, message: "条目必须互不相同（冻结校验器要求去重）" };
+  }
+  return undefined;
+}
+
+/** 与 core plan-artifacts 的 canonicalPath 同源：相对、正斜杠、NFC、无空段/./.. 。 */
+function isCanonicalPath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 512 && value === value.normalize("NFC") &&
+    !value.includes("\\") && !value.startsWith("/") && !/^[A-Za-z]:/u.test(value) &&
+    value.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+
+/** 与 core planning-context 的 stableHash 同源（canonical JSON 的 sha256）。 */
+function stableHashHex(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
+}
+
 /**
  * HP-13：自然输入的结构问题在边界一次报清，带 field_path 与缺失/多余键。
  *
@@ -294,6 +369,84 @@ function enumProblem(value: Record<string, unknown>, key: string, fieldPath: str
  */
 function collectInputProblems(input: EvidencePackInputFile): readonly InputProblem[] {
   const problems: InputProblem[] = [];
+
+  // intent 层：键集 + 条数上下限（冻结模块只抛 PLANNING_INTENT_INVALID，无定位信息）
+  const intentValue: unknown = input.intent;
+  if (!isRecord(intentValue)) {
+    problems.push({ field_path: "intent", message: "必须是对象" });
+  } else {
+    const keyProblem = keySetProblem(intentValue, "intent",
+      [...INTENT_REQUIRED_KEYS], [...INTENT_REQUIRED_KEYS, ...INTENT_OPTIONAL_KEYS]);
+    if (keyProblem !== undefined) problems.push(keyProblem);
+    if ("acceptance_examples" in intentValue) {
+      const countProblem = stringArrayProblem(intentValue.acceptance_examples,
+        "intent.acceptance_examples", 2, 5);
+      if (countProblem !== undefined) problems.push(countProblem);
+    }
+    if ("in_scope" in intentValue) {
+      const scopeProblem = stringArrayProblem(intentValue.in_scope, "intent.in_scope", 1, 32);
+      if (scopeProblem !== undefined) problems.push(scopeProblem);
+    }
+    if ("out_of_scope" in intentValue) {
+      const scopeProblem = stringArrayProblem(intentValue.out_of_scope, "intent.out_of_scope", 0, 32);
+      if (scopeProblem !== undefined) problems.push(scopeProblem);
+    }
+    if ("uncertainties" in intentValue) {
+      const uncertaintyProblem = stringArrayProblem(intentValue.uncertainties,
+        "intent.uncertainties", 0, 16);
+      if (uncertaintyProblem !== undefined) problems.push(uncertaintyProblem);
+    }
+  }
+
+  // approval 层：content 键集 + 各内容数组条数（缺失的 scope 键由继承逻辑补，不算问题）
+  const approvalValue: unknown = input.approval;
+  if (!isRecord(approvalValue)) {
+    problems.push({ field_path: "approval", message: "必须是对象" });
+  } else {
+    const keyProblem = keySetProblem(approvalValue, "approval",
+      [...APPROVAL_KEYS], [...APPROVAL_KEYS, ...APPROVAL_OPTIONAL_KEYS]);
+    if (keyProblem !== undefined) problems.push(keyProblem);
+    const content: unknown = approvalValue.content;
+    if ("content" in approvalValue) {
+      if (!isRecord(content)) {
+        problems.push({ field_path: "approval.content", message: "必须是对象" });
+      } else {
+        const contentKeyProblem = keySetProblem(content, "approval.content",
+          [...APPROVAL_CONTENT_REQUIRED_KEYS],
+          [...APPROVAL_CONTENT_REQUIRED_KEYS, ...APPROVAL_CONTENT_INHERITABLE_KEYS]);
+        if (contentKeyProblem !== undefined) problems.push(contentKeyProblem);
+        for (const [key, minimum, maximum] of [["acceptance_examples", 3, 7],
+          ["key_alternatives", 1, 16], ["invariants", 1, 32], ["failure_behaviors", 1, 32],
+          ["compatibility_boundaries", 1, 32]] as const) {
+          if (!(key in content)) continue;
+          const countProblem = stringArrayProblem(content[key], `approval.content.${key}`, minimum, maximum);
+          if (countProblem !== undefined) problems.push(countProblem);
+        }
+        if ("in_scope" in content) {
+          const scopeProblem = stringArrayProblem(content.in_scope, "approval.content.in_scope", 1, 32);
+          if (scopeProblem !== undefined) problems.push(scopeProblem);
+        }
+        if ("out_of_scope" in content) {
+          const scopeProblem = stringArrayProblem(content.out_of_scope, "approval.content.out_of_scope", 0, 32);
+          if (scopeProblem !== undefined) problems.push(scopeProblem);
+        }
+        const risks: unknown = content.risks;
+        if ("risks" in content) {
+          if (!Array.isArray(risks) || risks.length > 16) {
+            problems.push({ field_path: "approval.content.risks", message: "必须是不超过 16 条的数组" });
+          } else {
+            risks.forEach((risk, index) => {
+              if (!isRecord(risk) || keySetProblem(risk, `approval.content.risks[${index}]`,
+                ["risk", "mitigation"], ["risk", "mitigation"]) !== undefined) {
+                problems.push({ field_path: `approval.content.risks[${index}]`,
+                  message: "必须是且只含 risk/mitigation 两个字符串字段的对象" });
+              }
+            });
+          }
+        }
+      }
+    }
+  }
   const sources: unknown = input.evidence_sources;
   if (!Array.isArray(sources) || sources.length === 0) {
     problems.push({ field_path: "evidence_sources", message: "必须是非空数组" });
@@ -342,6 +495,17 @@ function collectInputProblems(input: EvidencePackInputFile): readonly InputProbl
       if ("affected_paths" in task && (!Array.isArray(task.affected_paths) ||
         task.affected_paths.length === 0)) {
         problems.push({ field_path: `${path}.affected_paths`, message: "必须是至少一条相对路径的数组" });
+      } else if (Array.isArray(task.affected_paths)) {
+        // canonicalPath 拒目录形态（尾斜杠产生空段）与 Windows 反斜杠/盘符——
+        // 冻结模块只抛 PLAN_ARTIFACT_INPUT_INVALID，这里逐条给定位与写法说明
+        task.affected_paths.forEach((affectedPath, pathIndex) => {
+          if (!isCanonicalPath(affectedPath)) {
+            problems.push({
+              field_path: `${path}.affected_paths[${pathIndex}]`,
+              message: "必须是相对文件路径（正斜杠分隔、不能以 / 结尾、不含 ./.. 段、不接受盘符/绝对路径）；目录请改为列出其中的具体文件"
+            });
+          }
+        });
       }
     });
   }
@@ -391,6 +555,113 @@ function collectInputProblems(input: EvidencePackInputFile): readonly InputProbl
   } else {
     const policyProblem = enumProblem(machine, "worktree_policy", "machine", WORKTREE_POLICIES);
     if (policyProblem !== undefined) problems.push(policyProblem);
+  }
+
+  // 决策层：节点键集/枚举/状态一致性；uncertainties 生成的未决决策必须被节点覆盖。
+  // 冻结模块只抛 PLAN_DECISION_INPUT_INVALID（无定位），高频错全在这里提前报。
+  const decisionNodes: unknown = input.decision_nodes;
+  const decisionIds = new Set<string>();
+  if (decisionNodes !== undefined && !Array.isArray(decisionNodes)) {
+    problems.push({ field_path: "decision_nodes", message: "必须是数组" });
+  } else if (decisionNodes !== undefined) {
+    (decisionNodes as unknown[]).forEach((node, index) => {
+      const path = `decision_nodes[${index}]`;
+      if (!isRecord(node)) {
+        problems.push({ field_path: path, message: "必须是对象" });
+        return;
+      }
+      const keyProblem = keySetProblem(node, path, DECISION_NODE_KEYS,
+        [...DECISION_NODE_KEYS, ...DECISION_NODE_OPTIONAL_KEYS]);
+      if (keyProblem !== undefined) problems.push(keyProblem);
+      if (node.schema_version !== 1) {
+        problems.push({ field_path: `${path}.schema_version`, message: "必须是 1" });
+      }
+      const typeProblem = enumProblem(node, "type", path, DECISION_NODE_TYPES);
+      if (typeProblem !== undefined) problems.push(typeProblem);
+      const statusProblem = enumProblem(node, "status", path, DECISION_NODE_STATUSES);
+      if (statusProblem !== undefined) problems.push(statusProblem);
+      const resolvedByProblem = enumProblem(node, "resolved_by", path,
+        ["evidence", "engineering_default", "user"]);
+      if (resolvedByProblem !== undefined) problems.push(resolvedByProblem);
+      if (typeof node.decision_id === "string" && node.decision_id !== "") {
+        if (decisionIds.has(node.decision_id)) {
+          problems.push({ field_path: `${path}.decision_id`, message: `决策标识重复：${node.decision_id}` });
+        }
+        decisionIds.add(node.decision_id);
+      }
+      if (typeof node.decision_version !== "number" ||
+        !Number.isSafeInteger(node.decision_version) || node.decision_version < 1) {
+        problems.push({ field_path: `${path}.decision_version`, message: "必须是 ≥1 的整数" });
+      }
+      const expectedResolver = node.type === "fact" ? "evidence" : node.type === "engineering_default"
+        ? "engineering_default" : "user";
+      if (node.status === "resolved") {
+        for (const key of ["resolution", "resolved_by", "resolved_at"] as const) {
+          if (!(key in node)) {
+            problems.push({ field_path: path, missing_keys: [key],
+              message: "status=resolved 的节点必须带 resolution/resolved_by/resolved_at 三元" });
+          }
+        }
+        if (node.resolved_by !== undefined && node.resolved_by !== expectedResolver) {
+          problems.push({ field_path: `${path}.resolved_by`,
+            message: `type=${String(node.type)} 的节点 resolved_by 必须是 ${expectedResolver}` });
+        }
+      }
+      if ((node.type === "product_decision" || node.type === "risk_decision") &&
+        node.status !== "resolved" &&
+        (node.resolution !== undefined || node.resolved_by !== undefined || node.resolved_at !== undefined)) {
+        problems.push({ field_path: path,
+          message: "未 resolved 的 product_decision/risk_decision 不得携带 resolution/resolved_by/resolved_at" });
+      }
+    });
+  }
+  if (isRecord(intentValue) && Array.isArray(intentValue.uncertainties) &&
+    intentValue.uncertainties.every((item) => typeof item === "string")) {
+    const expectedIds = (intentValue.uncertainties as string[]).map((uncertainty) =>
+      `intent_uncertainty:${stableHashHex(uncertainty)}`);
+    const missing = expectedIds.filter((id) => !decisionIds.has(id));
+    if (missing.length > 0) {
+      problems.push({
+        field_path: "intent.uncertainties",
+        message: "非空 uncertainty 会生成未决决策，必须在 decision_nodes 提供同 id 节点；缺失：" +
+          missing.join(", ")
+      });
+    }
+  }
+
+  // HP-15：adversarial_review 若透传，先验形状（finalize 的绑定失败才是语义层的事）
+  const review: unknown = input.adversarial_review;
+  if (review !== undefined) {
+    if (!isRecord(review)) {
+      problems.push({ field_path: "adversarial_review", message: "必须是对象" });
+    } else {
+      const keyProblem = keySetProblem(review, "adversarial_review", REVIEW_RECEIPT_KEYS, REVIEW_RECEIPT_KEYS);
+      if (keyProblem !== undefined) problems.push(keyProblem);
+      if (review.schema_version !== 1) {
+        problems.push({ field_path: "adversarial_review.schema_version", message: "必须是 1" });
+      }
+      if (typeof review.reviewer_identity !== "string" ||
+        !IDENTITY_PATTERN.test(review.reviewer_identity)) {
+        problems.push({ field_path: "adversarial_review.reviewer_identity",
+          message: "必须匹配 ^[a-z][a-z0-9_.:-]{0,159}$（如 inline:<标识>）" });
+      }
+      const modeProblem = enumProblem(review, "review_mode", "adversarial_review", REVIEW_MODES);
+      if (modeProblem !== undefined) problems.push(modeProblem);
+      for (const key of ["input_hash", "findings_hash"] as const) {
+        if (typeof review[key] !== "string" || !SHA256_PATTERN.test(review[key])) {
+          problems.push({ field_path: `adversarial_review.${key}`,
+            message: "必须是 sha256:<64 位小写十六进制>" });
+        }
+      }
+      if (!Array.isArray(review.findings)) {
+        problems.push({ field_path: "adversarial_review.findings", message: "必须是数组" });
+      }
+      if (typeof review.completed_at !== "string" ||
+        !Number.isFinite(Date.parse(review.completed_at))) {
+        problems.push({ field_path: "adversarial_review.completed_at",
+          message: "必须是可解析的 ISO 8601 时间" });
+      }
+    }
   }
   return problems;
 }
@@ -509,7 +780,8 @@ export async function runPlanEvidencePack(
       return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_RUN_ID_INVALID",
         field_path: "context.run_id",
-        message: "run_id 必须满足 v2 identity（小写字母开头）；请使用 createPlanRunId() 生成 plan_<uuid>"
+        message: "run_id 必须满足 ^[a-z][a-z0-9_.:-]{0,159}$（小写字母开头，如 plan_<uuid>）；" +
+          `收到 ${JSON.stringify(input.context?.run_id)}`
       }));
     }
     // HP-13：结构问题优先于时间/范围检查——键集错了，后面的语义校验都没有意义
@@ -538,6 +810,22 @@ export async function runPlanEvidencePack(
       input.approval.decided_at = new Date(parsedTime).toISOString();
     }
     const createdAt = input.approval.decided_at ?? now();
+    // HP-14：approval.content 的 in_scope/out_of_scope 未显式给出时从 intent 继承
+    // （两边必须集合相等；继承消掉“同一份边界抄两遍抄错”的纯往返，不伪造审批——
+    // 继承值就是编排方在阶段 4 确认过的同一份边界）
+    const scopeInherited: string[] = [];
+    const approvalContent = input.approval.content;
+    if (approvalContent.in_scope === undefined) {
+      (approvalContent as { in_scope: readonly string[] }).in_scope = [...input.intent.in_scope];
+      scopeInherited.push("in_scope");
+    }
+    if (approvalContent.out_of_scope === undefined) {
+      (approvalContent as { out_of_scope: readonly string[] }).out_of_scope =
+        [...input.intent.out_of_scope];
+      scopeInherited.push("out_of_scope");
+    }
+    // 继承后 content 已完整（边界校验 + 继承保证 in_scope/out_of_scope 存在）
+    const completedApprovalContent = approvalContent as ApprovalContentInput;
     // HP-04：intent 与 approval scope 集合语义等价校验（missing/extra 明细）
     const canonicalScope = (values: readonly string[]) => [...new Set(values)].sort();
     const intentIn = canonicalScope(input.intent.in_scope ?? []);
@@ -638,7 +926,7 @@ export async function runPlanEvidencePack(
       map_manifest_hash: evidence.map_manifest_hash as `sha256:${string}`, created_at: createdAt });
     const graph = decision.evaluateDecisionGraph({ schema_version: 1, profile, phase_set, context,
       intent, evidence, nodes: (input.decision_nodes ?? []) as never, evaluated_at: createdAt });
-    const approval_package_input = { content: input.approval.content, created_at: createdAt };
+    const approval_package_input = { content: completedApprovalContent, created_at: createdAt };
     const approval_package = decision.buildApprovalPackage({ schema_version: 1, profile, phase_set,
       context, intent, evidence, graph, ...approval_package_input });
     const approval_receipt = decision.recordApproval({ package: approval_package, graph, profile,
@@ -692,7 +980,7 @@ export async function runPlanEvidencePack(
         KIND_ORDER.indexOf(left.kind as never) - KIND_ORDER.indexOf(right.kind as never) ||
         (String(left.requirement_id) < String(right.requirement_id) ? -1 : 1));
     const requirements = normalizeRequirements((input.structured_input.requirements ??
-      requirementsFrom(input.approval.content, scopeRefsCanonical, evidenceRefs)) as Record<string, unknown>[]);
+      requirementsFrom(completedApprovalContent, scopeRefsCanonical, evidenceRefs)) as Record<string, unknown>[]);
     const requirementRefs = sortRefs(requirements.map((item) => String(item.requirement_id)));
     const ownership = (input.structured_input.ownership ??
       [...new Set(input.structured_input.tasks.flatMap((task) => task.affected_paths as string[] ?? []))]
@@ -871,12 +1159,18 @@ export async function runPlanEvidencePack(
         signal_provenance: signalInference.provenance,
         phase_set_source: phaseSetSource
       },
-      expected_baseline: input.expected_baseline
+      expected_baseline: input.expected_baseline,
+      // HP-15：对抗评审收据透传。收据绑定本 pack 的产物哈希，任何字段变化后
+      // 必须重跑评审/重新签发收据（plan review-record 可代算两个哈希）。
+      ...(input.adversarial_review === undefined
+        ? {}
+        : { adversarial_review: input.adversarial_review })
     };
     await writeFile(options.output, JSON.stringify(pack));
     const warnings: string[] = [
       ...(fullFanout ? ["graph_density_full_fanout"] : []),
-      ...(requiredRetained.length > 0 ? ["phase_set_required_retained"] : [])
+      ...(requiredRetained.length > 0 ? ["phase_set_required_retained"] : []),
+      ...(scopeInherited.length > 0 ? [`approval_scope_inherited:${scopeInherited.join(",")}`] : [])
     ];
     dependencies.stdout(JSON.stringify({
       ok: true,
@@ -891,11 +1185,13 @@ export async function runPlanEvidencePack(
     }) + "\n");
     return 0;
   } catch (error) {
-    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message
+    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message；
+    // stage 按 core 码推导（信封码 PLAN_EVIDENCE_PACK_FAILED 只会落到 finalize，误导定位）
     const coreMessage = error instanceof Error ? error.message : String(error);
     const coreCode = /^PLAN[A-Z_]*$/u.test(coreMessage) ? coreMessage : undefined;
     return emitPlanError(dependencies.stdout, planErrorEnvelope({
       code: "PLAN_EVIDENCE_PACK_FAILED",
+      stage: coreCode === undefined ? "finalize" : planStageForCode(coreCode),
       reason_code: coreCode ?? "PLAN_EVIDENCE_PACK_FAILED",
       message: coreMessage,
       extra: { error: coreMessage }

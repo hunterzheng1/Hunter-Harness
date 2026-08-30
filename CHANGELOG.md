@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.8] — hunter-harness
+
+> Plan v2 证据包流程体验修复：解决 sales-insight-agent 实测暴露的对抗评审
+> 链路断裂、校验报错缺定位信息、边界契约同步等 7 项问题（docs/harness-improvement-roadmap/plan-v2-evidence-pack-issues-2026-08-30.md）。
+> CLI 0.4.7 → 0.4.8，workflow-harness 0.4.3 → 0.4.4。
+
+### Fixed — 对抗评审收据链路断裂（P0-1）
+
+- **新增 `plan review-record` 子命令**：CLI 内部重跑质量门确定性与语义层，
+  算出权威 `input_hash`，代算 `findings_hash`，把完整对抗评审收据写回
+  证据包顶层 `adversarial_review`。编排方只需提供 reviewer_identity 与 findings，
+  消掉手拼哈希或二分试错成本。
+- **`plan evidence-pack` 顶层透传 `adversarial_review`**：自然输入中已有的
+  合法收据在打包时被保留（不再静默丢弃）。
+- **`PLAN_REVIEW_REQUIRED` 报错公开自曝期望值**：回显 `expected_review.input_hash`，
+  把"先跑一次拿期望值"从 dist bundle 隐藏行为上升为公开契约。
+
+### Fixed — 自然输入校验报错缺定位信息（P0-2 / P1-1 / P1-3 / P1-4）
+
+- **边界提前校验定位**：`tasks[].affected_paths`（文件路径/目录报错）、
+  `intent.uncertainties`（未决决策覆盖校验，直接列出缺失的 `intent_uncertainty:<id>`）、
+  `approval.content`（各类数组条数上下限与对象键集）、`decision_nodes[]`（键集/枚举/
+  `status: "resolved"` 三元完备性）以及 `adversarial_review` 均在边界报出
+  `PLAN_EVIDENCE_INPUT_INVALID`（带 `field_path` 与 `problems[]`），不再等冻结
+  核心抛出无定位信息的 `PLAN_DECISION_INPUT_INVALID` / `PLAN_ARTIFACT_INPUT_INVALID`。
+- **`tasks[].affected_paths` 目录路径提示**：明确说明必须是相对文件路径，
+  不接受目录，引导改为列出具体文件。
+- **`approval.content` scope 自动继承（P1-4）**：未显式给出 `in_scope` /
+  `out_of_scope` 时自动从 `intent` 继承，消除抄写两遍导致的等价性往返失败。
+- **`PLAN_RUN_ID_INVALID` 报错优化**：打印实际收到的值和合法正则。
+- **错误信封 stage 纠正**：catch 块中优先按 core reason_code 推导阶段，
+  避免顶层信封码把所有底层失败泛化为 `stage: "finalize"`。
+
+### Fixed — Python bootstrap-plan 误导提示（P1-5）
+
+- `harness_context.py` 中的 `bootstrap_plan` 检测到 `.harness/` 已存在但
+  `changes/` 不存在时自动 `mkdir -p`，不再错误报告 `PROJECT_ROOT_INVALID` 并误导
+  已初始化项目去重跑 `hunter-harness init`。
+
 ## [0.4.7] — hunter-harness
 
 > 纯 CLI 增量：平台地址提示记住默认值。workflow-harness 与 skills 不随本版变动。

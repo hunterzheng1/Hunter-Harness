@@ -21,7 +21,7 @@ import {
   createPlanFinalizationQualityVerifier,
   createPlanFinalizationRenderer
 } from "../plan-finalization/production-ports.js";
-import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
+import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
 import type { CommandDependencies } from "./configure.js";
 
 export interface PlanFinalizeOptions {
@@ -137,9 +137,29 @@ export async function runPlanFinalize(
       input.trusted.human.test_scenarios.content.scenarios.some((scenario) => scenario.risk_level === "high") ||
       layer2.findings.some((finding) => finding.severity === "blocking");
     if (reviewRequired && input.adversarial_review === undefined) {
+      // HP-15：绑定哈希外部不可预计算，报错时由校验器自曝期望值（公开契约）。
+      // 编排方两条路：①`plan review-record --input <pack> --receipt <draft>` 让 CLI
+      // 代算 input_hash/findings_hash 并写回；②手工构造收据时从这里取
+      // expected_review.input_hash，findings_hash = 本端 findings 的 canonical JSON
+      // 的 sha256。时间锚不进 input_hash，期望值不随墙钟漂移。
+      let expectedReview: { readonly input_hash: string } | undefined;
+      try {
+        const probe = quality.runAdversarialGates({
+          trusted: input.trusted,
+          semantic: layer2,
+          explicit_adversarial: input.explicit_adversarial === true,
+          prefer_delegated: false,
+          completed_at: completedAt
+        });
+        expectedReview = { input_hash: probe.review_execution.input_hash };
+      } catch {
+        expectedReview = undefined;
+      }
       return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_REVIEW_REQUIRED",
-        message: "assurance/高风险计划需要对抗评审收据（adversarial_review 字段）；缺失时 fail closed"
+        message: "assurance/高风险计划需要对抗评审收据（adversarial_review 字段）；缺失时 fail closed。" +
+          "推荐用 plan review-record 由 CLI 代算绑定哈希写回证据包；手工构造时用 expected_review.input_hash",
+        extra: { ...(expectedReview === undefined ? {} : { expected_review: expectedReview }) }
       }));
     }
     const reviewerPort = input.adversarial_review === undefined
@@ -157,7 +177,9 @@ export async function runPlanFinalize(
         layer3.review_execution.reviewer_identity === "review_unavailable") {
       dependencies.stdout(JSON.stringify(planErrorEnvelope({
         code: "PLAN_REVIEW_BINDING_FAILED",
-        message: "评审收据与当前产物/发现/透镜的 input_hash 或 findings_hash 绑定失败；请重跑评审",
+        message: "评审收据与当前产物/发现/透镜的 input_hash 或 findings_hash 绑定失败；" +
+          "review_execution.input_hash 是权威期望值（findings_hash 由你端 findings 的 canonical JSON 自算）；" +
+          "重跑评审或用 plan review-record 重新签发收据",
         extra: { review_execution: layer3.review_execution }
       })) + "\n");
       return 1;
@@ -225,11 +247,13 @@ export async function runPlanFinalize(
     }) + "\n");
     return result.ok ? 0 : 1;
   } catch (error) {
-    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message
+    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message；
+    // stage 按 core 码推导（信封码 PLAN_FINALIZE_FAILED 只会落到 finalize，误导定位）
     const coreMessage = error instanceof Error ? error.message : String(error);
     const coreCode = /^PLAN[A-Z_]*$/u.test(coreMessage) ? coreMessage : undefined;
     return emitPlanError(dependencies.stdout, planErrorEnvelope({
       code: "PLAN_FINALIZE_FAILED",
+      stage: coreCode === undefined ? "finalize" : planStageForCode(coreCode),
       reason_code: coreCode ?? "PLAN_FINALIZE_FAILED",
       message: coreMessage,
       extra: { error: coreMessage }
