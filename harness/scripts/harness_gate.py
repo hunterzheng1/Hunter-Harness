@@ -121,6 +121,11 @@ def emit_error(
         sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
     else:
         sys.stderr.write(f"error: {message} ({code})\n")
+        # 文本模式同样给出恢复指引——--json 的 recoveryAction 一直有，
+        # 但人类读的恰恰是文本模式（2026-08-30 实测：用户翻文档才找到 claim 命令）
+        recovery = payload.get("recoveryAction")
+        if isinstance(recovery, str) and recovery:
+            sys.stderr.write(f"recovery: {recovery}\n")
     return 1
 
 
@@ -2930,6 +2935,157 @@ def cmd_begin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_close_summary(
+    code: str,
+    phase: str,
+    status: str,
+    to_phase: str | None,
+) -> None:
+    """关门成功的一行摘要（stderr，不污染 stdout 的 JSON 契约）。"""
+    sys.stderr.write(f"{code} · phase={phase} · status={status} · next={to_phase or '-'}\n")
+
+
+def _finalize_close_journal(
+    change_dir: Path,
+    phase: str,
+    run_id: str,
+    close_status: str,
+) -> None:
+    """续跑成功后把 capsule 的 closeTransaction 收口为 CLOSED（best-effort）。"""
+    if not run_id:
+        return
+    try:
+        capsule = load_phase_capsule(change_dir, phase, run_id)
+    except (OSError, ValueError):
+        capsule = None
+    if not isinstance(capsule, dict):
+        return
+    transaction = capsule.get("closeTransaction")
+    if not isinstance(transaction, dict):
+        return
+    transaction.update({
+        "status": "CLOSED",
+        "retryable": False,
+        "leaseReleased": True,
+        "updatedAt": he.now_iso(),
+    })
+    capsule["closedAt"] = he.now_iso()
+    capsule["closeStatus"] = close_status
+    try:
+        write_phase_capsule(change_dir, phase, run_id, capsule)
+    except OSError:
+        pass
+
+
+def _resume_closed_phase(
+    project: Path,
+    resolved: dict[str, Any],
+    args: argparse.Namespace,
+    terminal: dict[str, Any],
+    *,
+    as_json: bool,
+) -> int:
+    """phase.end 已写、租约已释放、收尾未走完的幂等续跑。
+
+    这个中间态是"租约释放早于后续步骤"（或输出中断）留下的：本地关门事实
+    已经存在，剩下的 handoff/monitor/recovery/scratch 全部幂等。识别并补跑，
+    而不是报 LEASE_ABSENT 逼调用方手工 claim 重取租约（2026-08-30 实测路径）。
+    """
+    change_id = str(resolved["changeId"])
+    change_dir = Path(resolved["changeDir"])
+    run_id = str(terminal.get("run_id") or getattr(args, "run_id", None) or "")
+    close_status = str(terminal.get("status") or args.status)
+    to_phase = getattr(args, "to_phase", None)
+
+    view = hctx.context_view(project, change_id)
+    transitions = view.get("transitions") if isinstance(view, dict) else None
+    handoff_recorded = isinstance(transitions, list) and any(
+        isinstance(item, dict)
+        and hp.resolve_phase_name(item.get("fromPhase")) == args.phase
+        for item in transitions
+    )
+
+    handoff: dict[str, Any] | None = None
+    if handoff_recorded:
+        # 交接收据已在 transitions.ndjson——重放 close_transition 也只会幂等命中
+        handoff = {"ok": True, "code": "TRANSITION_ALREADY_CLOSED", "resumed": True}
+    else:
+        candidates = hctx.allowed_next_phases(project, change_id, args.phase)
+        if to_phase is None and len(candidates) == 1:
+            # 唯一计划后继：close 的意图没有歧义，直接补跑 handoff
+            to_phase = candidates[0]
+            args.to_phase = to_phase
+        if to_phase is None and candidates:
+            return emit_error(
+                "PHASE_HANDOFF_PENDING",
+                "phase gate already closed locally (phase.end recorded), but the context "
+                "handoff is still pending and the successor is ambiguous; re-run with --to-phase",
+                as_json=as_json,
+                extra={
+                    "localCloseComplete": True,
+                    "retryable": True,
+                    "phase": args.phase,
+                    "status": close_status,
+                    "changeId": change_id,
+                    "candidateNextPhases": candidates,
+                    "recoveryAction": (
+                        "本地关门已完成（phase.end 已写、租约已释放），只剩上下文交接。"
+                        "不需要重新 claim 租约——用原命令补 --to-phase 重跑即幂等续跑："
+                        "python <skills-root>/scripts/harness_gate.py close "
+                        f"--phase {args.phase} --change {change_id} --status {close_status} "
+                        f"--to-phase <{'|'.join(candidates)}> --json"
+                    ),
+                },
+            )
+        if to_phase is not None:
+            handoff = _close_context_handoff(
+                project,
+                change_id,
+                args,
+                status=close_status,
+            )
+    monitor = _sync_after_phase_close(project, change_dir)
+    if isinstance(handoff, dict) and not handoff.get("ok"):
+        return emit_error(
+            "PHASE_HANDOFF_PENDING",
+            "phase gate is closed, but context handoff still needs attention",
+            as_json=as_json,
+            extra={
+                "localCloseComplete": True,
+                "retryable": True,
+                "contextHandoff": handoff,
+                "platformMonitor": monitor,
+            },
+        )
+    recovery_result = record_gate_recovered(
+        change_dir,
+        phase=args.phase,
+        run_id=run_id,
+    )
+    try:
+        scratch_swept = hruntime.sweep_scratch(change_dir)
+    except Exception as exc:  # noqa: BLE001 — 收尾步骤失败只记录，绝不阻断续跑
+        scratch_swept = {"ok": False, "code": "SCRATCH_SWEEP_FAILED", "error": str(exc)}
+    _finalize_close_journal(change_dir, args.phase, run_id, close_status)
+    emit(
+        {
+            "ok": True,
+            "code": "PHASE_CLOSE_RESUMED",
+            "phase": args.phase,
+            "status": close_status,
+            "changeId": change_id,
+            "localCloseComplete": True,
+            "contextHandoff": handoff,
+            "platformMonitor": monitor,
+            "gateRecovery": recovery_result,
+            "scratchSwept": scratch_swept,
+        },
+        as_json=as_json,
+    )
+    _emit_close_summary("PHASE_CLOSE_RESUMED", args.phase, close_status, to_phase)
+    return 0
+
+
 def cmd_close(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     normalized = _normalize_gate_phase(args, as_json)
@@ -3043,47 +3199,13 @@ def cmd_close(args: argparse.Namespace) -> int:
 
     if current_lease is None:
         terminal = _latest_phase_end(change_dir, args.phase, explicit_run_id)
-        if (
-            getattr(args, "to_phase", None)
-            and terminal is not None
-            and _terminal_matches_context_session(
-                project, str(resolved["changeId"]), args.phase, terminal
-            )
+        if terminal is not None and _terminal_matches_context_session(
+            project, str(resolved["changeId"]), args.phase, terminal
         ):
-            terminal_status = str(terminal.get("status") or args.status)
-            handoff = _close_context_handoff(
-                project,
-                str(resolved["changeId"]),
-                args,
-                status=terminal_status,
-            )
-            monitor = _sync_after_phase_close(project, change_dir)
-            if not isinstance(handoff, dict) or not handoff.get("ok"):
-                return emit_error(
-                    "PHASE_HANDOFF_PENDING",
-                    "phase gate is closed, but context handoff still needs attention",
-                    as_json=as_json,
-                    extra={
-                        "localCloseComplete": True,
-                        "retryable": True,
-                        "contextHandoff": handoff,
-                        "platformMonitor": monitor,
-                    },
-                )
-            emit(
-                {
-                    "ok": True,
-                    "code": "PHASE_CLOSE_RESUMED",
-                    "phase": args.phase,
-                    "status": terminal_status,
-                    "changeId": resolved["changeId"],
-                    "localCloseComplete": True,
-                    "contextHandoff": handoff,
-                    "platformMonitor": monitor,
-                },
-                as_json=as_json,
-            )
-            return 0
+            # phase.end 已写且属于当前会话：本地关门已完成，租约缺失是历史运行的
+            # 释放顺序（或输出中断）留下的中间态——幂等续跑剩余步骤，与是否携带
+            # --to-phase 无关；后继未显式给出时从计划派生（唯一后继自动补跑）。
+            return _resume_closed_phase(project, resolved, args, terminal, as_json=as_json)
         resume_run_id = explicit_run_id or _latest_open_run_id(change_dir, args.phase)
         return emit_error(
             "LEASE_ABSENT",
@@ -3457,39 +3579,11 @@ def cmd_close(args: argparse.Namespace) -> int:
         close_transaction["updatedAt"] = he.now_iso()
         write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
-    release = hc.release_lease(
-        project,
-        change_id=resolved["changeId"],
-        phase=args.phase,
-        run_id=run_id,
-    )
-    if not release.get("ok"):
-        if capsule is not None:
-            close_transaction.update({
-                "status": "RELEASE_PENDING",
-                "retryable": True,
-                "lastError": release,
-                "updatedAt": he.now_iso(),
-            })
-            write_phase_capsule(change_dir, args.phase, run_id, capsule)
-        return emit_error(
-            str(release.get("code", "LEASE_RELEASE_FAILED")),
-            str(release.get("message", "lease release failed")),
-            as_json=as_json,
-            extra={k: v for k, v in release.items() if k not in {"ok", "message", "code"}},
-        )
-
-    if capsule is not None:
-        close_transaction.update({
-            "status": "CLOSED",
-            "retryable": False,
-            "leaseReleased": True,
-            "updatedAt": he.now_iso(),
-        })
-        capsule["closedAt"] = he.now_iso()
-        capsule["closeStatus"] = close_status
-        write_phase_capsule(change_dir, args.phase, run_id, capsule)
-
+    # 租约释放必须是关门的最后一个可失败步骤。历史上它排在 handoff/monitor
+    # 之前，一旦中途失败就留下“phase.end 已写 + 租约已放 + 交接没写”的三不管
+    # 状态，重试直接死在 LEASE_ABSENT（2026-08-30 sales-insight-agent 实测）。
+    # 现在顺序为：handoff → monitor → recovery → scratch → release → emit；
+    # 任何中途失败时租约仍持有，重试同一命令按 closeTransaction journal 幂等续跑。
     context_handoff = _close_context_handoff(
         project,
         str(resolved["changeId"]),
@@ -3517,6 +3611,10 @@ def cmd_close(args: argparse.Namespace) -> int:
                 "changeId": resolved["changeId"],
                 "contextHandoff": context_handoff,
                 "platformMonitor": platform_monitor,
+                "recoveryAction": (
+                    "租约仍持有，无需重新 claim——原样重跑同一 close 命令即可幂等续跑"
+                    "（phase.end 已落会跳过，handoff 会重试）"
+                ),
             },
         )
 
@@ -3530,8 +3628,49 @@ def cmd_close(args: argparse.Namespace) -> int:
     # 直接把归档挡住了。白名单式删除，证据/报告/运行态一律不碰；失败只记不阻断。
     try:
         scratch_swept = hruntime.sweep_scratch(change_dir)
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 — 清草稿是收尾便利，任何失败都不得阻断关门
         scratch_swept = {"ok": False, "code": "SCRATCH_SWEEP_FAILED", "error": str(exc)}
+
+    release = hc.release_lease(
+        project,
+        change_id=resolved["changeId"],
+        phase=args.phase,
+        run_id=run_id,
+    )
+    if not release.get("ok"):
+        if capsule is not None:
+            close_transaction.update({
+                "status": "RELEASE_PENDING",
+                "retryable": True,
+                "lastError": release,
+                "updatedAt": he.now_iso(),
+            })
+            write_phase_capsule(change_dir, args.phase, run_id, capsule)
+        return emit_error(
+            str(release.get("code", "LEASE_RELEASE_FAILED")),
+            str(release.get("message", "lease release failed")),
+            as_json=as_json,
+            extra={
+                **{k: v for k, v in release.items() if k not in {"ok", "message", "code"}},
+                "localCloseComplete": True,
+                "retryable": True,
+                "recoveryAction": (
+                    "本地关门与上下文交接均已完成，仅租约释放失败——原样重跑同一 close "
+                    "命令即幂等续跑（phase.end/handoff 幂等命中，仅重试释放）"
+                ),
+            },
+        )
+
+    if capsule is not None:
+        close_transaction.update({
+            "status": "CLOSED",
+            "retryable": False,
+            "leaseReleased": True,
+            "updatedAt": he.now_iso(),
+        })
+        capsule["closedAt"] = he.now_iso()
+        capsule["closeStatus"] = close_status
+        write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
     payload = {
         "ok": True,
@@ -3558,6 +3697,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         # 跑过了 TTL 且租约是自动重取的，不隐藏。
         payload["leaseLapsed"] = lease_lapsed
     emit(payload, as_json=as_json)
+    _emit_close_summary(close_code, args.phase, close_status, getattr(args, "to_phase", None))
     return 0
 
 
@@ -3754,7 +3894,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_begin.add_argument("--executor-model", default=None)
     p_begin.set_defaults(func=cmd_begin)
 
-    p_close = sub.add_parser("close", parents=[shared])
+    p_close = sub.add_parser(
+        "close",
+        parents=[shared],
+        help="关闭阶段门禁（关门只调本命令；上下文交接由 --to-phase 内联完成，不要再单独调 harness_context.py close）",
+    )
     p_close.add_argument("--phase", required=True)
     p_close.add_argument("--change", default=None)
     p_close.add_argument(

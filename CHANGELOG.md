@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.5] — workflow-harness
+
+> Execute 阶段 gate close 租约释放顺序修复：解决 sales-insight-agent 实测暴露的
+> 「phase.end 已写 + 租约已放 + 阶段未关上」三不管中间态
+>（docs/harness-improvement-roadmap/execute-phase-gate-close-lease-issue-2026-08-30.md）。
+> 纯 workflow-harness 修复，CLI 保持 0.4.8。
+
+### Fixed — gate close 租约释放顺序与幂等续跑
+
+- **租约释放移至关门末尾**：`harness_gate.py close` 的步骤顺序改为
+  handoff → monitor → recovery → scratch → **release** → emit。此前释放在
+  handoff 之前，任一中途失败都会留下「phase.end 已写 + 租约已放 + 交接没写」
+  的中间态，重试直接死在 `LEASE_ABSENT`，只能人工 `harness_change.py claim` 恢复。
+  现在中途失败时租约仍持有，原样重跑同一命令即按 closeTransaction journal 幂等续跑。
+- **close 幂等续跑（`PHASE_CLOSE_RESUMED`）**：租约缺失但当前会话的 `phase.end`
+  已落盘时，close 自动识别中间态并补跑剩余步骤——交接已记录则跳过；未记录且
+  计划后继唯一时自动派生补跑；后继不唯一（execute/review fixback 环）才报
+  `PHASE_HANDOFF_PENDING` 并附 `candidateNextPhases` 与可直接执行的恢复命令。
+  全程不再需要手工 `claim`。
+- **文本模式补打印 recoveryAction**：`--json` 的结构化恢复指引自 0.4.7 就存在，
+  但文本模式只有一行错误消息；现在非 `--json` 输出同样附带 `recovery:` 指引行。
+- **关门成功一行摘要**：stderr 输出 `PHASE_CLOSED · phase=<p> · status=<s> ·
+  next=<n>`，stdout 的 JSON 契约不变。
+- `gate close --help` 注明「关门只调本命令，上下文交接由 --to-phase 内联完成」。
+- `sweep_scratch` 异常兜底从 `OSError` 放宽到 `Exception`：收尾便利步骤的任何
+  失败都只记录、绝不阻断关门。
+
 ## [0.4.8] — hunter-harness
 
 > Plan v2 证据包流程体验修复：解决 sales-insight-agent 实测暴露的对抗评审

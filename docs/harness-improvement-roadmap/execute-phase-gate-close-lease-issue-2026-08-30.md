@@ -5,6 +5,17 @@
 > 报告人：pi（主会话实测）
 > 版本：hunter-harness 0.4.7
 
+## 修复状态（2026-08-30，workflow-harness 0.4.5）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| 建议 1 租约释放原子化 | ✅ 已修 | `cmd_close` 重排：handoff → monitor → recovery → scratch → **release 最后**；任一中途失败租约仍持有，重试同一命令按 closeTransaction journal 幂等续跑；`sweep_scratch` 异常兜底从 OSError 放宽到 Exception |
+| 建议 2 close 幂等续跑 | ✅ 已修 | lease 缺失但当前会话的 `phase.end` 已落时，走 `PHASE_CLOSE_RESUMED` 续跑（不再要求 `--to-phase` 在场）：交接已记录则跳过；未记录且计划后继唯一则自动派生补跑；后继不唯一才报 `PHASE_HANDOFF_PENDING` 附候选与可执行命令 |
+| 建议 3 LEASE_ABSENT 恢复指引 | ✅ 部分为既有 + 已补 | JSON 输出的 `recoveryAction` 自 0.4.7（af3e070）已含完整 claim 命令——本次补上文本模式的丢失：`emit_error` 非 --json 时同样打印 `recovery:` 行。且续跑落地后正常路径根本不再出现 LEASE_ABSENT |
+| 次要：两个 close 语义重叠 | ✅ 已修（提示层） | `gate close` 帮助注明「关门只调本命令，交接由 --to-phase 内联完成」；命令合并涉及契约面，留待后续路线 |
+| 次要：成功输出缺摘要 | ✅ 已修 | 关门成功时 stderr 输出一行摘要（`PHASE_CLOSED · phase=<p> · status=<s> · next=<n>`），stdout JSON 契约不变 |
+
+
 ## TL;DR
 
 `harness_gate.py close --phase execute` 在部分步骤成功、整体未完成的中间状态下**提前释放了阶段租约**，导致后续 close 全部报 `LEASE_ABSENT`，必须人工 `harness_change.py claim` 重取租约才能关门。租约释放应是 close 的最后一个原子步骤，或 close 应支持幂等续跑。

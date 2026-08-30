@@ -75,6 +75,8 @@ python <skills-root>/scripts/harness_test_runner.py exec --project . --timeout-s
 
 **长阶段租约**：`gate begin` 的租约默认 TTL 3600 秒，execute 阶段常常跑得更久。租约过期不会中断执行，**也不再阻断收尾**：`gate close` 发现租约过期而 run-id 仍是本阶段的，会自动用原 run-id 重取并照常关门，只在返回体的 `leaseLapsed` 里记录。不需要定期续租；报 `LEASE_ABSENT`/`LEASE_INVALID` 时先确认 begin 真的跑过，**不要**重跑 `gate begin`。
 
+**关门重试是幂等续跑**（0.4.5 workflow 起）：租约释放是 close 的最后一个可失败步骤，handoff/monitor/清草稿任一失败时租约仍持有，原样重跑同一命令即可（已完成步骤由 closeTransaction journal 幂等跳过）。万一处于「phase.end 已写 + 租约已放 + 交接未完成」的历史中间态，重跑 close 会自动识别并补跑剩余步骤（`PHASE_CLOSE_RESUMED`）：未带 `--to-phase` 时从 plannedPhases 派生唯一后继，后继不唯一才报 `PHASE_HANDOFF_PENDING` 并列出候选。**都不需要手工 `harness_change.py claim`**——LEASE_ABSENT 只在 begin 从未跑过时才该出现。
+
 **接口测试执行器优先级**：接口测试执行器（默认首选）> PowerShell batch `.ps1` > Playwright MCP `browser_evaluate`（仅前两者不可用或用户明确选择）> curl + UTF-8 JSON body file（兜底）。执行器在 PowerShell 可用时**禁止**用 Playwright MCP 逐条执行。→ `harness-test/reference.md`「接口测试工具优先级」
 
 **陈旧测试安全修复**：只有当前生产代码、已批准计划或可验证历史能唯一确定新契约时，才允许仅修改测试并立即重跑，然后记录：

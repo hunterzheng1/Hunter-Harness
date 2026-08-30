@@ -1190,6 +1190,180 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(payload["code"], "LEASE_ABSENT")
         self.assertIsNone(payload["resumeRunId"])
 
+    def _close_args(self, *extra: str) -> object:
+        return gate.build_parser().parse_args([
+            "close", "--phase", "execute", "--change", "demo",
+            "--run-id", "run-1", "--status", "OK", "--json", *extra,
+        ])
+
+    def test_close_releases_lease_only_after_handoff(self) -> None:
+        """handoff 失败时租约必须仍持有——重试同一命令即可恢复，不再需要人工 claim。
+
+        2026-08-30 sales-insight-agent 实测：释放在前、handoff 在后，中途失败留下
+        “phase.end 已写 + 租约已放 + 阶段没关上”的三不管状态。
+        """
+        self._write_checkpoints("approved")
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        errors: list[str] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}) as release, \
+             mock.patch.object(gate.hctx, "close_transition", return_value={
+                 "ok": False, "code": "TRANSITION_ILLEGAL", "allowedNextPhases": ["review"],
+             }), \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            code = gate.cmd_close(self._close_args("--to-phase", "review"))
+
+        self.assertEqual(code, 1)
+        payload = json.loads(errors[-1])
+        self.assertEqual(payload["code"], "PHASE_HANDOFF_PENDING")
+        self.assertTrue(payload["retryable"])
+        # 关键不变量：handoff 失败时租约不得已释放
+        release.assert_not_called()
+        self.assertIn("无需重新 claim", payload["recoveryAction"])
+
+        # 修复 handoff 后原样重跑：phase.end 幂等跳过，关门成功，租约此时才释放
+        emitted: list[dict] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}) as release2, \
+             mock.patch.object(gate.hctx, "close_transition", return_value={
+                 "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
+             }), \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
+            code = gate.cmd_close(self._close_args("--to-phase", "review"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(emitted[0]["code"], "PHASE_CLOSED")
+        release2.assert_called_once()
+
+    def _resume_mocks(self, *, transitions: list, candidates: list[str]):
+        """lease 缺失 + phase.end 已写的中间态公共 mock 集。"""
+        self._write_checkpoints("approved")
+        self._write_events(
+            {
+                "schema_version": 3, "id": "evt-s1",
+                "timestamp": "2026-08-30T10:00:00+08:00",
+                "phase": "execute", "type": "phase.start",
+                "run_id": "run-1", "attempt": 1,
+            },
+            {
+                "schema_version": 3, "id": "evt-e1",
+                "timestamp": "2026-08-30T11:00:00+08:00",
+                "phase": "execute", "type": "phase.end",
+                "run_id": "run-1", "attempt": 1, "status": "OK",
+            },
+        )
+        return {
+            "resolved": {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)},
+            "view": {
+                "ok": True,
+                "current": {"phase": "execute", "preparedAt": "2026-08-30T09:00:00+08:00"},
+                "transitions": transitions,
+            },
+            "candidates": candidates,
+        }
+
+    def test_close_resume_without_lease_derives_single_successor(self) -> None:
+        """报告原场景：phase.end 已写+租约已放+交接没写，重跑 close（不带 --to-phase）
+        必须幂等续跑并从计划派生唯一后继，而不是死偾 LEASE_ABSENT 逼人工 claim。"""
+        ctx = self._resume_mocks(transitions=[], candidates=["review"])
+        emitted: list[dict] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=ctx["resolved"]), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "inspect_lease_state", return_value={"state": "absent", "lease": None}), \
+             mock.patch.object(gate.hctx, "context_view", return_value=ctx["view"]), \
+             mock.patch.object(gate.hctx, "allowed_next_phases", return_value=ctx["candidates"]), \
+             mock.patch.object(gate.hctx, "close_transition", return_value={
+                 "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
+             }) as handoff, \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}) as release, \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
+            code = gate.cmd_close(self._close_args())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(emitted[0]["code"], "PHASE_CLOSE_RESUMED")
+        self.assertTrue(emitted[0]["localCloseComplete"])
+        # 唯一后继 review 被自动派生补跑交接
+        self.assertEqual(handoff.call_args.kwargs["to_phase"], "review")
+        # 租约早已释放——续跑绝不能再释放一次，更不该要求重新 claim
+        release.assert_not_called()
+
+    def test_close_resume_asks_for_to_phase_when_successor_ambiguous(self) -> None:
+        """后继不唯一（execute/review fixback 环）时给出候选与可执行恢复命令。"""
+        ctx = self._resume_mocks(transitions=[], candidates=["review", "execute"])
+        errors: list[str] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=ctx["resolved"]), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "inspect_lease_state", return_value={"state": "absent", "lease": None}), \
+             mock.patch.object(gate.hctx, "context_view", return_value=ctx["view"]), \
+             mock.patch.object(gate.hctx, "allowed_next_phases", return_value=ctx["candidates"]), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            code = gate.cmd_close(self._close_args())
+
+        self.assertEqual(code, 1)
+        payload = json.loads(errors[-1])
+        self.assertEqual(payload["code"], "PHASE_HANDOFF_PENDING")
+        self.assertEqual(payload["candidateNextPhases"], ["review", "execute"])
+        self.assertTrue(payload["retryable"])
+        self.assertIn("--to-phase", payload["recoveryAction"])
+        self.assertIn("不需要重新 claim", payload["recoveryAction"])
+
+    def test_close_resume_skips_handoff_when_transition_already_recorded(self) -> None:
+        """交接收据已在 transitions.ndjson 时不再重放，直接补齐收尾步骤。"""
+        ctx = self._resume_mocks(
+            transitions=[{"fromPhase": "execute", "toPhase": "review", "status": "OK"}],
+            candidates=["review"],
+        )
+        emitted: list[dict] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=ctx["resolved"]), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "inspect_lease_state", return_value={"state": "absent", "lease": None}), \
+             mock.patch.object(gate.hctx, "context_view", return_value=ctx["view"]), \
+             mock.patch.object(gate.hctx, "allowed_next_phases", return_value=ctx["candidates"]), \
+             mock.patch.object(gate.hctx, "close_transition") as handoff, \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
+            code = gate.cmd_close(self._close_args())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(emitted[0]["code"], "PHASE_CLOSE_RESUMED")
+        self.assertEqual(emitted[0]["contextHandoff"]["code"], "TRANSITION_ALREADY_CLOSED")
+        handoff.assert_not_called()
+
+    def test_emit_error_text_mode_prints_recovery_action(self) -> None:
+        """--json 的 recoveryAction 一直在，文本模式此前完全丢失（报告建议 3）。"""
+        errors: list[str] = []
+        with mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            code = gate.emit_error(
+                "LEASE_ABSENT",
+                "no active lease for phase close",
+                as_json=False,
+                extra={"recoveryAction": "python harness_change.py claim ..."},
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("LEASE_ABSENT", errors[0])
+        self.assertTrue(any("harness_change.py claim" in line for line in errors))
+
     def _expired_lease_close(
         self,
         *,

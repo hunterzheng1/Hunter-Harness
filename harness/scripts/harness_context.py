@@ -317,6 +317,24 @@ def _allowed_next_phases(contract_root: Path, from_phase: str) -> list[str]:
     return list(dict.fromkeys(allowed))
 
 
+def allowed_next_phases(project: Path, change: str, phase: str) -> list[str]:
+    """公开版后继查询：包装 _contract + _allowed_next_phases。
+
+    gate close 的幂等续跑（phase.end 已写但 handoff 未完成的中间态）需要在
+    没有 --to-phase 的情况下派生唯一计划后继；契约读取失败一律回退空表，
+    由调用方退到"后继不明确，请显式 --to-phase"的报错路径。
+    """
+    project = Path(project).resolve()
+    try:
+        contract_root, _contract_data, _state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    canonical = hpaths.resolve_phase_name(phase)
+    if canonical is None:
+        return []
+    return _allowed_next_phases(contract_root, canonical)
+
+
 def configure_phase_plan(
     project: Path,
     change: str,
