@@ -575,6 +575,115 @@ def cmd_write_dispositions(args: argparse.Namespace) -> int:
     return _emit(write_dispositions(Path(args.change_dir), doc), as_json=True)
 
 
+def _latest_review_run_id(change_dir: Path) -> str | None:
+    """从 events.ndjson 取最近一轮 review phase.start 的 run_id（best-effort）。"""
+    candidates = [change_dir / "events.ndjson"]
+    state_events = _state_dir(change_dir) / "events.ndjson"
+    if state_events != candidates[0]:
+        candidates.append(state_events)
+    run_id: str | None = None
+    for path in candidates:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "phase.start"
+                and item.get("phase") == "review"
+                and isinstance(item.get("run_id"), str)
+                and item["run_id"].strip()
+            ):
+                run_id = item["run_id"]
+    return run_id
+
+
+def scaffold(change_dir: Path, run_id: str | None) -> dict[str, Any]:
+    """按当前轮次生成 review-findings / fixback-dispositions 的写入骨架。
+
+    sidecar 的 schema 以前只能从 harness_review.py 源码里挖；骨架直接能喂给
+    write-findings / write-dispositions --stdin，消除手拼 JSON 的整类错误。
+    已有 findings 时，骨架为每条 finding 生成一条占位处置（disposition=OPEN，
+    由调用方逐条改判），并复用 findings 的 runId，保证两份 sidecar 同属一轮。
+    """
+    change_dir = Path(change_dir)
+    findings_doc = _load_findings(change_dir)
+    if findings_doc is not None:
+        effective_run_id = str(findings_doc.get("runId") or "").strip()
+        if not effective_run_id:
+            return {
+                "ok": False,
+                "code": "FINDINGS_RUN_ID_MISSING",
+                "problems": ["review-findings.json 缺少 runId，无法生成同轮处置骨架"],
+            }
+        dispositions = [
+            {"findingId": f["id"], "disposition": "OPEN"}
+            for f in findings_doc.get("findings", [])
+            if isinstance(f, dict) and isinstance(f.get("id"), str)
+        ]
+        return {
+            "ok": True,
+            "code": "REVIEW_SCAFFOLD_DISPOSITIONS",
+            "runId": effective_run_id,
+            "dispositionsInput": {
+                "schemaVersion": 1,
+                "runId": effective_run_id,
+                "dispositions": dispositions,
+            },
+            "writeCommand": (
+                "harness_review.py write-dispositions "
+                f"--change-dir {change_dir} --stdin"
+            ),
+            "note": "逐条把 disposition 改判为 FIXED/ACCEPTED_RISK/DEFERRED/NOT_APPLICABLE；"
+            "OPEN 表示待修复，gate 关门时所有 finding 都必须有处置记录。",
+        }
+    effective_run_id = (run_id or "").strip() or _latest_review_run_id(change_dir)
+    if not effective_run_id:
+        return {
+            "ok": False,
+            "code": "SCAFFOLD_RUN_ID_REQUIRED",
+            "problems": [
+                "无法从 events.ndjson 推断本轮 review runId；请显式传 --run-id"
+            ],
+        }
+    return {
+        "ok": True,
+        "code": "REVIEW_SCAFFOLD_FINDINGS",
+        "runId": effective_run_id,
+        "findingsInput": {
+            "schemaVersion": 1,
+            "runId": effective_run_id,
+            "changeName": change_dir.name,
+            "findings": [],
+            "_exampleFinding": {
+                "dimension": "正确性",
+                "severity": "YELLOW",
+                "path": "src/example.ts",
+                "line": 1,
+                "title": "一句话问题标题",
+                "fixbackAction": "code",
+            },
+        },
+        "writeCommand": (
+            f"harness_review.py write-findings --change-dir {change_dir} --stdin"
+        ),
+        "note": "无发现时保持 findings 为空数组即合法；write-findings 会为每条 "
+        "finding 分配稳定 id。落地后重跑 scaffold 生成对应的处置骨架。",
+    }
+
+
+def cmd_scaffold(args: argparse.Namespace) -> int:
+    return _emit(
+        scaffold(Path(args.change_dir), getattr(args, "run_id", None)),
+        as_json=True,
+    )
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     return _emit(status(Path(args.change_dir)), as_json=True)
 
@@ -610,6 +719,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdin", action="store_true", help="从标准输入读 JSON，免落临时文件"
     )
     p_dispositions.set_defaults(func=cmd_write_dispositions)
+
+    p_scaffold = sub.add_parser(
+        "scaffold",
+        help="按当前轮次生成 review-findings / fixback-dispositions 的写入骨架",
+    )
+    p_scaffold.add_argument("--change-dir", required=True)
+    p_scaffold.add_argument(
+        "--run-id",
+        help="本轮 review runId；缺省从 events.ndjson 最新的 review phase.start 推断",
+    )
+    p_scaffold.set_defaults(func=cmd_scaffold)
 
     p_status = sub.add_parser("status")
     p_status.add_argument("--change-dir", required=True)

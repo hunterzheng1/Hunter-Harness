@@ -927,7 +927,10 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
         if re.search(r"\bREVIEW_[A-Z0-9_]+\b", body):
             return (
                 "EVENT_REVIEW_REASON_IN_BODY",
-                "EVENT_REVIEW_REASON_IN_BODY: 评审原因码只能写入结构化字段，正文请使用中文说明",
+                "EVENT_REVIEW_REASON_IN_BODY: 评审原因码只能写入结构化字段"
+                "（--execution-mode delegated|inline，配合 --decision-reason-code "
+                "REVIEW_DELEGATED 或 --fallback-reason-code REVIEW_INLINE_*），"
+                "正文请使用中文说明",
             )
         execution_mode = str(getattr(args, "execution_mode", "") or "").strip()
         decision_code = str(

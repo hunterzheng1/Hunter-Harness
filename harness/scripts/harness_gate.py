@@ -1972,12 +1972,20 @@ def validate_context_for_gate_begin(
         return {"ok": True, "code": "CONTEXT_LEGACY_COMPATIBLE"}
     current_phase = str(current.get("phase") or view.get("currentPhase") or "")
     if hp.resolve_phase_name(current_phase) != phase:
+        candidates = hctx.allowed_next_phases(project, change_id, current_phase)
         return {
             "ok": False,
             "code": "CONTEXT_HANDOFF_REQUIRED",
             "message": "阶段交接尚未完成，门禁未启动；请先完成上下文交接。",
             "expectedPhase": current_phase or None,
             "requestedPhase": phase,
+            "recoveryAction": (
+                f"当前上下文停留在 {current_phase} 阶段。请先运行："
+                f"harness_context.py close --project . --change {change_id} "
+                f"--from-phase {current_phase} --to-phase {phase} --executor <tool> --json"
+                f"；或对上一阶段执行 harness_gate.py close --phase {current_phase} --to-phase {phase} --json。"
+                + (f"（计划后继阶段：{'/'.join(candidates)}）" if candidates else "")
+            ),
         }
     if isinstance(transitions, list) and transitions:
         latest = transitions[-1] if isinstance(transitions[-1], dict) else {}
@@ -2508,7 +2516,11 @@ def validate_review_outputs_for_close(
             "code": "REVIEW_OUTPUTS_INCOMPLETE",
             "message": "评审的结构化发现或处置记录缺失，尚不能结束评审阶段。",
             "missing": missing,
-            "recoveryAction": "补写 review-findings.json 与 fixback-dispositions.json 后重试关门",
+            "recoveryAction": (
+                "用骨架生成器补写：harness_review.py scaffold --change-dir <change-dir>"
+                "（无 findings 时先生成发现骨架→write-findings 落地→重跑 scaffold "
+                "生成处置骨架→write-dispositions 落地），再重试关门"
+            ),
         }
     try:
         findings = json.loads(findings_path.read_text(encoding="utf-8-sig"))
@@ -2940,9 +2952,14 @@ def _emit_close_summary(
     phase: str,
     status: str,
     to_phase: str | None,
+    *,
+    derived: bool = False,
 ) -> None:
     """关门成功的一行摘要（stderr，不污染 stdout 的 JSON 契约）。"""
-    sys.stderr.write(f"{code} · phase={phase} · status={status} · next={to_phase or '-'}\n")
+    suffix = "(auto)" if derived and to_phase else ""
+    sys.stderr.write(
+        f"{code} · phase={phase} · status={status} · next={to_phase or '-'}{suffix}\n"
+    )
 
 
 def _finalize_close_journal(
@@ -3006,15 +3023,21 @@ def _resume_closed_phase(
     )
 
     handoff: dict[str, Any] | None = None
+    derived_to_phase: str | None = None
     if handoff_recorded:
         # 交接收据已在 transitions.ndjson——重放 close_transition 也只会幂等命中
         handoff = {"ok": True, "code": "TRANSITION_ALREADY_CLOSED", "resumed": True}
     else:
-        candidates = hctx.allowed_next_phases(project, change_id, args.phase)
+        candidates = [
+            candidate
+            for candidate in hctx.allowed_next_phases(project, change_id, args.phase)
+            if hp.resolve_phase_name(candidate) != args.phase
+        ]
         if to_phase is None and len(candidates) == 1:
-            # 唯一计划后继：close 的意图没有歧义，直接补跑 handoff
+            # 计划后继唯一（排除 fixback 自环）：close 的意图没有歧义，直接补跑 handoff
             to_phase = candidates[0]
             args.to_phase = to_phase
+            derived_to_phase = to_phase
         if to_phase is None and candidates:
             return emit_error(
                 "PHASE_HANDOFF_PENDING",
@@ -3079,10 +3102,11 @@ def _resume_closed_phase(
             "platformMonitor": monitor,
             "gateRecovery": recovery_result,
             "scratchSwept": scratch_swept,
+            **({"derivedToPhase": derived_to_phase} if derived_to_phase else {}),
         },
         as_json=as_json,
     )
-    _emit_close_summary("PHASE_CLOSE_RESUMED", args.phase, close_status, to_phase)
+    _emit_close_summary("PHASE_CLOSE_RESUMED", args.phase, close_status, to_phase, derived=derived_to_phase is not None)
     return 0
 
 
@@ -3584,6 +3608,27 @@ def cmd_close(args: argparse.Namespace) -> int:
     # 状态，重试直接死在 LEASE_ABSENT（2026-08-30 sales-insight-agent 实测）。
     # 现在顺序为：handoff → monitor → recovery → scratch → release → emit；
     # 任何中途失败时租约仍持有，重试同一命令按 closeTransaction journal 幂等续跑。
+    # P0-1：plain close 不得静默跳过交接。上下文状态存在且计划后继唯一
+    # （排除 fixback 自环）时自动派生后继并执行交接——断链从根上消失；
+    # 多后继仍要求显式 --to-phase。
+    derived_to_phase: str | None = None
+    if not getattr(args, "to_phase", None):
+        context_view = hctx.context_view(project, str(resolved["changeId"]))
+        if (
+            isinstance(context_view, dict)
+            and context_view.get("ok")
+            and isinstance(context_view.get("current"), dict)
+        ):
+            forward = [
+                candidate
+                for candidate in hctx.allowed_next_phases(
+                    project, str(resolved["changeId"]), args.phase
+                )
+                if hp.resolve_phase_name(candidate) != args.phase
+            ]
+            if len(forward) == 1:
+                derived_to_phase = forward[0]
+                args.to_phase = derived_to_phase
     context_handoff = _close_context_handoff(
         project,
         str(resolved["changeId"]),
@@ -3692,12 +3737,21 @@ def cmd_close(args: argparse.Namespace) -> int:
         "gateRecovery": recovery_result,
         "scratchSwept": scratch_swept,
     }
+    if derived_to_phase is not None:
+        # plain close 自动派生的后继，调用方必须看得到这不是显式选择。
+        payload["derivedToPhase"] = derived_to_phase
     if lease_lapsed is not None:
         # 与 context transition receipt 的 leaseLapsed 同名同义：记录这个阶段
         # 跑过了 TTL 且租约是自动重取的，不隐藏。
         payload["leaseLapsed"] = lease_lapsed
     emit(payload, as_json=as_json)
-    _emit_close_summary(close_code, args.phase, close_status, getattr(args, "to_phase", None))
+    _emit_close_summary(
+        close_code,
+        args.phase,
+        close_status,
+        getattr(args, "to_phase", None),
+        derived=derived_to_phase is not None,
+    )
     return 0
 
 

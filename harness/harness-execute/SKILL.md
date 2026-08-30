@@ -59,7 +59,7 @@ disallowed-tools:
 2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；profile 缺失或陈旧时先 `harness_preflight.py detect --project . --json`；`record --project . --profile-input <key>` 从同一 target 推导 scope、coverage、规范命令与输入闭包
 3. **验证执行**：单元测试可复用则跳过（`harness_ledger.py can-reuse`）；接口测试**强制批量执行器**一次跑完全部场景；数据兼容验证按场景表执行 → `harness-test/reference.md`
 4. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
-5. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 必须取返回的 `nextPhases` 或 `plannedPhases` 中 execute 的真实后继（fixback 时为 execute 自身）。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
+5. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 可省略——计划后继唯一（排除 fixback 自环）时自动派生并交接（输出含 `derivedToPhase`）。仅 fixback 回环时显式传 `--to-phase execute`。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
 
 **阶段归属规则**：只用 `ownerPhase=execute` 的任务和场景判定本阶段结果。`ownerPhase=review`/`submit` 的场景按计划留给后续阶段属于正常移交，出现在关门返回值的 `deferred` 里，不阻断 execute。合并前 `ownerPhase=run`/`test` 的旧清单经别名表归一为 execute，在 execute 关门时一并到期。
 

@@ -15,6 +15,8 @@
 | 次要：两个 close 语义重叠 | ✅ 已修（提示层） | `gate close` 帮助注明「关门只调本命令，交接由 --to-phase 内联完成」；命令合并涉及契约面，留待后续路线 |
 | 次要：成功输出缺摘要 | ✅ 已修 | 关门成功时 stderr 输出一行摘要（`PHASE_CLOSED · phase=<p> · status=<s> · next=<n>`），stdout JSON 契约不变 |
 
+> 备注（0.4.6）：上表「后继不唯一（execute/review fixback 环）才报 PHASE_HANDOFF_PENDING」的派生规则在 0.4.6 细化为「排除 fixback 自环后的非自身后继唯一即派生」——execute 的候选 `[review, execute]` 现在直接派生 review，fixback 回环必须显式 `--to-phase execute`；主路径 plain close 同样自动派生（见 review-fixback-phase-issues-2026-08-30.md 的修复状态表）。
+
 
 ## TL;DR
 

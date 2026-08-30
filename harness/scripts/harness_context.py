@@ -468,6 +468,16 @@ def _execution_root(project: Path, contract_root: Path, state_root: Path) -> Pat
     return project.resolve()
 
 
+def _phase_has_ended(event_paths: list[Path], phase: str) -> bool:
+    """目标阶段是否已写入 phase.end（关门事实，与租约/交接状态无关）。"""
+    return any(
+        hpaths.resolve_phase_name(item.get("phase")) == phase
+        and item.get("type") == "phase.end"
+        for path in event_paths
+        for item in _read_ndjson(path)
+    )
+
+
 def _reselect_review_fixback(
     project: Path,
     change: str,
@@ -486,12 +496,74 @@ def _reselect_review_fixback(
             isinstance(latest, dict)
             and hpaths.resolve_phase_name(latest.get("fromPhase")) == "review"
             and hpaths.resolve_phase_name(latest.get("toPhase")) == "execute"
-            and latest.get("trigger") == "review-fixback"
         ):
+            # review→execute 已选定即为目标分支：trigger 只区分来源（close 时显式
+            # --to-phase execute 的也是同一份意图），不该把修复挡在门外
             return {
                 "ok": True,
                 "code": "FIXBACK_BRANCH_ALREADY_SELECTED",
                 "receipt": latest,
+            }
+        event_paths = [state_root / "events.ndjson"]
+        if state_root != contract_root:
+            event_paths.append(contract_root / "events.ndjson")
+        review_ended = _phase_has_ended(event_paths, "review")
+        if (
+            isinstance(latest, dict)
+            and hpaths.resolve_phase_name(latest.get("fromPhase")) == "execute"
+            and hpaths.resolve_phase_name(latest.get("toPhase")) == "review"
+            and review_ended
+        ):
+            # review 已关门但从没写下后继分支（0.4.7 及之前 plain close 不带
+            # --to-phase 的静默断链产物）：此时分支选择还开着，fixback 是唯一
+            # 合法的推进——补写 review→execute 收据，与重选 submit 分支同构。
+            if paths["lease"].is_file():
+                try:
+                    lease = _read_json(paths["lease"])
+                except (OSError, ValueError, json.JSONDecodeError):
+                    return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
+                if lease.get("phase") != "review":
+                    return {
+                        "ok": False,
+                        "code": "FIXBACK_RESELECT_UNSAFE",
+                        "message": "当前上下文租约不属于已结束的评审阶段。",
+                    }
+                paths["lease"].unlink(missing_ok=True)
+            paths["current"].unlink(missing_ok=True)
+            receipt: dict[str, Any] = {
+                "schemaVersion": 1,
+                "changeName": change,
+                "fromPhase": "review",
+                "toPhase": "execute",
+                "status": "OK",
+                "executor": executor,
+                "productCommit": _head(project),
+                "artifacts": [],
+                "attempt": 1
+                + sum(
+                    1
+                    for item in transitions
+                    if hpaths.resolve_phase_name(item.get("fromPhase")) == "review"
+                    and hpaths.resolve_phase_name(item.get("toPhase")) == "execute"
+                ),
+                "closedAt": _now().isoformat(),
+                "previousReceiptHash": latest.get("receiptHash"),
+                "trigger": "review-fixback",
+                "selectionReason": "用户选择处理评审中的代码修复项",
+            }
+            receipt["receiptHash"] = _payload_hash(receipt)
+            _append_ndjson(paths["transitions"], receipt)
+            invalidation = _invalidate_for_fixback(
+                state_root,
+                transition_hash=receipt["receiptHash"],
+                from_phase="review",
+                to_phase="execute",
+            )
+            return {
+                "ok": True,
+                "code": "FIXBACK_BRANCH_RESELECTED",
+                "receipt": receipt,
+                "invalidation": invalidation,
             }
         if not (
             isinstance(latest, dict)
@@ -502,6 +574,23 @@ def _reselect_review_fixback(
                 "ok": False,
                 "code": "FIXBACK_RESELECT_UNAVAILABLE",
                 "message": "当前没有可安全重选的评审后继分支。",
+                "latestTransition": (
+                    {
+                        "fromPhase": latest.get("fromPhase"),
+                        "toPhase": latest.get("toPhase"),
+                        "trigger": latest.get("trigger"),
+                    }
+                    if isinstance(latest, dict)
+                    else None
+                ),
+                "reviewPhaseEnded": review_ended,
+                "recoveryAction": (
+                    "修复分支要求评审已关门。若 review 尚未关门：先 "
+                    "harness_gate.py close --phase review --status <OK|WARN> "
+                    "（0.4.5+ 可省略 --to-phase，唯一后继自动交接；要进修复则显式 "
+                    "--to-phase execute），再重跑 /harness-execute --fixback。"
+                    "若 submit 已关门，修复窗口已过，请走新一轮评审流程。"
+                ),
             }
         begins = _read_ndjson(paths["begins"])
         submit_begun = any(
@@ -510,9 +599,6 @@ def _reselect_review_fixback(
             and item.get("receiptHash") == latest.get("receiptHash")
             for item in begins
         )
-        event_paths = [state_root / "events.ndjson"]
-        if state_root != contract_root:
-            event_paths.append(contract_root / "events.ndjson")
         submit_started = any(
             item.get("phase") == "submit" and item.get("type") == "phase.start"
             for path in event_paths

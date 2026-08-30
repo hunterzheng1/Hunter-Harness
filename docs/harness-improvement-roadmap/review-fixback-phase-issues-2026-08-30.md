@@ -6,6 +6,17 @@
 > 版本：hunter-harness 0.4.7
 > 关联：[plan v2 证据包问题报告](./plan-v2-evidence-pack-issues-2026-08-30.md)
 
+## 修复状态（2026-08-30，workflow-harness 0.4.6）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| P0-1 关门不自动写交接 | ✅ 已修 | `cmd_close` 缺省 `--to-phase` 时自动派生：上下文状态存在且计划后继唯一（排除 fixback 自环）即自动执行 handoff，输出含 `derivedToPhase`，stderr 摘要标 `next=<phase>(auto)`；续跑路径同一规则。`CONTEXT_HANDOFF_REQUIRED`/`CONTEXT_BEGIN_REQUIRED` 补了可直接执行的恢复命令 |
+| P0-2 sidecar schema 靠试错 | ✅ 已修 | 新增 `harness_review.py scaffold --change-dir <dir> [--run-id <id>]`：无 findings 时生成发现骨架（runId 从 events.ndjson 最新 review phase.start 推断）；已有 findings 时生成每条 OPEN 处置骨架并复用同轮 runId。`REVIEW_OUTPUTS_INCOMPLETE` 的 recoveryAction 改为指向 scaffold；harness-review SKILL 改为 scaffold 引导的写入流程 |
+| P0-3 fixback 重选不可用 | ✅ 已修 | `_reselect_review_fixback` 放宽两处：① review→execute 交接已存在（不论 trigger）即视为分支已选定；② review 已关门（phase.end 落盘）但从没写后继分支的断链状态，补写 review→execute fixback 收据完成重选。`FIXBACK_RESELECT_UNAVAILABLE` 附当前交接状态与分岔恢复指引。与 worktree/主目录模式无关，两种模式同规则 |
+| P1 原因码被事件校验拒 | ✅ 部分为既有 + 已补 | 0.4.7 的 CLI 已支持 `--execution-mode`/`--decision-reason-code`/`--fallback-reason-code`（校验器也认），SKILL.md 第 63 行已是正确写法——报告引用的是旧表述。本次把 `EVENT_REVIEW_REASON_IN_BODY` 错误消息补全为点名这三个参数 |
+
+---
+
 ## TL;DR
 
 review 阶段能走通，但两处硬伤：① execute 关门后没有自动写上下文交接，review 门禁报 `CONTEXT_HANDOFF_REQUIRED`，要手工补 `context close`；② 结构化评审记录（review-findings/fixback-dispositions）的 schema 只能靠两轮报错试错摸出来，没有像 `scenario-receipt-template` 那样的模板生成器。fixback 重选链路在主目录模式下直接不可用。

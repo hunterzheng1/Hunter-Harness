@@ -118,6 +118,52 @@ class ReviewFixture(unittest.TestCase):
 
 
 class FindingIdTests(ReviewFixture):
+    def test_scaffold_without_findings_emits_findings_template_from_events(self) -> None:
+        """无 findings sidecar 时，scaffold 从 events.ndjson 提取 runId 并生成 findings 骨架。"""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "events.ndjson").write_text(
+            json.dumps({
+                "type": "phase.start", "phase": "review", "run_id": "review-run-99",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        res = review.scaffold(self.change_dir, run_id=None)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["code"], "REVIEW_SCAFFOLD_FINDINGS")
+        self.assertEqual(res["runId"], "review-run-99")
+        self.assertEqual(res["findingsInput"]["runId"], "review-run-99")
+        self.assertEqual(res["findingsInput"]["findings"], [])
+        self.assertIn("write-findings", res["writeCommand"])
+
+    def test_scaffold_with_findings_emits_dispositions_template_with_matching_run_id(self) -> None:
+        """已有 findings 时，scaffold 为每条 finding 生成 OPEN 处置并复用同轮 runId。"""
+        written = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(written["ok"], written)
+        res = review.scaffold(self.change_dir, run_id=None)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["code"], "REVIEW_SCAFFOLD_DISPOSITIONS")
+        self.assertEqual(res["runId"], "review-run-1")
+        disps = res["dispositionsInput"]["dispositions"]
+        self.assertEqual(len(disps), 3)
+        self.assertTrue(all(d["disposition"] == "OPEN" for d in disps))
+        self.assertTrue(all(d["findingId"].startswith("f-") for d in disps))
+        self.assertIn("write-dispositions", res["writeCommand"])
+
+        # 骨架可直接经 validate_dispositions 校验通过（无非法字段/未知 id）
+        findings_doc = review._load_findings(self.change_dir)
+        known_ids = {f["id"] for f in findings_doc["findings"]}
+        problems = review.validate_dispositions(
+            res["dispositionsInput"], known_ids, findings_doc["runId"]
+        )
+        self.assertEqual(problems, [])
+
+    def test_scaffold_fails_cleanly_when_no_run_id_resolvable(self) -> None:
+        """无法推断 runId 时报错并提示显式传 --run-id。"""
+        res = review.scaffold(self.change_dir, run_id=None)
+        self.assertFalse(res["ok"], res)
+        self.assertEqual(res["code"], "SCAFFOLD_RUN_ID_REQUIRED")
+        self.assertIn("--run-id", res["problems"][0])
+
     def test_stable_id_ignores_whitespace_and_case(self) -> None:
         one = review.stable_finding_id(
             "run-1", "security", "src/app.py", 10, "Token  Logged   Plaintext"

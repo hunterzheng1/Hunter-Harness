@@ -336,6 +336,120 @@ class HarnessContextTest(unittest.TestCase):
                 selected["latestTransition"]["trigger"], "review-fixback"
             )
 
+    def test_review_fixback_treats_plain_review_execute_handoff_as_selected(self) -> None:
+        """P0-3：review 关门时已显式交接 execute（普通 trigger，非 review-fixback），
+        fixback 重入必须视为已选定，而不是 FIXBACK_RESELECT_UNAVAILABLE。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            closed = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="execute",
+                executor="cursor",
+            )
+            self.assertTrue(closed["ok"], closed)
+
+            selected = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="execute",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+
+            self.assertTrue(selected["ok"], selected)
+            self.assertEqual(selected["latestTransition"]["toPhase"], "execute")
+            # 普通交接不会被改写成 review-fixback
+            self.assertNotEqual(
+                selected["latestTransition"].get("trigger"), "review-fixback"
+            )
+
+    def test_review_fixback_reselects_when_review_closed_without_successor(self) -> None:
+        """P0-3：execute→review 之后 review 已关门（phase.end）但从没写后继分支
+        （0.4.7 plain close 的断链产物）——fixback 必须能补写 review→execute 收据。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="execute", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="execute",
+                to_phase="review",
+                executor="cursor",
+            )
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            # review 关门但没交接：phase.end 已写，后继 receipt 缺失
+            state = project / ".harness/state/changes/change"
+            with (state / "events.ndjson").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "type": "phase.start", "phase": "review", "run_id": "run-1",
+                }) + "\n")
+                fh.write(json.dumps({
+                    "type": "phase.end", "phase": "review",
+                    "run_id": "run-1", "status": "OK",
+                }) + "\n")
+
+            selected = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="execute",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+
+            self.assertTrue(selected["ok"], selected)
+            self.assertEqual(selected["latestTransition"]["fromPhase"], "review")
+            self.assertEqual(selected["latestTransition"]["toPhase"], "execute")
+            self.assertEqual(
+                selected["latestTransition"]["trigger"], "review-fixback"
+            )
+
+    def test_review_fixback_unavailable_reports_state_when_review_open(self) -> None:
+        """review 尚未关门时拒绝重选，但必须给出当前状态与可执行恢复指引。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="execute", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="execute",
+                to_phase="review",
+                executor="cursor",
+            )
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+
+            selected = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="execute",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+
+            self.assertFalse(selected["ok"], selected)
+            self.assertEqual(selected["code"], "FIXBACK_RESELECT_UNAVAILABLE")
+            self.assertEqual(
+                selected["latestTransition"],
+                {"fromPhase": "execute", "toPhase": "review", "trigger": None},
+            )
+            self.assertFalse(selected["reviewPhaseEnded"])
+            self.assertIn("harness_gate.py close", selected["recoveryAction"])
+
     def test_cancel_prepared_fixback_removes_unstarted_target_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

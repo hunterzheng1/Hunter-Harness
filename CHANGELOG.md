@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.6] — workflow-harness
+
+> Review → Fixback 链路修复：解决 sales-insight-agent 实测暴露的 plain close 断链、
+> sidecar 手写困难与 fixback 重选自锁问题
+>（docs/harness-improvement-roadmap/review-fixback-phase-issues-2026-08-30.md）。
+> 纯 workflow-harness 修复，CLI 保持 0.4.8。
+
+### Fixed — plain close 自动交接，断链从根上消失
+
+- **close 缺省 `--to-phase` 时自动派生后继**：上下文状态存在且计划后继唯一
+  （排除 fixback 自环）时，gate close 自动派生后继并执行上下文交接，输出与
+  stderr 摘要显式标注 `derivedToPhase`/`next=<phase>(auto)`。此前 plain close
+  “成功”却静默跳过 handoff，后继阶段 begin 只能撞上无指引的
+  `CONTEXT_HANDOFF_REQUIRED` / `CONTEXT_BEGIN_REQUIRED`——这两个错误现在也附
+  可直接执行的恢复命令。多后继仍要求显式 `--to-phase`。
+- **续跑路径同一规则**：`PHASE_CLOSE_RESUMED` 的自动派生同样排除 fixback 自环
+  （execute 的候选 `[review, execute]` 派生 review；fixback 必须显式）。
+
+### Fixed — Review sidecar 骨架生成器
+
+- **`harness_review.py scaffold`**：按当前轮次生成 review-findings /
+  fixback-dispositions 的写入骨架，直接喂给 `write-findings --stdin` /
+  `write-dispositions --stdin`。runId 缺省从 events.ndjson 最新 review
+  phase.start 推断；已有 findings 时输出每条 finding 的 OPEN 处置骨架并复用
+  同轮 runId。`REVIEW_OUTPUTS_INCOMPLETE` 的 recoveryAction 改为指向 scaffold。
+
+### Fixed — Fixback 重选分支
+
+- **`_reselect_review_fixback` 放宽**：review→execute 交接已存在即视为修复分支
+  已选定（不再要求 trigger 恰为 `review-fixback`）；review 已关门（phase.end
+  落盘）但从没写后继分支的 0.4.7 断链产物，现在可以补写 review→execute 的
+  fixback 收据完成重选。`FIXBACK_RESELECT_UNAVAILABLE` 附带当前交接状态
+  （fromPhase/toPhase/trigger）、reviewPhaseEnded 与按状态分岔的恢复指引。
+
+### Fixed — 评审原因码报错指明结构化字段
+
+- `EVENT_REVIEW_REASON_IN_BODY` 错误消息点名 `--execution-mode` /
+  `--decision-reason-code` / `--fallback-reason-code`，不再只说“写入结构化字段”。
+
 ## [0.4.5] — workflow-harness
 
 > Execute 阶段 gate close 租约释放顺序修复：解决 sales-insight-agent 实测暴露的
