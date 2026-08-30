@@ -179,6 +179,20 @@ export function createFsPlanPublicationPort(options: FsPlanPublicationPortOption
     return null;
   }
 
+  /**
+   * committed / rolled_back 之后 staging 不再有任何读者（readback 读的是目标
+   * 文件，tamper 校验只在 commit 前）。不清理的话暂存副本会作为过程残留混进
+   * 归档——2026-08-30 实测：首版 + 修订版两份 staging 共 282K 进了归档目录。
+   * best-effort：清理失败不影响已落账的事务结果。
+   */
+  async function cleanupStaging(changeKey: string, operationId: string): Promise<void> {
+    try {
+      await fs.rm(stagingPath(root, changeKey, operationId), { recursive: true, force: true });
+    } catch {
+      // 清理失败只留残留，不改变事务状态
+    }
+  }
+
   async function commitFromJournal(journal: PlanDurablePublicationFilesystemJournal): Promise<void> {
     const staging = stagingPath(root, journal.change_key, journal.operation_id);
     const base = changeDir(root, journal.change_key);
@@ -200,7 +214,11 @@ export function createFsPlanPublicationPort(options: FsPlanPublicationPortOption
     if (found === null || found.recovery.recovery_token !== input.recovery_token) {
       throw new Error("PLAN_DURABLE_PUBLICATION_FILESYSTEM_IDENTITY_MISMATCH");
     }
-    if (found.state === "committed") return inspectionOf(input.operation_id, found);
+    if (found.state === "committed") {
+      // 幂等重放顺带自愈旧版本留下的 staging 残留
+      await cleanupStaging(found.change_key, found.operation_id);
+      return inspectionOf(input.operation_id, found);
+    }
     if (found.state === "rolled_back" || found.state === "recovery_required") {
       throw new Error("PLAN_DURABLE_PUBLICATION_FILESYSTEM_APPLY_INVALID");
     }
@@ -213,6 +231,7 @@ export function createFsPlanPublicationPort(options: FsPlanPublicationPortOption
       ...applying, state: "committed", commit_ambiguity: "resolved_committed", readback: "verified", updated_at: now()
     });
     await writeJournal(journalPath(root, found.change_key, input.operation_id), committed);
+    await cleanupStaging(found.change_key, found.operation_id);
     return inspectionOf(input.operation_id, committed);
   }
 
@@ -326,6 +345,7 @@ export function createFsPlanPublicationPort(options: FsPlanPublicationPortOption
         ...found, state: "rolled_back", commit_ambiguity: "resolved_rolled_back", readback: "verified", updated_at: now()
       });
       await writeJournal(journalPath(root, found.change_key, input.operation_id), rolledBack);
+      await cleanupStaging(found.change_key, found.operation_id);
       return inspectionOf(input.operation_id, rolledBack);
     },
 

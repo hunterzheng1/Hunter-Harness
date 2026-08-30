@@ -154,4 +154,28 @@ describe("FS plan durable publication port", () => {
     const missing = await port.inspect({ operation_id: "op_missing" });
     expect(missing).toMatchObject({ operation_id: "op_missing", state: "unknown" });
   });
+
+  it("cleans up the staging directory after commit and rollback", async () => {
+    const port = createFsPlanPublicationPort({ projectRoot: root, projectId: PROJECT_ID });
+    const staging = join(
+      root, ".harness", "changes", CHANGE_KEY, ".publication-staging", OPERATION_ID
+    );
+
+    // commit 路径：committed 后暂存副本必须清掉，否则混进归档（2026-08-30 实测残留 282K）
+    await port.prepare(request(root));
+    await expect(fs.stat(staging)).resolves.toBeDefined();
+    const applied = await port.apply({ operation_id: OPERATION_ID, recovery_token: RECOVERY_TOKEN });
+    expect(applied.state).toBe("committed");
+    await expect(fs.stat(staging)).rejects.toThrow();
+
+    // rollback 路径：同理清理
+    const rolled = await port.rollback({
+      operation_id: OPERATION_ID,
+      recovery_token: RECOVERY_TOKEN,
+      authority: buildFsPublicationAuthority({ projectRoot: root, projectId: PROJECT_ID }, CHANGE_KEY),
+      expected_published_manifest_hash: plan().manifest_hash
+    });
+    expect(rolled.state).toBe("rolled_back");
+    await expect(fs.stat(staging)).rejects.toThrow();
+  });
 });

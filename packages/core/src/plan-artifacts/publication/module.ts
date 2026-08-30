@@ -171,15 +171,28 @@ function refSpan(ref: string): string {
   return `\`${ref}\``;
 }
 
-/** 标签 + 哈希身份；缺标签时只保留 code span。 */
-function labeledRef(ref: string, label: string | undefined): string {
-  return label === undefined ? refSpan(ref) : `${markdown(label)} ${refSpan(ref)}`;
+/**
+ * 短引用：注册表（design.md 的 Requirements/Ownership 节）持有完整 ID，
+ * 引用点只保留前缀 + 8 位哈希——人读不再被 64 位哈希刷屏，机器仍可 grep 定位
+ * （2026-08-30 实测：plan.md 约 40% 字节是纯哈希，同一批需求在 15 个引用点全量内联）。
+ */
+function shortRef(ref: string): string {
+  const separator = ref.indexOf(":");
+  if (separator < 0) return refSpan(ref);
+  const prefix = ref.slice(0, separator);
+  const hash = ref.slice(separator + 1);
+  return `\`${prefix}:${hash.length > 8 ? hash.slice(0, 8) : hash}\``;
 }
 
-/** 渲染需求引用列表：可读标签优先，每条一行。 */
+/** 标签 + 哈希身份；缺标签时只保留 code span。 */
+function labeledRef(ref: string, label: string | undefined): string {
+  return label === undefined ? shortRef(ref) : `${markdown(label)}（${shortRef(ref)}）`;
+}
+
+/** 渲染需求引用列表：可读标签优先，每条一行，完整 ID 只在 design.md 注册表出现一次。 */
 function renderRequirementRefs(refs: readonly string[], lookup: RefLookup): string {
-  if (refs.length === 0) return "- Requirements: None";
-  return ["- Requirements:", ...sorted(refs).map((ref) => {
+  if (refs.length === 0) return "- 需求引用: 无";
+  return ["- 需求引用:", ...sorted(refs).map((ref) => {
     const item = lookup.requirements.get(ref);
     return `  - ${labeledRef(ref, item === undefined ? undefined : `[${item.kind}] ${item.text}`)}`;
   })].join("\n");
@@ -187,14 +200,14 @@ function renderRequirementRefs(refs: readonly string[], lookup: RefLookup): stri
 
 /** 渲染证据引用列表：keep `prefix:value` 可读性。 */
 function renderEvidenceRefs(refs: readonly string[]): string {
-  if (refs.length === 0) return "- Evidence: None";
-  return ["- Evidence:", ...sorted(refs).map((ref) => `  - ${refSpan(ref)}`)].join("\n");
+  if (refs.length === 0) return "- 证据引用: 无";
+  return ["- 证据引用:", ...sorted(refs).map((ref) => `  - ${refSpan(ref)}`)].join("\n");
 }
 
 /** 渲染所有权引用列表：路径标签优先。 */
 function renderOwnershipRefs(refs: readonly string[], lookup: RefLookup): string {
-  if (refs.length === 0) return "- Ownership: None";
-  return ["- Ownership:", ...sorted(refs).map((ref) =>
+  if (refs.length === 0) return "- 归属文件: 无";
+  return ["- 归属文件:", ...sorted(refs).map((ref) =>
     `  - ${labeledRef(ref, lookup.ownership.get(ref))}`)].join("\n");
 }
 
@@ -239,11 +252,11 @@ function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
       "",
       task.objective,
       "",
-      `- Owner phase: ${task.owner_phase}`,
-      `- Affected paths: ${task.affected_paths.join(", ") || "None"}`,
-      `- Depends on: ${task.depends_on.join(", ") || "None"}`,
-      `- Decision refs: ${task.decision_refs.join(", ") || "None"}`,
-      `- Scenario refs: ${task.scenario_refs.join(", ") || "None"}`,
+      `- 负责阶段: ${task.owner_phase}`,
+      `- 影响路径: ${task.affected_paths.join(", ") || "无"}`,
+      `- 依赖任务: ${task.depends_on.join(", ") || "无"}`,
+      `- 决策引用: ${task.decision_refs.join(", ") || "无"}`,
+      `- 关联场景: ${task.scenario_refs.join(", ") || "无"}`,
       renderRequirementRefs(task.requirement_refs, lookup),
       renderEvidenceRefs(task.evidence_refs),
       renderOwnershipRefs(task.ownership_refs, lookup)
@@ -258,18 +271,18 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
       "",
       scenario.acceptance,
       "",
-      `- Coverage dimension: ${scenario.coverage_dimension}`,
-      `- Execution level: ${scenario.execution_level}`,
-      `- Risk level: ${scenario.risk_level}`,
-      `- Priority: ${scenario.priority}`,
-      `- Owner phase: ${scenario.owner_phase}`,
-      `- Evidence requirements: ${scenario.evidence_requirements.join(", ") || "None"}`,
-      `- Task refs: ${scenario.task_refs.join(", ") || "None"}`,
+      `- 覆盖维度: ${scenario.coverage_dimension}`,
+      `- 执行级别: ${scenario.execution_level}`,
+      `- 风险等级: ${scenario.risk_level}`,
+      `- 优先级: ${scenario.priority}`,
+      `- 负责阶段: ${scenario.owner_phase}`,
+      `- 证据要求: ${scenario.evidence_requirements.join(", ") || "无"}`,
+      `- 关联任务: ${scenario.task_refs.join(", ") || "无"}`,
       renderRequirementRefs(scenario.requirement_refs, lookup),
-      ...(scenario.executable_test_id === undefined ? [] : [`- Executable test ID: ${scenario.executable_test_id}`]),
-      ...(scenario.test_file === undefined ? [] : [`- Test file: ${scenario.test_file}`]),
-      ...(scenario.test_title === undefined ? [] : [`- Test title: ${scenario.test_title}`]),
-      ...(scenario.verification_command === undefined ? [] : [`- Verification command: ${scenario.verification_command}`])
+      ...(scenario.executable_test_id === undefined ? [] : [`- 可执行测试 ID: ${scenario.executable_test_id}`]),
+      ...(scenario.test_file === undefined ? [] : [`- 测试文件: ${scenario.test_file}`]),
+      ...(scenario.test_title === undefined ? [] : [`- 测试标题: ${scenario.test_title}`]),
+      ...(scenario.verification_command === undefined ? [] : [`- 验证命令: ${scenario.verification_command}`])
     ].join("\n")).join("\n\n") +
     `\n\n## Coverage\n\n${artifact.content.coverage.map((item) =>
       `- ${item.coverage_dimension}: ${item.applicability}; scenarios=${item.scenario_refs.join(",") || "none"}` +

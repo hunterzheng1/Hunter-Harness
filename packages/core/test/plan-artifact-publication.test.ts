@@ -204,6 +204,42 @@ describe("Stage11-M4A artifact publication payload contract", () => {
         reason_code: "PLAN_ARTIFACT_PUBLICATION_INPUT_INVALID" });
   });
 
+  it("renders plan/scenario citations as short refs while the design registry keeps full ids", () => {
+    // 人读层短引用化（2026-08-30 归档可读性分析）：引用点只留 8 位哈希，
+    // 完整 ID 只在 design.md 的 Requirements/Ownership 注册表出现一次。
+    const value = trusted();
+    const result = planArtifactPublication({ schema_version: 1, change_key: "change-11-publication",
+      trusted: value }, authority);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const design = result.plan.payloads[0]?.serialized_content ?? "";
+    const plan = result.plan.payloads[1]?.serialized_content ?? "";
+    const scenarios = result.plan.payloads[2]?.serialized_content ?? "";
+
+    for (const requirement of value.human.design.content.requirements) {
+      const full = requirement.requirement_id;
+      const short = `${full.slice(0, full.indexOf(":") + 1)}${full.slice(full.indexOf(":") + 1, full.indexOf(":") + 9)}`;
+      // 注册表保留完整 ID（harness_knowledge_candidates 的机器消费格式不变）
+      expect(design).toContain(full);
+      // 引用点：完整 ID 不再内联，短引用出现
+      expect(plan).not.toContain(full);
+      expect(scenarios).not.toContain(full);
+      expect(plan.includes(short) || scenarios.includes(short)).toBe(true);
+    }
+    for (const ownership of value.human.design.content.ownership) {
+      expect(plan).not.toContain(ownership.ownership_ref);
+    }
+    // 元数据标签中文化
+    expect(plan).toContain("- 需求引用:");
+    expect(plan).toContain("- 负责阶段:");
+    expect(plan).not.toContain("- Requirements:");
+    expect(plan).not.toContain("- Owner phase:");
+    expect(scenarios).toContain("- 覆盖维度:");
+    expect(scenarios).toContain("- 关联任务:");
+    expect(scenarios).not.toContain("- Coverage dimension:");
+    expect(scenarios).not.toContain("- Task refs:");
+  });
+
   it("binds the trusted change key and exact path authority before producing payloads", () => {
     const seen: unknown[] = [];
     const result = planArtifactPublication({ schema_version: 1, change_key: "change-11-publication",

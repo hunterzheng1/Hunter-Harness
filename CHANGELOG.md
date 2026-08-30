@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.10] — hunter-harness
+
+> Plan 产物人读层优化：引用点短引用化 + 元数据标签中文化，plan_finalize
+> 事务暂存区 committed 后清理（2026-08-30 归档可读性分析，
+> docs/harness-improvement-roadmap/archive-readability-plan-artifacts-2026-08-30.md）。
+> CLI 0.4.9 → 0.4.10，core 0.1.5 → 0.1.6，workflow-harness 保持 0.4.8。
+
+### Changed — plan / test-scenarios 人读渲染
+
+- **引用点短引用化**：`renderRequirementRefs` / `renderOwnershipRefs` 从
+  「全文 + 64 位哈希 × N 个引用点」改为「一句话标签 + 8 位短哈希」
+  （`requirement:18a96ebe`）。完整 ID 只在 design.md 的 Requirements /
+  Ownership 注册表出现一次——该格式是 `harness_knowledge_candidates.py`
+  的机器消费面，保持不变。实测 demo 归档 plan.md 约 40% 字节是纯哈希，
+  同一批 9 条需求在 15 个引用点全量内联；短引用化后人读正文零噪声，
+  服务端语义索引（全文进 embedding）同步受益。
+- **元数据标签中文化**：plan.md 的 `Owner phase / Affected paths / Depends on /
+  Decision refs / Scenario refs` 与 test-scenarios 的 `Coverage dimension /
+  Execution level / Risk level / Priority / Owner phase / Evidence requirements /
+  Task refs / Executable test ID / Test file / Test title / Verification command`
+  全部改为中文标签。已核实无机器消费者解析这些标签（knowledge-candidates
+  只消费 design.md 的 Requirements/Risks/Invariants 节与 plan.md 的
+  `### T<n>` 任务标题，均未改动）。
+
+### Fixed — plan_finalize staging 残留
+
+- `fs-publication-port` 在 committed / rolled_back 后清理
+  `.publication-staging/<operation_id>/`（幂等重放路径顺带自愈旧残留）。
+  此前暂存副本随变更归档，实测首版 + 修订版两份 staging 共 282K 混进归档目录。
+  readback 读的是目标文件，清理不影响任何校验；清理失败 best-effort 不阻断。
+
 ## [0.4.9] — hunter-harness
 
 > Sync 体验修复与规则候选质量过滤：解决 sales-insight-agent 实测暴露的
