@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // runtime-helpers.test.mjs — Node tests for runtime-helpers.mjs (变更簇 5).
 // UT-020..024: BOM-safe JSON I/O, identifier sanitizer, runner payload validation, credential scan.
-// Run: node --test harness/harness-test/scripts/tests/runtime-helpers.test.mjs
+// Run: node --test harness/harness-execute/scripts/tests/runtime-helpers.test.mjs
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

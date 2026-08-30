@@ -824,12 +824,13 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("system", execution["confirmationRequiredProfiles"])
         self.assertIn("full", execution["confirmationRequiredProfiles"])
 
-    def test_harness_test_skill_documents_resource_safety(self) -> None:
-        skill = (REPO_ROOT / "harness" / "harness-test" / "SKILL.md").read_text(
+    def test_execute_skill_documents_resource_safety(self) -> None:
+        # run/test 合并后，资源安全约束随验证侧文档迁入 harness-execute
+        skill = (REPO_ROOT / "harness" / "harness-execute" / "SKILL.md").read_text(
             encoding="utf-8"
         )
         checklist = (
-            REPO_ROOT / "harness" / "harness-test" / "checklist.md"
+            REPO_ROOT / "harness" / "harness-execute" / "testing-checklist.md"
         ).read_text(encoding="utf-8")
         for required in (
             "harness_test_runner.py",

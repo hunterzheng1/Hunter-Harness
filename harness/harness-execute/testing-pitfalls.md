@@ -1,11 +1,11 @@
 ﻿---
-description: harness-test 的踩坑规则（来自真实对话日志）。执行测试前必须通读，遇到测试失败时重新参考。
+description: harness-execute 的踩坑规则（来自真实对话日志）。执行测试前必须通读，遇到测试失败时重新参考。
 ---
 
 # 避坑规则（32 条）
 
 > 以下规则来自真实对话日志（2026-06-12 ~ 08-17），每个都有明确的现象和根因。
-> 执行 `harness-test` 时必须通读，避免重蹈覆辙。
+> 执行 `harness-execute` 时必须通读，避免重蹈覆辙。
 
 | # | 规则 | 现象 | 根因 | 解法 |
 |:--:|------|------|------|------|
@@ -29,7 +29,7 @@ description: harness-test 的踩坑规则（来自真实对话日志）。执行
 | 18 | **Bash 不可执行执行器（如 node）** | "Bash 中没有 node" → 错误降级到 Playwright MCP | Windows 中文路径项目下 Bash 被 hook 拒；Node 不在 Bash PATH | 强制 `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '<executorPath>' '...mjs'"`，禁止裸 `node`、禁止用 Bash 执行执行器 |
 | 19 | **Auto mode / 安全分类器降级时静默等待** | 接口测试长时间无响应，最终错误降级到逐条 MCP | PowerShell 命令被安全分类器拦截，Claude 静默重试 + fallback | Phase 0.1 preflight 检测出后**硬停**，原文输出"命令执行模式不可用..."，提示用户切换权限模式 |
 | 20 | **Playwright API 执行器与 Playwright MCP 混写** | 报告写"Playwright ✅ 使用"，实际是逐条 `browser_evaluate` | 两者被笼统称为"Playwright" | 报告中**强制区分**四种执行器：接口测试执行器 / PowerShell batch / Playwright MCP browser_evaluate / curl |
-| 21 | **直接 Edit tracked 应用配置文件** | 测试期间改配置，之后又还原，diff 噪声大 | 把运行时配置覆盖直接写进 tracked 文件 | 生成 ASCII 运行时配置叠加 `C:/temp/harness-test-overlay/<change>/application-harness-test.yml`，启动用该绝对路径叠加（如 `-Dspring.config.additional-location=...`） |
+| 21 | **直接 Edit tracked 应用配置文件** | 测试期间改配置，之后又还原，diff 噪声大 | 把运行时配置覆盖直接写进 tracked 文件 | 生成 ASCII 运行时配置叠加 `C:/temp/harness-execute-overlay/<change>/application-harness-execute.yml`，启动用该绝对路径叠加（如 `-Dspring.config.additional-location=...`） |
 | 22 | **唯一约束字段与本地预存数据冲突** | 大面积唯一约束冲突，9 个场景 BLOCKED | 执行器用硬编码字段值 | 用随机值（如 `900000 + random`）/ 先查避让 / 用唯一隔离值 |
 | 23 | **setup 失败后继续用 null ID 发送请求** | 后续 9 个接口全部 400/500，掩盖真正问题 | 执行器不区分 BLOCKED 状态 | 执行器强制 setup/test/cleanup 三阶段，依赖未满足 → 标 🟡 BLOCKED，**不发起请求** |
 | 24 | **归档数据把 PARTIAL 写成 NOT_RUN** | 平台显示「未执行」，但实际跑了 6 个场景 | 状态枚举不完整，只有 OK/FAIL/NOT_RUN | API 维度状态使用 OK/PARTIAL/BLOCKED/NOT_RUN/FAIL，5 PASS+9 BLOCKED+1 FAIL → `apiTest=PARTIAL` |
@@ -37,7 +37,7 @@ description: harness-test 的踩坑规则（来自真实对话日志）。执行
 | 26 | **凭证在同一流程内重复获取** | 浏览器 origin 在认证服务就再走一次登录 | 执行器依赖浏览器当前页面 origin | 执行器用 request context 直连本地 baseURL，凭证从 cache 读，`credentialRefreshCount > 1` → 🟡 WARN |
 | 27 | **服务启动盲等 + 无反馈** | 等待 90s 后才发现启动报错 | 没有启动状态机和异常关键字检测 | 0–30s/2s × 30–120s/5s 状态机；遇启动失败特征（按技术栈，如 BindException/Could not resolve placeholder/BeanCreationException）立即停；> 10s 必须输出一次状态行 |
 | 28 | **已有服务未先决策就跑业务接口** | 旧服务不含新代码，接口 500 后才发现版本不匹配 | 检测到已有应用服务（端口被占）后，未先展示服务决策门就跑业务接口 | 先展示服务决策门，询问复用/重启/跳过/停止；询问前只允许 health/meta 检查 |
-| 29 | **启动命令反复试相对配置叠加 / 中文路径** | 相对路径或中文路径导致应用读不到运行时配置叠加，启动失败 | 默认只用 `C:/temp/harness-test-overlay/<change>/application-harness-test.yml` ASCII 绝对路径，并固化已知良好测试配置 |
+| 29 | **启动命令反复试相对配置叠加 / 中文路径** | 相对路径或中文路径导致应用读不到运行时配置叠加，启动失败 | 默认只用 `C:/temp/harness-execute-overlay/<change>/application-harness-execute.yml` ASCII 绝对路径，并固化已知良好测试配置 |
 | 30 | **伪 diffHash 导致错误复用** | `3files-84plus-5minus` 不能证明代码未变 | 用 `git diff --binary` 生成 patch 并计算 SHA-256，ledger 只认 `sha256:<hash>` |
 | 31 | **尝试破解验证码 / 人机验证** | 认证服务返回"验证码不能为空"，AI 写图像识别脚本反复试坐标（实测 28 次 / 4 种算法全失败） | 测试配置里的账号密码登录流程被加了滑块/图形验证码，配置未同步 | **硬停**。禁止编写或运行任何验证码求解代码；立即标 `apiTest=BLOCKED`，请用户手工提供凭证写入 `runtime/credential-cache.json`，或临时关闭测试环境验证码 |
 | 32 | **预存环境缺陷被当成本次变更的阻塞** | `unitTestFull` 144 个测试挂 1 个，根因是别人提交引入的缺省配置缺失 | 全量验证把预存缺陷和本次 diff 混在一起判定 | 先用 `git log -S` + diff 触点证明与本次变更无关，再按「预存缺陷」上报并请用户决策（修根因 / 记 🟡WARN / 停止），**不得**擅自改 tracked 配置或排除测试 |
@@ -193,7 +193,7 @@ $cred = $resp.data.accessToken
 **严重度**：🟡WARN
 **场景**：测试期间为了切换外部服务配置直接 Edit tracked 配置文件（如 `application-local-dev.yml`），测试后再还原，留下 diff 噪声
 **后果**：git diff --stat 出现意外文件、提交风险、误以为有业务变更
-**正确做法**：生成运行时配置叠加 `.harness/changes/<change>/runtime/application-harness-test.yml`（不提交），启动用 `-Dspring.config.additional-location=file:...` 叠加（按技术栈）；如必须改 tracked 配置，先 blocking user confirmation，最终报告至少 🟡 WARN
+**正确做法**：生成运行时配置叠加 `.harness/changes/<change>/runtime/application-harness-execute.yml`（不提交），启动用 `-Dspring.config.additional-location=file:...` 叠加（按技术栈）；如必须改 tracked 配置，先 blocking user confirmation，最终报告至少 🟡 WARN
 
 ### 规则 22：唯一约束字段与本地预存数据冲突
 **严重度**：❌FAIL
@@ -249,9 +249,9 @@ $cred = $resp.data.accessToken
 
 ### 规则 29：启动命令反复试相对配置叠加 / 中文路径
 **严重度**：🟡WARN
-**场景**：运行时配置叠加用相对路径 `.harness/changes/<change>/runtime/application-harness-test.yml` 或中文路径作为 JVM `additional-location`，应用（如 Spring Boot）读不到配置叠加，启动失败后反复试不同路径
+**场景**：运行时配置叠加用相对路径 `.harness/changes/<change>/runtime/application-harness-execute.yml` 或中文路径作为 JVM `additional-location`，应用（如 Spring Boot）读不到配置叠加，启动失败后反复试不同路径
 **后果**：启动反复失败，浪费时间；中文路径进入 JVM 参数也可能失败
-**正确做法**：默认只用 ASCII 绝对路径 `C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml`，并固化已知良好测试配置。禁止把相对路径作为默认 JVM `additional-location`。
+**正确做法**：默认只用 ASCII 绝对路径 `C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml`，并固化已知良好测试配置。禁止把相对路径作为默认 JVM `additional-location`。
 
 ### 规则 30：伪 diffHash 导致错误复用
 **严重度**：❌FAIL

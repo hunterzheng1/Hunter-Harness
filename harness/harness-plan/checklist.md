@@ -227,7 +227,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 - 如果需求不明确，优先提问而不是猜测后继续设计
 - 任务拆分粒度按复杂度调整——plan 简表保持可追踪，implementation-detail 按风险和复杂度自适应展开
 
-> Plan 的结束行为（禁止询问执行模式、只提示 `/harness-run`）由 `SKILL.md` 的关键规则表定义，
+> Plan 的结束行为（禁止询问执行模式、只提示 `/harness-execute`）由 `SKILL.md` 的关键规则表定义，
 > 详细规则见 `reference.md`「Plan 结束行为规则」。此处不再复述。
 
 ## 事件记录（前置规则）

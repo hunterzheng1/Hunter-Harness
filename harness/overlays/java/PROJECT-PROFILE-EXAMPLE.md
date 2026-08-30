@@ -66,7 +66,7 @@
     "package": ["pom.xml", "udp-micros-runner/contribution-server/pom.xml", "udp-micros-runner/contribution-server/src/main/**", "udp-micros-runner/contribution-server/src/test/**"]
   },
   "serviceStart": {
-    "command": "mvn spring-boot:run -pl udp-micros-runner/contribution-server -Dmaven.test.skip=true -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments=\"-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml\"",
+    "command": "mvn spring-boot:run -pl udp-micros-runner/contribution-server -Dmaven.test.skip=true -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments=\"-Dspring.config.additional-location=file:C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml\"",
     "healthUrl": "http://127.0.0.1:9093/contribution/meta",
     "startTimeoutSec": 120,
     "inputFiles": ["udp-micros-runner/contribution-server/src/main/**", "udp-micros-runner/contribution-server/src/main/resources/application*.yml"],
@@ -110,7 +110,7 @@
 
 ## 凭据配置（spec §3.4 凭据边界）
 
-profile **只声明 env key、cache path、角色，不含凭据值**。测试运行时由 `harness-test/scripts/runtime-helpers.mjs` 的 `readJsonUtf8BomSafe` 读 credential-cache.json，token/SSO 值只存在于运行期 cache，不写入 profile / 规则 / 报告：
+profile **只声明 env key、cache path、角色，不含凭据值**。测试运行时由 `harness-execute/scripts/runtime-helpers.mjs` 的 `readJsonUtf8BomSafe` 读 credential-cache.json，token/SSO 值只存在于运行期 cache，不写入 profile / 规则 / 报告：
 
 ```json
 {

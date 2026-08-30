@@ -43,7 +43,7 @@ disallowed-tools:
 ## 前置条件
 
 - `.harness/changes/<change-name>/plans/<change-name>-plan.md` 存在（任务真相源）
-- 必须读取 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 且 worktree 已创建 → 在 worktree 目录中执行审查；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-run`，不得静默回主目录
+- 必须读取 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 且 worktree 已创建 → 在 worktree 目录中执行审查；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-execute`，不得静默回主目录
 - **review 不阻塞后续流程**：test 报告缺失或未运行不阻止 review（review 是参考性阶段），但应在报告中标注 test 状态供参考
 
 <!-- @include shared/read-protocol.md -->
@@ -54,7 +54,7 @@ disallowed-tools:
 先用 `harness_context.py prepare --phase review --executor <tool> [--change <id>] --json` 与 `harness_context.py begin --phase review --change <id> --executor <tool> --json` 解析唯一 active change 并校验实际前序 receipt；多个 active change 未显式选择时返回 `ACTIVE_CHANGE_AMBIGUOUS`，禁止再按 Glob/mtime 猜测。阶段门禁使用 `harness_gate.py begin --phase review --change <id> --task <n> --skills-root <skills-root> --executor-tool <tool> --json`；结束时只执行一次 `harness_gate.py close`，正常路径的 `--to-phase` 取 `plannedPhases` 中 review 的后继，Fixback 才返回 run。由 gate 完成阶段事件、租约、上下文交接与远端补传。不得手工追加阶段边界或再次调用 context close；任一 close 失败不得宣称评审完成。
 
 0. **启动准备** — 确定变更名（Glob `.harness/changes/*/plans/*-plan.md`，排除 `.harness/archive/*/`，读 frontmatter 提取 change-name）；**append `phase.start` 事件**（不得等审查完成才补）
-1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-run`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更
+1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-execute`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更
 <!-- @section-id review.delegate -->
 ### 2. 审查执行（独立评审优先）
 

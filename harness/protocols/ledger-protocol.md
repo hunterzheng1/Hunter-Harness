@@ -4,7 +4,7 @@ description: verification-ledger、diffHash、service-fingerprint 的统一协�
 
 # Ledger Protocol
 
-> 本协议被 harness-plan / harness-run / harness-test / harness-submit / harness-archive 共同引用。
+> 本协议被 harness-plan / harness-execute / harness-execute / harness-submit / harness-archive 共同引用。
 > 目标：消除跨阶段重复编译/测试，让每个"✅ 已验证"结论可追溯、可复用，避免 post-test 小改动导致前序报告有效性表达不清。
 
 ## 一、为什么需要 verification-ledger
@@ -156,7 +156,7 @@ verification-ledger 把每次验证（compile / unit test / api test / package�
   "moduleInputsHash": "sha256:<依赖闭包内容指纹>",
   "moduleInputsFiles": ["<project>/Svc.java", "..."],
   "profile": "local-dev-remote-sdk",
-  "overlayPath": "C:/temp/harness-test-overlay/<change>/application-harness-test.yml",
+  "overlayPath": "C:/temp/harness-execute-overlay/<change>/application-harness-execute.yml",
   "startCommandHash": "sha256:<command 指纹>",
   "command": "<serviceStart.command>",
   "startedAt": "..."
@@ -165,7 +165,7 @@ verification-ledger 把每次验证（compile / unit test / api test / package�
 
 `moduleInputsHash` 由 CLI `--files` ∪ `build-profile.json` 的 `serviceStart.inputFiles`（glob 列表，相对 project 展开）计算。**空输入被拒绝**（exit 非 0），不得生成可复用的空指纹（§5.1/§5.2）。
 
-复用必须**同时**满足（§5.3）：`moduleInputsHash` 一致、`startCommandHash` 一致、`profile` 一致、`overlayPath` 一致、进程身份（pid 存活 + create time 匹配 `startedAt`）可确认。任一变化 -> AI 自动 restart；身份无法确认 -> `needs-user-decision`；非 AI 用户进程永不自动 kill。否则必须进入 Service Decision Gate（见 harness-test）。
+复用必须**同时**满足（§5.3）：`moduleInputsHash` 一致、`startCommandHash` 一致、`profile` 一致、`overlayPath` 一致、进程身份（pid 存活 + create time 匹配 `startedAt`）可确认。任一变化 -> AI 自动 restart；身份无法确认 -> `needs-user-decision`；非 AI 用户进程永不自动 kill。否则必须进入 Service Decision Gate（见 harness-execute）。
 
 ### 4.2 unitTestFull 最终全量门禁
 
@@ -216,13 +216,13 @@ harness_ledger.py diff-hash --repo <projectRoot> --base <baseCommit> --change-di
 - manifest 存在时必须严格验证 schema/mode/projectRoot、精确相对路径、文件存在性与 SHA-256；结构非法、路径越界或 hash 漂移均非零退出，旧 ledger 不得复用。
 - ignored test 在 checkpoint 前由 manifest 加入内容集；经 guard force-stage/commit 后由 Git diff 加入同一路径，集合去重，因此 hash 保持不变。
 - diffHash 只用于"内容是否变化"判断，不等于 commit hash
-- 账本中 `currentHead`（验证时 HEAD）与 `diffHash` 分开记录；reuse 规则 #2 允许 HEAD 前移（如 harness-run Step 5 checkpoint commit），因 diffHash 已 commit-invariant，HEAD 前移不改变指纹
+- 账本中 `currentHead`（验证时 HEAD）与 `diffHash` 分开记录；reuse 规则 #2 允许 HEAD 前移（如 harness-execute Step 5 checkpoint commit），因 diffHash 已 commit-invariant，HEAD 前移不改变指纹
 - **禁止**使用类似 `3files-84plus-5minus` 的描述性字符串作为复用依据
 - **禁止**删除/忽略 test-tracking manifest 后继续复用，也禁止用手写 Git/Node/PowerShell hash 替代 canonical 命令。
 
 ## 六、Post-test 变更分类
 
-当 `/harness-test` 完成后又发生代码变更（常见于 review 后清理、submit 前发现的小问题），后续 submit/package/archive **必须先对变更做分类**，写入 ledger 的 `postTestClassification`：
+当 `/harness-execute` 完成后又发生代码变更（常见于 review 后清理、submit 前发现的小问题），后续 submit/package/archive **必须先对变更做分类**，写入 ledger 的 `postTestClassification`：
 
 | 类型 | 示例 | 是否需要重跑 API | 是否需要重跑 unit | 是否需要重 compile |
 |------|------|:---:|:---:|:---:|
@@ -245,15 +245,15 @@ post-test 变更: NON_BEHAVIORAL_CLEANUP
 API 测试: 🔁 复用上一轮结果（diffHash 未变 / 仅清理性变更）
 ```
 
-**行为性变更**：必须重新运行 `/harness-test` 的相关场景（至少覆盖变更影响的接口/权限/SQL），ledger 对应项作废并重写。
+**行为性变更**：必须重新运行 `/harness-execute` 的相关场景（至少覆盖变更影响的接口/权限/SQL），ledger 对应项作废并重写。
 
 ## 七、各阶段与 ledger 的交互
 
 | 阶段 | 读 ledger | 写 ledger |
 |------|:---:|:---:|
 | harness-plan | 计划起点读（了解前序变更状态/已有 ledger，作为复用链起点） | 计划落定后写初始 ledger（changeName/module/profile/baseCommit/diffHash 占位） |
-| harness-run | 步骤 2 前读（确认是否已有 compile/unitTest 可复用） | 步骤 2 后写 compile + unitTest（若跑了全量测试） |
-| harness-test | Phase 1 前读（复用 run 的 unitTest） | Phase 1/2 后写 unitTest + apiTest |
+| harness-execute | 步骤 2 前读（确认是否已有 compile/unitTest 可复用） | 步骤 2 后写 compile + unitTest（若跑了全量测试） |
+| harness-execute | Phase 1 前读（复用 run 的 unitTest） | Phase 1/2 后写 unitTest + apiTest |
 | harness-submit | 验证前读（复用 test 的 compile/unitTest） | 若重跑则写回 |
 | harness-archive | 归档前读（汇总各阶段状态，写入 `summary-data.json` 并上传平台） | 不写（归档时一并移入 archive） |
 

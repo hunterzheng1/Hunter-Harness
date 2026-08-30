@@ -479,10 +479,10 @@ def copy_overlay_extras(overlay_dir: Path, out_dir: Path) -> list[str]:
     # it must NOT be installed to runtime. Only pitfalls-java.md is runtime.
     pitfalls = overlay_dir / "pitfalls-java.md"
     if pitfalls.is_file():
-        test_pit = out_dir / "harness-test" / "pitfalls-java.md"
+        test_pit = out_dir / "harness-execute" / "testing-pitfalls-java.md"
         test_pit.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(pitfalls, test_pit)
-        extras.append("harness-test/pitfalls-java.md")
+        extras.append("harness-execute/testing-pitfalls-java.md")
     return extras
 
 

@@ -1,8 +1,8 @@
 ---
-description: harness-test 的 Phase 0 环境准备 + Playwright 探测 + 关门检查清单。仅在执行测试前的环境准备阶段读取。
+description: harness-execute 的 Phase 0 环境准备 + Playwright 探测 + 关门检查清单。仅在执行测试前的环境准备阶段读取。
 ---
 
-# harness-test 检查清单 — Phase 0 环境准备 + 关门检查
+# harness-execute 检查清单 — Phase 0 环境准备 + 关门检查
 
 以下检查项确认完了再开始测试。每一项背后都有踩坑经历。
 
@@ -16,8 +16,7 @@ description: harness-test 的 Phase 0 环境准备 + Playwright 探测 + 关门�
 
 先检查当前项目的测试配置文件（按优先级查找）：
 
-1. **优先**：`.harness/config/harness-test-config.md`（集中配置目录）
-2. **兼容**：`harness-test/harness-test-config.md（兼容旧路径）`（旧路径，过渡期仍支持）
+1. `.harness/config/harness-test-config.md`（集中配置目录；旧 skill 目录下的兼容路径已随 harness-test 入口移除而废弃）
 
 如果任一文件存在，**必须先读取并应用其中的配置**。配置文件通常包含：
 
@@ -70,7 +69,7 @@ description: harness-test 的 Phase 0 环境准备 + Playwright 探测 + 关门�
 - [ ] 检查 `claude mcp list` 中是否有 playwright（如果可以执行命令）
 - [ ] 检查 `@playwright/mcp` 是否可启动
 - [ ] 检查当前 skill 的 `allowed-tools` 是否允许 Playwright 相关工具
-- [ ] 输出 fallback 执行器可用性表格（见 reference.md）
+- [ ] 输出 fallback 执行器可用性表格（见 testing-reference.md）
 - [ ] 记录决策：接口测试执行器 / PowerShell batch / Playwright MCP browser_evaluate / curl fallback
 - [ ] 如果 fallback 不可用，必须写明原因，不得静默改用 curl
 
@@ -194,21 +193,21 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 
 **如果用户选择 AI 启动或 AI 重启**：
 1. 从已知良好测试配置读取 module/profile/port/healthUrl/sdkUrl（按项目配置）。
-2. 生成 ASCII 运行时配置叠加：`C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml`（按技术栈；Java Spring Boot 的 application.yml 为例）。
+2. 生成 ASCII 运行时配置叠加：`C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml`（按技术栈；Java Spring Boot 的 application.yml 为例）。
 3. 禁止默认直接 Edit tracked 应用配置文件（如 `application-local-dev.yml`）。
 4. 默认启动命令（按技术栈，Java Spring Boot 为例）：
    ```powershell
-   powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module> -Dspring-boot.run.profiles=<profile> -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml'"
+   powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module> -Dspring-boot.run.profiles=<profile> -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml'"
    ```
 5. 写入 `service.pid`、`service-start-command.txt`、`service-start.log`、`runtime/service-session.json`（含 `moduleInputsHash`/`moduleInputsFiles`/`startCommandHash`/`profile`/`overlayPath`/`pid`/`startedBy=AI`/`startedAt`）。`moduleInputsHash` 来自 CLI `--files` ∪ `serviceStart.inputFiles`，空输入拒绝。
 6. 服务启动等待：0–30s 每 2s 探测；30–120s 每 5s 探测；>10s 必须输出状态行；>120s 读取最近 200 行日志。
 7. 发现启动失败特征（按技术栈识别，如 Java Spring Boot 的 `BindException` / `Could not resolve placeholder` / `Connection refused during bean init` / `BeanCreationException` / `Failed to start bean` / `BUILD FAILURE`）立即失败。
 
-#### 0.10.x 重入沿用（同一变更 harness-test 再次执行时）
+#### 0.10.x 重入沿用（同一变更 harness-execute 再次执行时）
 
 满足以下**全部**条件时，可沿用上次服务决策，不重复询问：
 
-1. 重入：同一 change-name 的 harness-test 再次执行（非首次）
+1. 重入：同一 change-name 的 harness-execute 再次执行（非首次）
 2. 环境未变：PG 可用性、目标端口、执行器可用性与上次一致
 3. 上次已确认执行器方案（如"内存 HTTP 执行器，PG 不可用"）
 4. 当前源码未改服务启动逻辑（如未改 main.ts 启动路径、未改服务端口/profile 配置）
@@ -270,7 +269,7 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 
 - [ ] Phase 1 前通过 state layout resolver 定位并检查 `evidence/verification-ledger.json`
 - [ ] 判断是否复用 run 的 unitTest：diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 实际跑了全量测试
-- [ ] 复用 → 跳过重跑，标记"✅ 复用 harness-run 单元测试结果"
+- [ ] 复用 → 跳过重跑，标记"✅ 复用 harness-execute 单元测试结果"
 - [ ] 不复用 → 按 profile key resolve 重跑测试命令（`harness_profile.py resolve --key unitTest`，不复制示例 `-pl` 命令），结果写回 ledger 的 `unitTest` 项
 - [ ] HTTP/API 契约结果写入 `apiTest`；真实浏览器/真实栈 Playwright 结果写入 `browserTest`，两者不得互相覆盖
 - [ ] **本变更没有该维度场景时**（如全部为单元场景 → 无 API 场景）：用 `harness_ledger.py record --verification apiTest --status NOT_RUN --applicability NOT_APPLICABLE --applicability-reason "<为什么不适用>"` 登记，**不传 `--files`**。门禁 close 要求 requiredValidations 每项都有 entry，但**绝不能拿无关文件（比如单元测试文件）凑 `--files`**——那会让 ledger 声称该维度的输入是那些文件，是假证据

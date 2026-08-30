@@ -1,8 +1,8 @@
 ---
-description: harness-run 的编译失败策略表、TDD循环详细步骤和编码约束。仅在编码执行遇到编译问题或需要参考详细规则时读取。
+description: harness-execute 的编译失败策略表、TDD循环详细步骤和编码约束。仅在编码执行遇到编译问题或需要参考详细规则时读取。
 ---
 
-# harness-run 参考 — 详细规则
+# harness-execute 参考 — 详细规则
 
 ## 为什么走变更簇 TDD 而不是逐任务 TDD
 
@@ -30,7 +30,7 @@ description: harness-run 的编译失败策略表、TDD循环详细步骤和编�
 
 ## Worktree 创建与切换详细规则
 
-`harness-run` 必须把 `worktree.json` 当作唯一决策源。
+`harness-execute` 必须把 `worktree.json` 当作唯一决策源。
 
 ### 状态机
 
@@ -119,7 +119,7 @@ requested=true + path missing
 4. 读取 .harness/changes/<change-name>/plans/<change-name>-test-scenarios.md
 ```
 
-**禁止 /harness-run 默认读取 `docs/superpowers/plans/*.md`** 作为任务来源。旧 `docs/superpowers/` 草稿最多作为人工线索，不作为执行输入。
+**禁止 /harness-execute 默认读取 `docs/superpowers/plans/*.md`** 作为任务来源。旧 `docs/superpowers/` 草稿最多作为人工线索，不作为执行输入。
 
 ### 步骤 0.1：执行模式（无询问）
 
@@ -182,7 +182,7 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 从场景表选取对应当前变更簇的测试用例：
 
 - **单元测试**（优先）：按技术栈测试框架（如 Java 的 JUnit 5 + Mockito + AssertJ），命名 `{方法名}_{场景}_{预期结果}()`，用断言库（如 Java 的 AssertJ `assertThat`）
-- **接口测试**（必要时代码逻辑已覆盖即可，实际 HTTP 调用留给 `harness-test`）
+- **接口测试**（必要时代码逻辑已覆盖即可，实际 HTTP 调用留给 `harness-execute`）
 - **多个测试类合并到一次构建/测试命令执行**（按技术栈模块/用例定位参数，如 Java 的 `mvn test -pl <module> -Dtest=TestA,TestB,TestC -o`）
 
 ### RED 有效性判定（⚠️ 必须逐项确认）
@@ -245,7 +245,7 @@ RED 不是"测试失败"即可通过，必须确认失败原因与目标 bug/需
 | 注释 | 构建验证 | 不影响运行时行为 |
 | 代码整理（import 清理）| 构建验证 | 不影响运行时行为 |
 | 格式化 | 构建验证 | 不影响运行时行为 |
-| 数据库迁移脚本 | 静态审查 + harness-test DB 验证 | 不做 TDD，生成审查清单 |
+| 数据库迁移脚本 | 静态审查 + harness-execute DB 验证 | 不做 TDD，生成审查清单 |
 | 配置模板 | 静态审查 | 部署时生效 |
 | 文档文件 | 静态审查 | 不涉及代码 |
 
@@ -283,7 +283,7 @@ RED 不是"测试失败"即可通过，必须确认失败原因与目标 bug/需
 | 是否可通过静态 mock（如 Java 的 mockStatic）构造？ | 是/否 |
 | 是否可写轻量集成测试？ | 是/否 |
 | 跳过自动化测试的具体阻塞点 | ... |
-| 后续必须由哪个阶段验证 | harness-test / 手工接口 / 部署验证 |
+| 后续必须由哪个阶段验证 | harness-execute / 手工接口 / 部署验证 |
 
 如果只是"配置麻烦"或"mock 复杂"，不得直接跳过。对数据契约字段（DTO）、分页返回、权限过滤、组织过滤等用户可见行为，必须优先写公共行为测试。
 
@@ -304,9 +304,9 @@ RED 不是"测试失败"即可通过，必须确认失败原因与目标 bug/需
 5. 输出必须明确写成：
    - "🟡 静态逻辑验证通过"
    - "未执行真实单元测试"
-   - "待测试基础设施补齐后运行 harness-test"
+   - "待测试基础设施补齐后运行 harness-execute"
 6. **禁止写成**："测试全部通过"、"测试通过 N/N"、"覆盖率 100%"等含暗示真实测试已运行的表述
-7. 提示用户在测试基础设施就绪后补充运行 `harness-test`
+7. 提示用户在测试基础设施就绪后补充运行 `harness-execute`
 
 ## GREEN：最简实现
 
@@ -327,7 +327,7 @@ RED 不是"测试失败"即可通过，必须确认失败原因与目标 bug/需
 
 ## GREEN 后反模式自检（内置清单）
 
-> 此步骤是 `/harness-run` 的内置自检，不依赖 Superpowers `test-driven-development`，也不存在外部 skill 调用成功后的跳过分支。
+> 此步骤是 `/harness-execute` 的内置自检，不依赖 Superpowers `test-driven-development`，也不存在外部 skill 调用成功后的跳过分支。
 
 GREEN 阶段完成后，对照以下反模式清单自检：
 
@@ -358,7 +358,7 @@ GREEN 阶段完成后，对照以下反模式清单自检：
 
 ## 批量构建验证策略
 
-harness-run 必须减少构建/测试启动次数。
+harness-execute 必须减少构建/测试启动次数。
 
 **默认策略**：
 1. 每个变更簇最多执行一次 RED 构建/测试、一次 GREEN 构建/测试
@@ -391,7 +391,7 @@ TestA+TestB+TestC RED → 实现相关代码 → TestA+TestB+TestC GREEN → 最
 
 ## 预存变更隔离
 
-如果 harness-run 开始时检测到已有未提交变更，并且用户选择保留，必须创建 baseline。
+如果 harness-execute 开始时检测到已有未提交变更，并且用户选择保留，必须创建 baseline。
 
 ### baseline 文件
 
@@ -485,7 +485,7 @@ TestA+TestB+TestC RED → 实现相关代码 → TestA+TestB+TestC GREEN → 最
 
 ## 步骤 2：构建验证（默认轻量，按需全量 test）
 
-> **轻量验证职责**：`/harness-run` 默认只做开发反馈，不默认跑全量测试命令。是否跑全量 test 按下方条件判断。
+> **轻量验证职责**：`/harness-execute` 默认只做开发反馈，不默认跑全量测试命令。是否跑全量 test 按下方条件判断。
 
 ### 2a. 构建验证（始终执行）
 
@@ -496,14 +496,14 @@ powershell.exe -Command "<构建命令> <模块定位参数>"
 
 ### 2b. 全量测试（仅当满足触发条件时执行）
 
-默认**跳过**全量测试命令，把完整单元测试留给 `/harness-test`。仅当满足以下任一条件时才在本阶段执行测试命令（按技术栈，如 Java 的 `mvn test -pl <module> -o`）：
+默认**跳过**全量测试命令，把完整单元测试留给 `/harness-execute`。仅当满足以下任一条件时才在本阶段执行测试命令（按技术栈，如 Java 的 `mvn test -pl <module> -o`）：
 
 - 修改了公共模块（被多模块依赖的 common/utils 等）
 - 修改了数据访问层 / 数据库迁移 / 查询配置
 - 修改了权限 / 认证 / 组织过滤逻辑
 - 修改了接口层 / 数据契约（VO/DTO）
 - 用户要求 `full-run-validation`
-- 用户不打算继续运行 `/harness-test`（run 需自证 P0 场景）
+- 用户不打算继续运行 `/harness-execute`（run 需自证 P0 场景）
 
 ```powershell
 powershell.exe -Command "<测试命令> <模块定位参数>"
@@ -523,7 +523,7 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 步骤 2 完成后**必须**通过 `harness_ledger.py record` 写入/更新 ledger（**禁止** Write/Edit `verification-ledger.json`）：
 
 - `compile` 项：始终写入（status / command / scope / evidence / 时间戳 / durationMs）
-- `unitTest` 项：仅当 2b 执行了全量测试命令时写入（testsRun / failures / errors / skipped / evidence）；未执行时标记 `{"status": "NOT_RUN_BY_RUN", "note": "轻量验证，全量单元测试由 harness-test 执行"}`
+- `unitTest` 项：仅当 2b 执行了全量测试命令时写入（testsRun / failures / errors / skipped / evidence）；未执行时标记 `{"status": "NOT_RUN_BY_RUN", "note": "轻量验证，全量单元测试由 harness-execute 执行"}`
 - 顶层写入 `diffHash` / `currentHead` / `baseCommit` / `module` / `profile`
 - `baseCommit`：merge-base 或计划起点（worktree 分支从主分支分出点，由 harness-plan 写入、run 读取复用；缺失时用 `git merge-base HEAD <默认分支>` 兜底）
 - `currentHead`：`git rev-parse HEAD`（步骤 2c 在 Step 5 checkpoint commit 之前执行，此时 HEAD==baseCommit；commit 后 HEAD 前移到 checkpoint commit，由 ledger-protocol reuse 规则 #2「currentHead 可前移」容忍，**不需为它改时序**）
@@ -536,7 +536,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 
 > `content-changeset-2` 同时读取 tracked diff、标准 untracked 文件和 manifest 的精确测试路径。manifest 缺失时保持普通行为；manifest 存在但路径越界、内容 hash 漂移或结构非法时命令失败，ledger 不可复用。checkpoint commit 不改变各路径的工作树内容，因此提交前后 hash 保持一致。
 
-> 这样 harness-test 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
+> 这样 harness-execute 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
 >
 > **Ledger v3**：`record` 自动解析并强制顶层身份（`schemaVersion=3/repositoryId/changeName/baseCommit/currentHead/diffHash/ownershipHash`），缺字段非零退出、不写账本；已有 v1/v2 ledger 在写前透明迁移，`migrationHistory` 回执记录原/目标 schema 与迁移前后 evidence identity。无法迁移时返回 `LEDGER_MIGRATION_REQUIRED` 和确定性 `rerecordCommand`，不得半升级。v2 契约下 `--metrics-json` 必须通过 typed schema（unit=`total/passed/failed`，apiContract=`scenariosTotal/passed/failed`，browserE2E=`total/passed/failed`，dbCompatibility=`applicability(+reason)`）。详见 `../protocols/ledger-protocol.md` 第十节。
 
@@ -554,7 +554,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 ### 静态验证不等于测试覆盖（⚠️ 关键规则）
 
 1. 🟡 静态检查 **不得计入"已测试通过"**
-2. 如果任一 `ownerPhase=run` 的 P0 场景仅静态验证，则 harness-run 最终结果必须是：
+2. 如果任一 `ownerPhase=run` 的 P0 场景仅静态验证，则 harness-execute 最终结果必须是：
    `🟡WARN：编码和编译完成，但存在 P0 场景未真实验证`
 3. 只有所有 run-owned P0 场景都有自动化测试或真实接口验证时，最终结果才能是：
    `✅OK成功`
@@ -564,7 +564,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
    自动化测试通过: 5
    静态检查未真实验证: 17
    未验证: 0
-   harness-run 结果: 🟡WARN，必须进入 harness-test 后才能 submit
+   harness-execute 结果: 🟡WARN，必须进入 harness-execute 后才能 submit
    ```
 6. **禁止用测试用例数冒充场景数**：计数对象是 `test-scenarios.md` 的场景编号（UT-001/N、API-001/N、COM-001/N、INT-001/N），不是测试框架的测试方法数（如 vitest "178 tests"、junit "Tests run: 178"）。场景总数 = test-scenarios.md 的场景数。
 7. **四类计数须自洽**：run-owned 的 🟡/❌ 计入未验证；`ownerPhase=test` 单列为 ⏳“按计划移交”，不得冒充 ✅，也不得反向污染 run 的结果。
@@ -574,9 +574,9 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 > ```
 > ### 场景覆盖检查
 > - ✅ UT-001~005: getEnabledIndicators 正常/异常/边界场景已测试通过
-> - 🟡 UT-006~010: getIndicatorPage 分页场景静态验证通过，待测试基础设施补齐后运行 harness-test
+> - 🟡 UT-006~010: getIndicatorPage 分页场景静态验证通过，待测试基础设施补齐后运行 harness-execute
 > - ❌ UT-011~015: getIndicatorByCode 场景未覆盖，需补充测试用例
-> - ⏳ API-001~005: `ownerPhase=test`，接口测试按计划移交 harness-test
+> - ⏳ API-001~005: `ownerPhase=test`，接口测试按计划移交 harness-execute
 > - ✅ COM-001~005: 数据库迁移脚本覆盖
 > - ⏳ INT-001~004: `ownerPhase=test`，按计划移交测试阶段验证
 > ```
@@ -587,12 +587,12 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 > 静态检查未真实验证: 17
 > 未验证: 0
 > 按计划移交测试阶段: 4
-> harness-run 结果: 🟡WARN，必须进入 harness-test 后才能 submit
+> harness-execute 结果: 🟡WARN，必须进入 harness-execute 后才能 submit
 > ```
 
 ## 步骤 3.5：权限/组织过滤类变更 — 安全矩阵
 
-> 凡是修改了以下逻辑，必须强制生成安全矩阵。如果任一权限边界的预期不明确，不允许标记 harness-run 为 ✅OK。
+> 凡是修改了以下逻辑，必须强制生成安全矩阵。如果任一权限边界的预期不明确，不允许标记 harness-execute 为 ✅OK。
 
 ### 触发条件
 
@@ -624,7 +624,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 
 ### 判定规则
 
-- 如果任一权限边界的预期不明确（如"非管理员+token空+指定组织"场景未明确是拒绝还是允许），则必须标记为 ❌未验证，且不允许标记 harness-run 为 ✅OK
+- 如果任一权限边界的预期不明确（如"非管理员+token空+指定组织"场景未明确是拒绝还是允许），则必须标记为 ❌未验证，且不允许标记 harness-execute 为 ✅OK
 - 每个场景的覆盖状态必须真实标注：✅ 自动化测试通过 / 🟡 静态检查未真实测试 / ❌ 未验证
 - 安全矩阵必须写入执行日志
 
@@ -714,7 +714,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 
 ## 步骤 5：计划状态持久化
 
-如果 `.harness/changes/<change>/plans/*.md` 是任务来源，则 harness-run 完成任务后必须持久化任务状态。
+如果 `.harness/changes/<change>/plans/*.md` 是任务来源，则 harness-execute 完成任务后必须持久化任务状态。
 
 ### 持久化方式
 
@@ -729,12 +729,12 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 | 任务 | 状态 | 测试场景 | 待验证 |
 |------|------|----------|--------|
 | Task 1 | ✅ DONE_AUTOMATED_TESTED | UT-001~005 | - |
-| Task 2 | 🟡 DONE_STATIC_ONLY | UT-006~010 | harness-test |
-| Task 3 | 🟡 DONE_NEEDS_INTERFACE_TEST | API-001~003 | harness-test |
+| Task 2 | 🟡 DONE_STATIC_ONLY | UT-006~010 | harness-execute |
+| Task 3 | 🟡 DONE_NEEDS_INTERFACE_TEST | API-001~003 | harness-execute |
 
 ## 待验证场景汇总
-- UT-006~010: 静态验证通过，需 harness-test 接口验证
-- API-001~003: 接口逻辑已覆盖，需 harness-test 真实 HTTP 验证
+- UT-006~010: 静态验证通过，需 harness-execute 接口验证
+- API-001~003: 接口逻辑已覆盖，需 harness-execute 真实 HTTP 验证
 ```
 
 ### 状态定义
@@ -748,7 +748,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 
 - 不允许只在对话里说"任务完成"但不写入任何持久化文件
 - 不允许修改 finalized plan Markdown 来记录状态；恢复信息只写 `evidence/run-task-status.md`
-- 后续 harness-test 和 harness-review 必须能从持久化状态识别哪些场景仍待验证
+- 后续 harness-execute 和 harness-review 必须能从持久化状态识别哪些场景仍待验证
 
 ## 输出示例
 
@@ -770,7 +770,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 - 静态检查未真实验证: M
 - 未验证: P
 - 按计划移交测试阶段: Q
-- harness-run 结果: ✅OK成功 / 🟡WARN（只由 run-owned 工作决定）
+- harness-execute 结果: ✅OK成功 / 🟡WARN（只由 run-owned 工作决定）
 
 ### 关门检查结果
 - git status --porcelain: ✅/❌
@@ -788,10 +788,10 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 - 状态已写入: `.harness/changes/<change-name>/evidence/run-task-status.md`
 
 ### 下一步
-> ⚠️ 如果存在 run-owned P0 场景为 🟡静态验证，下一步必须且只能是 harness-test。
+> ⚠️ 如果存在 run-owned P0 场景为 🟡静态验证，下一步必须且只能是 harness-execute。
 
-运行 `/harness-test` 验证剩余 P0 场景。
-在 harness-test 通过前，不建议也不应进入 `/harness-submit`。
+运行 `/harness-execute` 验证剩余 P0 场景。
+在 harness-execute 通过前，不建议也不应进入 `/harness-submit`。
 ```
 
 ## CLI 速查（gate / ledger）
@@ -857,7 +857,7 @@ C9 场景覆盖按 `ownerPhase` **分阶段判定**：run 关门只要求 `owner
 
 ## 执行日志记录
 
-`/harness-run` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
+`/harness-execute` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
 
 关键 `note` / `decision` 须覆盖：测试基础设施探测（CHECKING→结论）、预存变更、run-tdd-protocol RED 类型、变更簇 RED/GREEN、批量构建 exit code、关门检查 10 项、计划状态持久化路径。
 
@@ -876,7 +876,7 @@ C9 场景覆盖按 `ownerPhase` **分阶段判定**：run 关门只要求 `owner
 
 ## 数据访问层复杂查询真实验证要求
 
-数据访问层复杂查询（Java 的 `@Select`/JOIN/DISTINCT/IPage 分页/SQL/XML）变更在 run 阶段只能标记 🟡DONE_STATIC_ONLY，必须交给 harness-test 真实 DB/API 验证：
+数据访问层复杂查询（Java 的 `@Select`/JOIN/DISTINCT/IPage 分页/SQL/XML）变更在 run 阶段只能标记 🟡DONE_STATIC_ONLY，必须交给 harness-execute 真实 DB/API 验证：
 
 - SQL 可执行；
 - total 正确；

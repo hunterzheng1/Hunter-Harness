@@ -1,4 +1,4 @@
-# harness-run 执行检查清单
+# harness-execute 执行检查清单
 
 > 编码执行时逐项勾选，确保不遗漏关键步骤。
 
@@ -105,7 +105,7 @@
 ### Mapper 查询条件验证检查
 
 - [ ] 如果变更涉及 Mapper 查询条件 / LambdaQueryWrapper / SQL/XML → 不得用纯 Mock 宣称"自动化测试通过"
-- [ ] 纯 Mock Mapper 测试 → 标记为 🟡静态验证，交给 harness-test 真实 DB 验证
+- [ ] 纯 Mock Mapper 测试 → 标记为 🟡静态验证，交给 harness-execute 真实 DB 验证
 - [ ] 如果必须自动化 → 使用真实 mapper 或可检查 wrapper 条件的测试方式
 
 ### GREEN（最简实现 — 按变更簇批量实现）
@@ -133,7 +133,7 @@
 - [ ] 如果使用 `-q` quiet 模式 → 报告中写 `exitCode=0`，**不得写 BUILD SUCCESS**
 - [ ] 最终 compile 只执行一次，如果前面已有 compile 成功证据，可复用 verification-ledger
 - [ ] 判断是否需要全量 `mvn test`：改了公共模块/mapper/sql/权限认证/controller/VO，或用户要求 full-run-validation → 执行 `mvn test -pl <module> -o`；否则跳过全量 test
-- [ ] 编译失败 → 先分析错误类型（见 reference.md 编译失败策略表）
+- [ ] 编译失败 → 先分析错误类型（见 coding-reference.md 编译失败策略表）
 - [ ] **写入 verification-ledger.json**：`compile` 项必写（status/command/scope/evidence/时间戳/durationMs）；若执行了 mvn test 则 `unitTest` 项必写（testsRun/failures/errors/skipped/evidence）；未执行时标记 `NOT_RUN_BY_RUN`
 - [ ] 顶层写入 `diffHash` / `currentHead` / `baseCommit` / `module` / `profile`；`diffHash` **必须用三部分合并命令**（inline 见 reference 步骤 2c，与 ledger-protocol 五一致），**禁止仅用 `git diff` 未提交**；`currentHead`=`git rev-parse HEAD`
 - [ ] test/submit/package 阶段如果 diffHash 一致，可复用 run 的 compile/unitTest 结果
@@ -153,7 +153,7 @@
 
 > 凡是修改了管理员/非管理员、orgCode、数据权限、越权异常等逻辑，必须强制生成。
 
-- [ ] 生成安全矩阵（模板见 reference.md）
+- [ ] 生成安全矩阵（模板见 coding-reference.md）
 - [ ] 覆盖：超级管理员 token 空/非空 × 请求 orgCode 空/指定 × projectType 有/无
 - [ ] 覆盖：非管理员 token 本组织/空 × 请求 orgCode 本组织/其他组织/空 × projectType 有/无
 - [ ] 如果任一权限边界预期不明确 → 不允许标记 ✅OK
@@ -208,13 +208,13 @@
 
 - [ ] 每个任务状态更新到 plan 文件或新增 `run-task-status.md`
 - [ ] 状态区分：✅ DONE_AUTOMATED_TESTED / 🟡 DONE_STATIC_ONLY / 🟡 DONE_NEEDS_INTERFACE_TEST / 🟡 NEEDS_DB_VALIDATION / ❌ FAILED
-- [ ] 确保后续 harness-test / harness-review 可读取待验证场景
+- [ ] 确保后续 harness-execute / harness-review 可读取待验证场景
 
 ## 执行日志完成记录
 
 - [ ] 追加结束时间、耗时、结果、摘要、checkpoint commit 状态
 - [ ] **执行日志去重检查**：同一阶段不重复追加小节，如需补充应 Edit 原小节
-- [ ] 如果存在 🟡静态验证 P0 场景 → 下一步必须写 `必须先运行 /harness-test`，不得并列"提交代码"
+- [ ] 如果存在 🟡静态验证 P0 场景 → 下一步必须写 `必须先运行 /harness-execute`，不得并列"提交代码"
 - [ ] 如果存在 SQL 迁移/DB 验证未完成 → 最终不得输出纯 ✅OK
 
 ### 最终状态分级

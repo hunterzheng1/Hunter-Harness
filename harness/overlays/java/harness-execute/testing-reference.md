@@ -1,14 +1,14 @@
 ---
-description: harness-test 的 API 测试执行细节、批量 runner、token 缓存、测试数据治理、报告模板和关门检查。仅在执行接口测试需要参考详细操作时读取。
+description: harness-execute 的 API 测试执行细节、批量 runner、token 缓存、测试数据治理、报告模板和关门检查。仅在执行接口测试需要参考详细操作时读取。
 ---
 
-# harness-test 参考 — API 测试详情
+# harness-execute 参考 — API 测试详情
 
 ## 命令执行模式 preflight（0.0y）
 
 执行 Maven 前必须读取 `.mvn/maven.config`。项目已声明的 `-s`、`-o`、镜像和仓库设置不得被测试命令重复追加或覆盖。离线依赖缺失时，只有在项目规则允许联网的情况下，才可临时执行至多一次非离线 `-nsu` 恢复；失败后停止并报告缺失依赖，不得在多套 Maven 参数间反复试跑。
 
-`/harness-test` 高度依赖 PowerShell 与 Node。在编译/启动服务/生成 runner **之前**
+`/harness-execute` 高度依赖 PowerShell 与 Node。在编译/启动服务/生成 runner **之前**
 必须执行 4 项执行模式检查：
 
 | 检查项 | 命令 | 预期 |
@@ -112,8 +112,8 @@ known-good-test-profile:
 
   overlay:
     pathStrategy: ascii-temp
-    directory: C:/temp/harness-test-overlay
-    fileName: application-harness-test.yml
+    directory: C:/temp/harness-execute-overlay
+    fileName: application-harness-execute.yml
 
   service:
     askBeforeReusingExisting: true
@@ -129,7 +129,7 @@ known-good-test-profile:
 不要直接 Edit `application-local-dev.yml`。默认生成 ASCII 绝对路径 overlay：
 
 ```text
-C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml
+C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml
 ```
 
 内容按 `known-good-test-profile` 渲染：
@@ -148,10 +148,10 @@ spring:
 唯一默认启动命令：
 
 ```powershell
-powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module-from-build-profile> -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml'"
+powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module-from-build-profile> -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-execute-overlay/<change-name>/application-harness-execute.yml'"
 ```
 
-不得默认使用 `.harness/changes/<change>/runtime/application-harness-test.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked yml，先 blocking user confirmation，最终报告至少 🟡 WARN。
+不得默认使用 `.harness/changes/<change>/runtime/application-harness-execute.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked yml，先 blocking user confirmation，最终报告至少 🟡 WARN。
 
 ## Service Decision Gate 与服务生命周期管理
 
@@ -179,7 +179,7 @@ serviceState：`AI_STARTED` / `AI_RESTARTED_FROM_USER_SERVICE` / `USER_STARTED` 
 
 ### 重入沿用
 
-同一变更的 harness-test 重入时，若环境未变（PG/端口/执行器与上次一致）、上次已确认执行器/服务方案、且源码未改服务启动逻辑（未改 main 启动路径、未改端口/profile 配置、未改 spring-boot:run 启动相关代码），可沿用上次服务决策不重复询问，执行日志记 `重入沿用+环境未变`。不适用情形（service-fingerprint 不匹配、环境已变、USER_STARTED、源码改启动逻辑）仍须询问/重启。详见 checklist.md「0.5x 重入沿用」。
+同一变更的 harness-execute 重入时，若环境未变（PG/端口/执行器与上次一致）、上次已确认执行器/服务方案、且源码未改服务启动逻辑（未改 main 启动路径、未改端口/profile 配置、未改 spring-boot:run 启动相关代码），可沿用上次服务决策不重复询问，执行日志记 `重入沿用+环境未变`。不适用情形（service-fingerprint 不匹配、环境已变、USER_STARTED、源码改启动逻辑）仍须询问/重启。详见 testing-checklist.md「0.5x 重入沿用」。
 
 若用户选择重启已有服务，必须提示：测试结束后关闭新测试服务，不会恢复原服务。
 
@@ -613,7 +613,7 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 - tokenRefreshCount: 0 / 1（>1 → 🟡 WARN）
 
 ### 单元测试
-> ✅ 复用 harness-run 单元测试结果：Tests run: N, Failures: 0, Errors: 0
+> ✅ 复用 harness-execute 单元测试结果：Tests run: N, Failures: 0, Errors: 0
 > （diffHash=<...>, module=<...>, profile=<...>, scope=<...>）
 > 或：🔄 已重跑（原因：diffHash 变化 / 行为性 post-test 修改 / run 未跑全量）
 
@@ -686,7 +686,7 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 ### 下一步
 - 如果 ✅OK：进入 /harness-review
 - 如果 🟡WARN：根据 WARN 原因决定是否补充测试或进入 review
-- 如果 ❌FAIL：修复失败项后重新运行 /harness-test
+- 如果 ❌FAIL：修复失败项后重新运行 /harness-execute
 ```
 
 ## 结果分级规则
@@ -768,7 +768,7 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 
 ## 真实 diffHash 生成
 
-后续复用 ledger 前必须生成真实 SHA-256 diffHash，且**必须是 commit-invariant 三部分合并**（与 harness-run 步骤 2c、ledger-protocol 五逐字一致），保证 run→test 跨 checkpoint commit 复用链不断：
+后续复用 ledger 前必须生成真实 SHA-256 diffHash，且**必须是 commit-invariant 三部分合并**（与 harness-execute 步骤 2c、ledger-protocol 五逐字一致），保证 run→test 跨 checkpoint commit 复用链不断：
 
 ```powershell
 powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/changes/<change>/runtime/current-diff.patch'; & { git diff $base HEAD --binary; git diff --binary; git ls-files --others --exclude-standard | ForEach-Object { Get-Content -Raw -LiteralPath $_ } } | Out-File -Encoding utf8 $patch; (Get-FileHash $patch -Algorithm SHA256).Hash"
@@ -789,4 +789,4 @@ powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/c
 
 ## 执行日志记录
 
-`/harness-test` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。Phase 0 之前 append `phase.start`；写入 `command` / `verification` / `decision` / `issue` / `artifact`，摘要放 `note`。详见 [[../../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 core `harness-test/SKILL.md`。
+`/harness-execute` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。Phase 0 之前 append `phase.start`；写入 `command` / `verification` / `decision` / `issue` / `artifact`，摘要放 `note`。详见 [[../../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 core `harness-execute/SKILL.md`。

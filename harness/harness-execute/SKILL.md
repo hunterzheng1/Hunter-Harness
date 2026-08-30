@@ -26,8 +26,8 @@ disallowed-tools:
 
 # harness-execute — 执行（编码 + 验证）
 
-> 2026-08 阶段合并：原 `run`（编码）与 `test`（验证）合并为单一 `execute` 阶段。
-> `/harness-run` 与 `/harness-test` 保留为别名入口，语义与本 skill 相同。
+> 2026-08 阶段合并：原 `run`（编码）与 `test`（验证）合并为单一 `execute` 阶段；
+> 0.4.9（workflow-harness）起 `/harness-run`、`/harness-test` 入口移除，统一由本 skill 承担。
 
 ## Purpose
 
@@ -35,7 +35,7 @@ disallowed-tools:
 
 ## When to Use
 
-仅当用户显式调用 `/harness-execute`（或别名 `/harness-run`、`/harness-test`）时执行；plan 完成后**不自动**进入本阶段。参数：`--subagent` 强制 Subagent-Driven；`--inline` 等同默认；`--fixback` 读最新 review fixback。**默认 Inline，不询问执行模式**。
+仅当用户显式调用 `/harness-execute` 时执行；plan 完成后**不自动**进入本阶段。参数：`--subagent` 强制 Subagent-Driven；`--inline` 等同默认；`--fixback` 读最新 review fixback。**默认 Inline，不询问执行模式**。
 
 **单阶段原则**：execute 关门后必须停止并交还用户，仅提示 `plannedPhases` 中的真实下一阶段；禁止自动开始其他阶段。
 
@@ -46,7 +46,7 @@ disallowed-tools:
 - 读 `meta/worktree.json`：`requested=true` 时 worktree 须存在或 execute 负责创建；worktree 已创建则在 worktree 中执行测试，不得静默回到主目录
 
 <!-- @include shared/worktree-gate.md -->
-> 片段：[[shared/worktree-gate.md|worktree-gate]] · 创建命令 → `harness-run/reference.md`
+> 片段：[[shared/worktree-gate.md|worktree-gate]] · 创建命令 → `coding-reference.md`
 
 <!-- @include shared/read-protocol.md -->
 > 片段：[[shared/read-protocol.md|read-protocol]]
@@ -54,10 +54,10 @@ disallowed-tools:
 ## Workflow 概要
 
 0. 加载上下文：先 `harness_context.py prepare --project . --change <id> --phase execute --executor <tool> --json`（`--project` 必填），再 `harness_context.py begin --project . --change <id> --phase execute --executor <tool> --json` 校验交接，最后运行 **`harness_gate.py begin --phase execute --change <id>`**。旧名 `--phase run` / `--phase test` 仍被接受并归一为 execute。<br>**交接凭证不必手工补**：v2 计划的 `plan finalize` 不写 context 事务，`prepare` 会在检测到 committed 的 `meta/publication-journals/*.json` 时自动补录 `plan → execute` 凭证（凭证带 `bootstrapSource=plan_publication_journal` 留痕）。仍报 `HANDOFF_REQUIRED`/`LEGACY_BOOTSTRAP_REQUIRED` 说明**没有**这份发布证据——回到 plan 阶段确认发布是否真的完成，**不得**自己拼 `classify + configure-plan + close` 造凭证。<br>**Fixback** 不得拼装底层步骤，必须只调用一次 `harness_fixback.py launch-review --project . --change <id> --change-dir <change-dir> --executor <tool> --skills-root <skills-root> --product-identity <当前产品身份> --json`；返回 `FIXBACK_NOTHING_TO_APPLY` 时直接报告并停止。禁止手写 `events.ndjson` / `phase.end`。
-0.5. **测试基础设施探测**与**命令执行模式 preflight** → `harness-test/reference.md`「命令执行模式 preflight」；测试基线已由 gate begin 内部建立，不得再次执行 guard begin
-1. **变更簇 TDD** — `harness-run/protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`
+0.5. **测试基础设施探测**与**命令执行模式 preflight** → `testing-reference.md`「命令执行模式 preflight」；测试基线已由 gate begin 内部建立，不得再次执行 guard begin
+1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`
 2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；profile 缺失或陈旧时先 `harness_preflight.py detect --project . --json`；`record --project . --profile-input <key>` 从同一 target 推导 scope、coverage、规范命令与输入闭包
-3. **验证执行**：单元测试可复用则跳过（`harness_ledger.py can-reuse`）；接口测试**强制批量执行器**一次跑完全部场景；数据兼容验证按场景表执行 → `harness-test/reference.md`
+3. **验证执行**：单元测试可复用则跳过（`harness_ledger.py can-reuse`）；接口测试**强制批量执行器**一次跑完全部场景；数据兼容验证按场景表执行 → `testing-reference.md`
 4. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
 5. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 可省略——计划后继唯一（排除 fixback 自环）时自动派生并交接（输出含 `derivedToPhase`）。仅 fixback 回环时显式传 `--to-phase execute`。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
 
@@ -71,13 +71,13 @@ disallowed-tools:
 python <skills-root>/scripts/harness_test_runner.py exec --project . --timeout-seconds <预估上限> -- <构建命令及参数>
 ```
 
-资源档位是硬合同（`safe` 默认；`system`/`full` 需用户明确授权或 `--confirm-resource-intensive`）；Python `unittest` 必须逐模块隔离模式（`harness_test_runner.py unittest --profile safe --tests-dir <目录>`）。返回 `TEST_RUN_ALREADY_ACTIVE` 说明已有构建在跑：等待或查明持有者，不得绕开锁另起并行构建。完整约束 → `harness-test/checklist.md`「0.0-A 资源安全档位」。
+资源档位是硬合同（`safe` 默认；`system`/`full` 需用户明确授权或 `--confirm-resource-intensive`）；Python `unittest` 必须逐模块隔离模式（`harness_test_runner.py unittest --profile safe --tests-dir <目录>`），并发上限由 runner 注入的 `HARNESS_TEST_MAX_WORKERS` 决定，不得自行提升。返回 `TEST_RUN_ALREADY_ACTIVE` 说明已有构建在跑：等待或查明持有者，不得绕开锁另起并行构建。完整约束 → `testing-checklist.md`「0.0-A 资源安全档位」。
 
 **长阶段租约**：`gate begin` 的租约默认 TTL 3600 秒，execute 阶段常常跑得更久。租约过期不会中断执行，**也不再阻断收尾**：`gate close` 发现租约过期而 run-id 仍是本阶段的，会自动用原 run-id 重取并照常关门，只在返回体的 `leaseLapsed` 里记录。不需要定期续租；报 `LEASE_ABSENT`/`LEASE_INVALID` 时先确认 begin 真的跑过，**不要**重跑 `gate begin`。
 
 **关门重试是幂等续跑**（0.4.5 workflow 起）：租约释放是 close 的最后一个可失败步骤，handoff/monitor/清草稿任一失败时租约仍持有，原样重跑同一命令即可（已完成步骤由 closeTransaction journal 幂等跳过）。万一处于「phase.end 已写 + 租约已放 + 交接未完成」的历史中间态，重跑 close 会自动识别并补跑剩余步骤（`PHASE_CLOSE_RESUMED`）：未带 `--to-phase` 时从 plannedPhases 派生唯一后继，后继不唯一才报 `PHASE_HANDOFF_PENDING` 并列出候选。**都不需要手工 `harness_change.py claim`**——LEASE_ABSENT 只在 begin 从未跑过时才该出现。
 
-**接口测试执行器优先级**：接口测试执行器（默认首选）> PowerShell batch `.ps1` > Playwright MCP `browser_evaluate`（仅前两者不可用或用户明确选择）> curl + UTF-8 JSON body file（兜底）。执行器在 PowerShell 可用时**禁止**用 Playwright MCP 逐条执行。→ `harness-test/reference.md`「接口测试工具优先级」
+**接口测试执行器优先级**：接口测试执行器（默认首选）> PowerShell batch `.ps1` > Playwright MCP `browser_evaluate`（仅前两者不可用或用户明确选择）> curl + UTF-8 JSON body file（兜底）。执行器在 PowerShell 可用时**禁止**用 Playwright MCP 逐条执行。→ `testing-reference.md`「接口测试工具优先级」
 
 **陈旧测试安全修复**：只有当前生产代码、已批准计划或可验证历史能唯一确定新契约时，才允许仅修改测试并立即重跑，然后记录：
 
@@ -94,7 +94,7 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 
 ## 关键规则（硬门禁速查）
 
-> 编码侧细则 → `harness-run/reference.md`、`harness-run/protocols.md`；验证侧细则 → `harness-test/reference.md`、`harness-test/checklist.md`、`harness-test/pitfalls.md`
+> 编码侧细则 → `coding-reference.md`、`protocols.md`；验证侧细则 → `testing-reference.md`、`testing-checklist.md`、`testing-pitfalls.md`
 
 | 域 | 要点 |
 |----|------|
@@ -115,11 +115,11 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 
 ## 渐进披露
 
-- **Read `harness-run/protocols.md`** — run-tdd + change-cluster-review
-- **Read `harness-run/reference.md`** — Step 0–5 细节、TDD/RED/ledger/迁移/安全矩阵
-- **Read `harness-test/checklist.md`** — 验证前各项强制检查、preflight、服务生命周期清单
-- **Read `harness-test/reference.md`** — API 测试执行方法、执行器模板、运行时配置叠加
-- **Read `harness-test/pitfalls.md`** — 测试踩坑规则
+- **Read `protocols.md`** — run-tdd + change-cluster-review
+- **Read `coding-reference.md`** — Step 0–5 细节、TDD/RED/ledger/迁移/安全矩阵
+- **Read `testing-checklist.md`** — 验证前各项强制检查、preflight、服务生命周期清单
+- **Read `testing-reference.md`** — API 测试执行方法、执行器模板、运行时配置叠加
+- **Read `testing-pitfalls.md`** — 测试踩坑规则
 
 ## 交互白名单
 

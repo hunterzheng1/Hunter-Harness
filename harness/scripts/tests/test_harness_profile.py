@@ -744,7 +744,7 @@ class NodeCommandsTests(unittest.TestCase):
         profile = hp.detect(self.tmp)["profile"]
         inputs = profile["commands"]["unitTestFull"]["inputs"]
         self.assertIn("harness/scripts/*.py", inputs)
-        self.assertIn("harness/harness-test/scripts/*.mjs", inputs)
+        self.assertIn("harness/harness-execute/scripts/*.mjs", inputs)
 
     def test_detect_node_without_check_or_test_has_no_commands(self) -> None:
         _write(self.tmp / "package.json", json.dumps({"name": "x", "scripts": {"lint": "eslint ."}}))

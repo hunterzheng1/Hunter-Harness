@@ -52,33 +52,33 @@ describe("embedded Harness Bundles", () => {
   });
 
   it("does not downgrade a completed run for work owned by the test phase", async () => {
-    const sourceSkill = await readFile(join(harnessSource, "harness-run", "SKILL.md"), "utf8");
+    // run/test 已并入 harness-execute：契约文本随文档迁入（protocols/coding-*）
+    const sourceProtocols = await readFile(join(harnessSource, "harness-execute", "protocols.md"), "utf8");
     const sourceReference = await readFile(
-      join(harnessSource, "harness-run", "reference.md"), "utf8"
+      join(harnessSource, "harness-execute", "coding-reference.md"), "utf8"
     );
     const sourceChecklist = await readFile(
-      join(harnessSource, "harness-run", "checklist.md"), "utf8"
+      join(harnessSource, "harness-execute", "coding-checklist.md"), "utf8"
     );
 
-    for (const text of [sourceSkill, sourceReference, sourceChecklist]) {
+    for (const text of [sourceProtocols, sourceReference, sourceChecklist]) {
       expect(text).toContain("ownerPhase=test");
       expect(text).toContain("不得将编码阶段降级为 WARN");
     }
 
     for (const profile of PROFILES) {
       for (const agent of AGENTS) {
-        const runSkill = await readFile(
-          join(resources, "bundles", profile, agent, "harness-run", "SKILL.md"), "utf8"
+        const executeProtocols = await readFile(
+          join(resources, "bundles", profile, agent, "harness-execute", "protocols.md"), "utf8"
         );
-        expect(runSkill).toContain("ownerPhase=test");
-        expect(runSkill).toContain("不得将编码阶段降级为 WARN");
+        expect(executeProtocols).toContain("ownerPhase=test");
+        expect(executeProtocols).toContain("不得将编码阶段降级为 WARN");
       }
     }
   });
 
   it("keeps ignored-test repair and exact tracking contracts complete", async () => {
-    const runSkill = await readFile(join(harnessSource, "harness-run", "SKILL.md"), "utf8");
-    const testSkill = await readFile(join(harnessSource, "harness-test", "SKILL.md"), "utf8");
+    const executeSkill = await readFile(join(harnessSource, "harness-execute", "SKILL.md"), "utf8");
     const submitSkill = await readFile(join(harnessSource, "harness-submit", "SKILL.md"), "utf8");
     const ledgerProtocol = await readFile(
       join(harnessSource, "protocols", "ledger-protocol.md"), "utf8"
@@ -87,11 +87,10 @@ describe("embedded Harness Bundles", () => {
       join(harnessSource, "overlays", "java", "PROJECT-PROFILE-EXAMPLE.md"), "utf8"
     );
 
-    for (const text of [runSkill, testSkill]) {
-      expect(text).toContain("stale-test-repair");
-      expect(text).toContain("BLOCKED_PREEXISTING");
-      expect(text).toContain("harness_test_guard.py record");
-      expect(text).toContain("禁止临时排除测试");
+    // run/test 合并后四类标记统一由 execute SKILL 承载
+    for (const marker of ["stale-test-repair", "BLOCKED_PREEXISTING",
+      "harness_test_guard.py record", "禁止临时排除测试"]) {
+      expect(executeSkill).toContain(marker);
     }
     expect(submitSkill).toContain("harness_test_guard.py stage");
     expect(submitSkill).toContain("禁止全局 force-add");
@@ -108,11 +107,10 @@ describe("embedded Harness Bundles", () => {
         await exists(join(bundleRoot, "scripts", "harness_test_guard.py")),
         `${profile}/${agent} missing harness_test_guard.py`
       ).toBe(true);
-      const runSkill = await readFile(join(bundleRoot, "harness-run", "SKILL.md"), "utf8");
-      const testSkill = await readFile(join(bundleRoot, "harness-test", "SKILL.md"), "utf8");
+      const executeSkill = await readFile(join(bundleRoot, "harness-execute", "SKILL.md"), "utf8");
       const submitSkill = await readFile(join(bundleRoot, "harness-submit", "SKILL.md"), "utf8");
-      expect(runSkill).toContain("stale-test-repair");
-      expect(testSkill).toContain("BLOCKED_PREEXISTING");
+      expect(executeSkill).toContain("stale-test-repair");
+      expect(executeSkill).toContain("BLOCKED_PREEXISTING");
       expect(submitSkill).toContain("harness_test_guard.py stage");
     }
   });
@@ -122,7 +120,7 @@ describe("embedded Harness Bundles", () => {
     const planProtocols = await readFile(join(harnessSource, "harness-plan", "protocols.md"), "utf8");
     const planChecklist = await readFile(join(harnessSource, "harness-plan", "checklist.md"), "utf8");
     const planReference = await readFile(join(harnessSource, "harness-plan", "reference.md"), "utf8");
-    const runProtocols = await readFile(join(harnessSource, "harness-run", "protocols.md"), "utf8");
+    const runProtocols = await readFile(join(harnessSource, "harness-execute", "protocols.md"), "utf8");
 
     expect(planSkill).toContain("effort: medium");
     // 阶段 0 引导是一条命令：run-id 由脚本铸造并绑定 phase.start，重跑复用同一身份

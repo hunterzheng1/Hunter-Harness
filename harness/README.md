@@ -4,7 +4,7 @@
 
 本包为通用 harness-skills，技术栈无关：构建/测试/打包命令按目标项目技术栈解析（Java=Maven、前端=npm、Python=pytest 等，详见项目 CLAUDE.md 或 `.harness/config/`）。文中 Java/Maven、Mapper/Controller/VO、Spring Boot、jar/war 等措辞仅为示例，不影响流程骨架的通用性。
 
-环境、CodeGraph 等外部增强检查应在 `npx hunter-harness` 初始化阶段完成。Superpowers / grill-me 等外部技能只作为方法论来源与人工参考；`harness-plan`、`harness-run`、`harness-review` 已内化关键能力，不再运行时依赖外部 skill。
+环境、CodeGraph 等外部增强检查应在 `npx hunter-harness` 初始化阶段完成。Superpowers / grill-me 等外部技能只作为方法论来源与人工参考；`harness-plan`、`harness-execute`、`harness-review` 已内化关键能力，不再运行时依赖外部 skill。
 
 
 > 一套完整的 AI 辅助开发 Skill，覆盖从上下文同步到代码提交的全流程。
@@ -49,10 +49,9 @@
 | Skill | allowed-tools | disallowed-tools |
 |-------|---------------|------------------|
 | harness-plan | `[Read, Glob, Grep, Edit, Write, Agent, Bash(powershell.exe:*)]` | `Bash(git *)`, `Bash(mvn *)`, 等 14 项普通 Bash 命令 |
-| harness-run | `[Read, Edit, Write, Glob, Grep, Bash(powershell.exe:*)]` | 同上 |
+| harness-execute | `[Read, Edit, Write, Glob, Grep, Agent, Bash(powershell.exe:*)]` | 同上 + `Bash(node *)` |
 | harness-submit | `[Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]` | 同上 |
 | harness-archive | `[Read, Edit, Write, Glob, Grep, Bash(powershell.exe:*)]` | 同上 |
-| harness-test | `[Read, Glob, Grep, Write, Edit, Agent, Bash(powershell.exe:*)]` | 同上 + `Bash(node *)` |
 | harness-review | `[Read, Write, Edit, Glob, Grep, Agent, Bash(powershell.exe:*)]` | 同上 |
 | harness-sync | `[Read, Glob, Grep, Edit, Write, Bash(powershell.exe:*)]` | 同上 |
 | harness-codebase-map | `[Read, Glob, Grep, Write, Edit, Agent, Bash(powershell.exe:*)]` | 同上 |
@@ -103,18 +102,18 @@
 │   │   └── <change-name>-test-scenarios.md    # 测试场景表（4维度覆盖）
 │   ├── evidence/                    # 验证证据
 │   │   ├── verification-ledger.json # 验证账本（compile/unit/api 可复用结果）
-│   │   └── run-task-status.md       # 任务执行状态（harness-run 持久化产出）
+│   │   └── run-task-status.md       # 任务执行状态（harness-execute 持久化产出）
 │   ├── reports/                     # 报告
 │   │   ├── test/
-│   │   │   └── test-report-YYYYMMDD-HHmm.md  # harness-test 产出（时间戳区分多次运行）
+│   │   │   └── test-report-YYYYMMDD-HHmm.md  # harness-execute 产出（时间戳区分多次运行）
 │   │   └── review/
 │   │       ├── review-report-YYYYMMDD-HHmm.md  # harness-review 产出（时间戳区分多次运行）
 │   │       └── fixback-YYYYMMDD-HHmm.md        # RED/YELLOW 修复反馈（按需）
 │   ├── sqls/
-│   │   └── V<version>__<desc>.sql   # 数据库迁移脚本（harness-run 产出）
+│   │   └── V<version>__<desc>.sql   # 数据库迁移脚本（harness-execute 产出）
 │   ├── scripts/                     # 固定脚本和本次运行脚本
 │   ├── runtime/                     # 运行时临时文件（不提交）
-│   │   ├── api-test-runner.mjs      # 接口测试执行器脚本（harness-test 产出）
+│   │   ├── api-test-runner.mjs      # 接口测试执行器脚本（harness-execute 产出）
 │   │   ├── api-test-results.json    # runner 输出的结构化结果
 │   │   └── credential-cache.json    # 认证凭证缓存（旧名 token-cache.json 兼容读取）
 │   └── backups/
@@ -186,16 +185,16 @@ harness-skills/
 │   ├── checklist.md            # 阶段检查清单
 │   ├── protocols.md            # 原生澄清/有限盘问/任务拆分协议
 │   └── reference.md            # 详细模板和规则
-├── harness-run/
-│   ├── SKILL.md                # TDD 编码循环
-│   ├── checklist.md            # 编码步骤检查清单
+├── harness-execute/
+│   ├── SKILL.md                # execute 阶段：编码（变更簇 TDD）+ 验证（单元/接口/兼容）
 │   ├── protocols.md            # 原生 TDD / 变更簇审查协议
-│   └── reference.md            # 编译失败策略 + TDD 降级 + 编码约束
-├── harness-test/
-│   ├── SKILL.md                # 测试执行 + 避坑规则索引
-│   ├── checklist.md            # Phase 0 环境准备 7 项检查
-│   ├── reference.md            # API 测试细节 + 响应验证
-│   └── pitfalls.md             # 30 条避坑规则（详细说明）
+│   ├── coding-reference.md     # 编译失败策略 + TDD 降级 + 编码约束
+│   ├── coding-checklist.md     # 编码步骤检查清单
+│   ├── testing-reference.md    # API 测试细节 + 响应验证 + 执行器模板
+│   ├── testing-checklist.md    # Phase 0 环境准备 7 项检查
+│   ├── testing-pitfalls.md     # 30 条避坑规则（详细说明）
+│   ├── testing-pitfalls-java.md # Java 专项避坑（java profile 由 overlay 覆盖）
+│   └── scripts/                # runtime-helpers.mjs（BOM-safe JSON 等运行时辅助）
 ├── harness-review/
 │   ├── SKILL.md                # 6 维度代码审查
 │   ├── checklist.md            # 6 维度详细检查项
@@ -220,15 +219,14 @@ harness-skills/
 | harness-sync | `/harness-sync` | 10 项元数据检查（7 核心 + 3 辅助） | 初始化检查 | ✅ | 控制台报告 + 自动更新 |
 | harness-codebase-map | `/harness-codebase-map` | 生成代码库地图（7 类文档 + summary + manifest） | `sync`/独立 | ✅ | `.harness/codebase/map/` |
 | harness-plan | `/harness-plan` | 需求→设计→任务拆分→**测试场景表** + 自动命名变更名 | `sync` | 手动 | `.harness/changes/<cn>/plans/` |
-| harness-run | `/harness-run` | TDD 循环 变更簇编码 | `plan` | 手动 | `.harness/changes/<cn>/sqls/` |
-| harness-test | `/harness-test` | 单元测试+接口测试+30条避坑 | `run` | 手动 | `.harness/changes/<cn>/reports/test/` |
-| harness-review | `/harness-review` | 6维度参考性审查（不阻塞后续流程） | `test` | 手动 | `.harness/changes/<cn>/reports/review/` |
+| harness-execute | `/harness-execute` | 变更簇 TDD 编码 + 单元/接口测试 + 数据兼容验证 | `plan` | 手动 | `.harness/changes/<cn>/sqls/`、`reports/test/` |
+| harness-review | `/harness-review` | 6维度参考性审查（不阻塞后续流程） | `execute` | 手动 | `.harness/changes/<cn>/reports/review/` |
 | harness-submit | `/harness-submit` 或 `/harness-merge`（别名） | commit+push（主目录）/ worktree：本地 commit→--no-ff 合并→push 主分支 | `review` | 手动 | ledger `mergeFinalHash` + 控制台报告 |
 | harness-archive | `/harness-archive` | 归档产出到 archive/YYYY-MM-DD-<cn>，释放工作区 | `submit` | 手动 | `.harness/archive/YYYY-MM-DD-<cn>/` |
 | harness-knowledge-query | `/harness-knowledge-query` | 只查询平台语义知识；无本地索引或离线回退 | 独立 | ✅ | CLI JSON（不落本地知识文件） |
 | harness-knowledge-ingest | `/harness-knowledge-ingest` | 确认归档 ZIP 已由平台保存、解包并 ingest | `archive` | ✅ | 服务端 package/knowledge 收据 |
 
-> 生命周期 skill（plan → run → test → review → submit → archive）为**手动触发**：单阶段结束后停止，不自动接续下一阶段（已设 `disable-model-invocation`）。sync / codebase-map / knowledge 等辅助 skill 仍可按需被调用。`harness-run`、`harness-submit`、`harness-archive` 涉及 git 写操作、文件移动或归档，调用前必须确保前置条件已满足。
+> 生命周期 skill（plan → execute → review → submit → archive）为**手动触发**：单阶段结束后停止，不自动接续下一阶段（已设 `disable-model-invocation`）。2026-08 起 run+test 合并为 execute，0.4.9（workflow-harness）起 `/harness-run`、`/harness-test` 入口移除。sync / codebase-map / knowledge 等辅助 skill 仍可按需被调用。`harness-execute`、`harness-submit`、`harness-archive` 涉及 git 写操作、文件移动或归档，调用前必须确保前置条件已满足。
 > `<cn>` = change-name，由 harness-plan 阶段7确定。其他 skill 自动扫描未归档变更定位。
 > 门禁默认 `gate_severity_mode=lenient`（可再生 soft site → WARN）；发布阶段与 3 类硬不变量仍 fail-closed。可用 `HUNTER_HARNESS_GATE_MODE` 或 `gate-policy.json` 的 `severityMode` 强制 `strict`。
 
@@ -262,13 +260,13 @@ harness-skills/
 | **plan 阶段 3** | 默认主会话 CodeGraph/Read inline 探索；仅高复杂度且准备委派固定 agent 时单次预检，失败或无效返回立即 inline，不 retry |
 | **plan 阶段 4/6** | 原生规划协议必须记录风险/复用/替代方案/推荐方案/关键决策，以及任务拆分摘要 |
 | **plan 阶段 5** | 设计文档自审结果必须展示给用户；测试场景表未覆盖维度必须标记为 ⚠️ 缺口，不得全部 ✅ |
-| **run 步骤 0** | 任何代码修改前必须先向 `events.ndjson` 追加 `phase.start`；执行日志由阶段结束事件自动渲染 |
-| **run 轻量验证** | `/harness-run` 默认只做开发反馈：TDD RED/GREEN + REFACTOR + 构建命令增量编译（Java 的 `mvn compile -pl <module>` 等）+ 关门检查 + 写 verification-ledger；除非改了公共模块/数据访问层/sql/权限认证/接口层/数据契约 或用户要求 full-run-validation 或不打算继续 `/harness-test`，否则不默认跑全量测试命令（Java 的 `mvn test` 等）。若跑了全量测试必须写入 ledger 供 test/submit 复用 |
-| **run TDD 降级** | 输出必须写"🟡 静态逻辑验证通过，未执行真实单元测试"，**禁止写"测试全部通过"**；降级标注写在执行日志和覆盖报告中，**不污染业务代码注释**；记录三项：降级原因、静态验证场景列表、待部署后验证场景列表 |
-| **test ledger 复用** | Phase 1 单元测试前先读 `verification-ledger.json`：若 run 阶段已对同一 diffHash/module/profile 跑过单元测试命令（Java 的 `mvn test` 等）且测试通过（Java 的 `Tests run: N, Failures: 0, Errors: 0` / 前端 N passing），可跳过重跑并标记"✅ 复用 harness-run 单元测试结果"；diffHash 不一致 / profile 不一致 / 命令范围更窄 / run 后有行为性修改则不得复用 |
-| **test 批量 runner** | 默认使用 **PowerShell 接口测试执行器**：生成 `.harness/changes/<cn>/runtime/api-test-runner.mjs`，通过一次 PowerShell + node 执行全部场景，输出 `api-test-results.json`，主会话只读 JSON 生成摘要。Playwright MCP `browser_evaluate` 仅作 fallback，报告必须区分执行器：PowerShell 接口测试执行器 ✅使用 / PowerShell batch 🟡fallback / Playwright MCP 🟡fallback / curl 🟡fallback |
-| **test token 策略** | 先读 `.harness/changes/<cn>/runtime/credential-cache.json`（旧名 `token-cache.json` 兼容），本地轻量接口验证通过则复用，失败才访问远程 SSO；接口测试执行器必须用 request context / node fetch 直接请求本地 baseURL，**不得依赖浏览器当前页面 origin** |
-| **post-test 变更分类** | test 之后发生代码变更时，submit/archive 必须按 7 类分类（NON_BEHAVIORAL_CLEANUP / COMMENT_ONLY / TEST_ONLY / BEHAVIORAL_SERVICE_CHANGE / API_CONTRACT_CHANGE / SQL_OR_MAPPER_CHANGE / SECURITY_OR_PERMISSION_CHANGE）写入 ledger 的 `postTestClassification`；非行为性清理可复用 API 测试结果但须记录依据，行为性变更必须重跑相关场景 |
+| **execute 编码侧步骤 0** | 任何代码修改前必须先向 `events.ndjson` 追加 `phase.start`；执行日志由阶段结束事件自动渲染 |
+| **execute 轻量验证** | `/harness-execute` 编码侧默认只做开发反馈：TDD RED/GREEN + REFACTOR + 构建命令增量编译（Java 的 `mvn compile -pl <module>` 等）+ 关门检查 + 写 verification-ledger；除非改了公共模块/数据访问层/sql/权限认证/接口层/数据契约 或用户要求 full-run-validation，否则不默认跑全量测试命令（Java 的 `mvn test` 等）。若跑了全量测试必须写入 ledger 供验证侧/submit 复用 |
+| **execute TDD 降级** | 输出必须写"🟡 静态逻辑验证通过，未执行真实单元测试"，**禁止写"测试全部通过"**；降级标注写在执行日志和覆盖报告中，**不污染业务代码注释**；记录三项：降级原因、静态验证场景列表、待部署后验证场景列表 |
+| **execute ledger 复用** | 验证侧执行单元测试前先读 `verification-ledger.json`：若编码侧已对同一 diffHash/module/profile 跑过单元测试命令（Java 的 `mvn test` 等）且测试通过（Java 的 `Tests run: N, Failures: 0, Errors: 0` / 前端 N passing），可跳过重跑并标记"✅ 复用编码侧单元测试结果"；diffHash 不一致 / profile 不一致 / 命令范围更窄 / 编码侧之后有行为性修改则不得复用 |
+| **execute 批量 runner** | 默认使用 **PowerShell 接口测试执行器**：生成 `.harness/changes/<cn>/runtime/api-test-runner.mjs`，通过一次 PowerShell + node 执行全部场景，输出 `api-test-results.json`，主会话只读 JSON 生成摘要。Playwright MCP `browser_evaluate` 仅作 fallback，报告必须区分执行器：PowerShell 接口测试执行器 ✅使用 / PowerShell batch 🟡fallback / Playwright MCP 🟡fallback / curl 🟡fallback |
+| **execute token 策略** | 先读 `.harness/changes/<cn>/runtime/credential-cache.json`（旧名 `token-cache.json` 兼容），本地轻量接口验证通过则复用，失败才访问远程 SSO；接口测试执行器必须用 request context / node fetch 直接请求本地 baseURL，**不得依赖浏览器当前页面 origin** |
+| **execute 后变更分类** | 验证完成后发生代码变更时，submit/archive 必须按 7 类分类（NON_BEHAVIORAL_CLEANUP / COMMENT_ONLY / TEST_ONLY / BEHAVIORAL_SERVICE_CHANGE / API_CONTRACT_CHANGE / SQL_OR_MAPPER_CHANGE / SECURITY_OR_PERMISSION_CHANGE）写入 ledger 的 `postTestClassification`；非行为性清理可复用 API 测试结果但须记录依据，行为性变更必须重跑相关场景 |
 | **submit 时序** | `/harness-submit` 完成后：主目录模式可直接 `/harness-archive`；worktree 模式在同一 skill 内自动完成合并后再 archive |
 | **submit ledger 复用** | 验证前先读 `verification-ledger.json`：若当前 diffHash 已通过 test 完整验证且无行为性 post-test 修改，submit 不默认重跑构建命令/测试命令（Java 的 `mvn compile`/`mvn test` 等）；只在远端有新提交 / staged diff 与 ledger 不一致 / 行为性 post-test 修改 / test 报告缺失或失败 / 用户要求 submit-full-verify 时重跑，重跑结果写回 ledger |
 | **submit commit message** | subject 只根据当前 `git diff --cached` 或本次变更名生成，**不得混入历史任务上下文** |
@@ -309,7 +307,7 @@ harness-skills/
                     └──────┬───────┘
                            │
                     ┌──────▼───────┐
-                    │ harness-test │  "测试验证" — 单元+接口+数据兼容
+                    │ harness-execute │  "测试验证" — 单元+接口+数据兼容
                     └──────┬───────┘
                            │
                     ┌──────▼───────┐
@@ -335,22 +333,22 @@ harness-skills/
      └─────────────────────────────────────────────────┘
 ```
 
-> **harness-review 是参考性审查阶段**：默认只生成参考性审查报告和按需 fixback，不影响后续 submit、archive。如果用户选择处理 fixback，回到 `/harness-run --fixback`，再执行 `/harness-test` 和 `/harness-review`；如果团队希望 review RED 阻塞提交，可在 `.harness/config/harness-test-config.md` 中设置 `review.strict-review-gate: true`。
+> **harness-review 是参考性审查阶段**：默认只生成参考性审查报告和按需 fixback，不影响后续 submit、archive。如果用户选择处理 fixback，回到 `/harness-execute --fixback`，再执行 `/harness-execute` 和 `/harness-review`；如果团队希望 review RED 阻塞提交，可在 `.harness/config/harness-test-config.md` 中设置 `review.strict-review-gate: true`。
 
-> **阶段顺序以计划为准**：Plan 会把本次 `plannedPhases` 写入上下文，后续阶段只消费该计划，不再假定 test、review、submit 或 merge 必经。快速流程默认可用 `plan → run → archive`；需要完整验证、评审或提交时再把对应阶段加入计划。无 Git、无 upstream、仅本地提交或主动跳过 submit 都不妨碍事实封存；只有“发布候选”需要额外满足发布策略。
+> **阶段顺序以计划为准**：Plan 会把本次 `plannedPhases` 写入上下文，后续阶段只消费该计划，不再假定 test、review、submit 或 merge 必经。快速流程默认可用 `plan → execute → archive`；需要完整验证、评审或提交时再把对应阶段加入计划。无 Git、无 upstream、仅本地提交或主动跳过 submit 都不妨碍事实封存；只有“发布候选”需要额外满足发布策略。
 
 > **verification-ledger 驱动跨阶段复用**：先通过共享状态目录解析器定位变更，再读写其 `evidence/verification-ledger.json`，其中记录 compile/unitTest/apiTest 的结果、证据、diffHash 和作用范围。run/test/submit 执行验证前先读 ledger，满足复用条件（diffHash 一致、module/profile 一致、范围更严格、有证据、无行为性 post-test 修改）则跳过重跑并标记 🔁REUSED；post-test 小改动按 7 类分类，非行为性清理可复用 API 测试。详见 `protocols/ledger-protocol.md`。
 
 ## 外部方法论吸收（已内化）
 
-`harness-plan`、`harness-run`、`harness-review` 已将外部 skill 的有效方法内化为原生协议，不再运行时调用 Superpowers、grill-me 或 `receiving-code-review`，也不检查、降级或同步 `docs/superpowers/` 草稿。
+`harness-plan`、`harness-execute`、`harness-review` 已将外部 skill 的有效方法内化为原生协议，不再运行时调用 Superpowers、grill-me 或 `receiving-code-review`，也不检查、降级或同步 `docs/superpowers/` 草稿。
 
 | 方法论来源 | harness 落点 | 当前关系 |
 |------------|--------------|----------|
 | brainstorming | `harness-plan/protocols.md` 的 clarification-protocol | 已内化：风险、复用机会、替代方案、推荐方案 |
 | grill-me | `harness-plan/protocols.md` 的 decision-grilling-protocol | 已内化：有限问题预算、一次一问、每问推荐答案 |
 | writing-plans | `harness-plan/protocols.md` 的 implementation-planning-protocol | 已内化：任务简表、自适应执行参考、无占位符自检 |
-| Superpowers TDD / subagent-driven-dev | `harness-run/protocols.md` 的 run-tdd-protocol / change-cluster-review-protocol | 已内化：RED 类型、GREEN 最小实现、风险触发审查 |
+| Superpowers TDD / subagent-driven-dev | `harness-execute/protocols.md` 的 run-tdd-protocol / change-cluster-review-protocol | 已内化：RED 类型、GREEN 最小实现、风险触发审查 |
 | receiving-code-review | `harness-review/protocols.md` 的 review-fixback-protocol | 已内化：RED/YELLOW 转结构化 fixback |
 
 > **状态说明**：Superpowers / grill-me 可作为人工参考或后续方法论对标来源，但不是 harness 正式流程的运行时依赖；缺失时不触发降级记录。
@@ -397,7 +395,7 @@ powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-*' -Destination
 或者只复制需要的 skill：
 
 ```powershell
-powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-test' -Destination '<目标项目>/.claude/skills/' -Recurse -Force"
+powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-execute' -Destination '<目标项目>/.claude/skills/' -Recurse -Force"
 ```
 
 Claude Code/CodeBuddy 可选复制 3 个隔离角色：`harness-explorer` 仅高复杂度探索、`harness-evaluator` 仅 `--adversarial`/高风险规划、`harness-reviewer` 仅发布候选/高风险审查。Codex/Cursor 默认使用主会话或宿主临时隔离任务，不安装固定角色，也不执行固定 agent 预检：
@@ -420,8 +418,8 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 /harness-sync         # 10 项元数据检查（7 核心 + 3 辅助）
 /harness-codebase-map  # 生成代码库地图（7 类文档）
 /harness-plan         # 需求规划（生成测试场景表 + 自动命名变更名）
-/harness-run          # TDD 编码
-/harness-test         # 运行测试（30条避坑规则）
+/harness-execute          # TDD 编码
+/harness-execute         # 运行测试（30条避坑规则）
 /harness-review       # 代码审查
 /harness-submit       # 提交代码（worktree 模式含合并；/harness-merge 为别名）
 /harness-archive      # 归档产出（harness_archive.py execute），释放工作区
@@ -429,7 +427,7 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 
 ## 避坑知识来源
 
-`harness-test/pitfalls.md` 中的 30 条避坑规则来自真实对话日志（2026-06-12 ~ 06-24）。
+`harness-execute/testing-pitfalls.md` 中的 30 条避坑规则来自真实对话日志（2026-06-12 ~ 06-24）。
 
 ---
 ← 返回 [[AI开发工作流|工作流主页]]
@@ -439,9 +437,9 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 
 ### Worktree 决策状态
 
-`harness-plan` 阶段 2 用户选择后，必须写入 `.harness/changes/<change-name>/meta/worktree.json`。`harness-run` 负责读取该文件并创建/切换 worktree。
+`harness-plan` 阶段 2 用户选择后，必须写入 `.harness/changes/<change-name>/meta/worktree.json`。`harness-execute` 负责读取该文件并创建/切换 worktree。
 
-硬规则：如果 `worktree.json` 中 `requested=true`，而 worktree 不存在，`harness-run` 必须创建 worktree 或停止，不得静默回到主目录执行。
+硬规则：如果 `worktree.json` 中 `requested=true`，而 worktree 不存在，`harness-execute` 必须创建 worktree 或停止，不得静默回到主目录执行。
 
 
 ## Cross-skill Protocols

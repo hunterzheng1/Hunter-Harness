@@ -61,4 +61,4 @@ status: active
 
 ## Notes for AI Agents
 
-- <how harness-test should use this map>
+- <how harness-execute should use this map>

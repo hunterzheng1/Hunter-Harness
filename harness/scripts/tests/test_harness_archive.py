@@ -1373,7 +1373,7 @@ class ReplayLegacyWithoutEventsTests(unittest.TestCase):
         )
         _write(
             self.archive / "logs" / "execution-log.md",
-            "# execution log\n\n## [1] harness-run\n\n**结果**: OK\n",
+            "# execution log\n\n## [1] harness-execute\n\n**结果**: OK\n",
         )
         _write_json(
             self.archive / "reports" / "final" / "summary-data.json",

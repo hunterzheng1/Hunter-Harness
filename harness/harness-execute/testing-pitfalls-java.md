@@ -1,10 +1,10 @@
 ---
-description: Java/Feign 相关测试踩坑（harness-test）。API 实测前通读；发现客户端路径缺陷时回写 plan 外修复记录。
+description: Java/Feign 相关测试踩坑（harness-execute）。API 实测前通读；发现客户端路径缺陷时回写 plan 外修复记录。
 ---
 
 # Java 测试踩坑补充（Feign / 远程客户端）
 
-> 与 `pitfalls.md`（通用）及 `overlays/java/pitfalls-java.md`（overlay 速查表）互补；本文件收录路径拼接类缺陷的症状与流程要求。
+> 与 `testing-pitfalls.md`（通用）及 `overlays/java/pitfalls-java.md`（overlay 速查表）互补；本文件收录路径拼接类缺陷的症状与流程要求。
 
 ## Feign/客户端路径前缀缺失
 

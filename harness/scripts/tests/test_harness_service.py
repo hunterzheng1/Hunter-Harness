@@ -408,7 +408,7 @@ class ServiceFingerprintTests(unittest.TestCase):
         self._pids.append(pid1)
         self._ensure()  # reuse once
 
-        self._write_profile(overlay_path="C:/temp/harness-test-overlay/c1/application-harness-test.yml")
+        self._write_profile(overlay_path="C:/temp/harness-execute-overlay/c1/application-harness-execute.yml")
         if self.health.is_file():
             self.health.unlink()
         code3, p3 = self._ensure()

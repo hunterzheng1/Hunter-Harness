@@ -132,56 +132,6 @@
         "risk-classify-plan"
       ]
     },
-    "harness-run": {
-      "phase": "execute",
-      "inputs": [
-        "implementation-detail",
-        "state-snapshot"
-      ],
-      "artifacts": [
-        "code",
-        "verification-ledger"
-      ],
-      "events": [
-        "phase.start",
-        "phase.end",
-        "command",
-        "verification"
-      ],
-      "allowedInteractions": [],
-      "capabilities": [
-        "gate-begin",
-        "gate-close",
-        "ledger-record"
-      ]
-    },
-    "harness-test": {
-      "phase": "execute",
-      "inputs": [
-        "test-scenarios",
-        "verification-ledger"
-      ],
-      "artifacts": [
-        "test-reports",
-        "verification-ledger"
-      ],
-      "events": [
-        "phase.start",
-        "phase.end",
-        "command",
-        "verification"
-      ],
-      "allowedInteractions": [
-        "resource-intensive-test-confirmation"
-      ],
-      "capabilities": [
-        "gate-begin",
-        "gate-close",
-        "test-guard",
-        "ledger-record",
-        "resource-safe-test-runner"
-      ]
-    },
     "harness-review": {
       "phase": "review",
       "inputs": [

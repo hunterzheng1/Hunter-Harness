@@ -17,7 +17,7 @@ _Avoid_: 外部依赖, 必需插件
 _Avoid_: 运行时增强, 降级分支, 硬依赖
 
 **变更簇**:
-围绕同一业务行为或同一验证目标的一组任务。变更簇是 `/harness-run` 执行 RED→GREEN→REFACTOR 的基本单位。
+围绕同一业务行为或同一验证目标的一组任务。变更簇是 `/harness-execute` 执行 RED→GREEN→REFACTOR 的基本单位。
 _Avoid_: 小任务, 单步任务
 
 **自适应执行参考**:

@@ -136,7 +136,7 @@ powershell.exe -NoProfile -Command "git -C '<项目路径>' log HEAD..@{u} --one
    powershell.exe -Command "[System.IO.Directory]::Delete('<worktree-path>', $true)"
    ```
 
-4. **ExitWorktree 工具限制**：`ExitWorktree(remove)` 只删由 `EnterWorktree` 创建的 worktree。若本会话进入的是已存在 worktree（由 `harness-run` 创建），工具会拒绝删除。此时用 `action:keep` 返回主仓库，再按上述 1-3 步手动清理。
+4. **ExitWorktree 工具限制**：`ExitWorktree(remove)` 只删由 `EnterWorktree` 创建的 worktree。若本会话进入的是已存在 worktree（由 `harness-execute` 创建），工具会拒绝删除。此时用 `action:keep` 返回主仓库，再按上述 1-3 步手动清理。
 
 5. **清理后更新 `meta/worktree.json`**：置 `created=false` + 追加 `removedAt`/`removedBy`/`removalNote`，记录产出保留待 `/harness-archive`。
 

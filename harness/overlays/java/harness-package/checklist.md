@@ -10,9 +10,9 @@ description: harness-package 的8步工作流详细步骤、模块识别方法�
 
 如果 `$ARGUMENTS` 非空且与检测到的变更名不一致，以 `$ARGUMENTS` 为准。
 
-**读取 worktree 状态并切换**：读 `.harness/changes/<change-name>/meta/worktree.json`（旧路径 `worktree.json` 兼容）。`requested=true` 且 `.worktrees/<change-name>/` 已创建 → cd 到该 worktree 目录；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-run`，不得静默回主目录；`requested=false` → 在主目录执行。切换后检查构建配置文件（`.mvn/maven.config`、`settings-*.xml` 等）是否完整，缺失时从主目录复制。
+**读取 worktree 状态并切换**：读 `.harness/changes/<change-name>/meta/worktree.json`（旧路径 `worktree.json` 兼容）。`requested=true` 且 `.worktrees/<change-name>/` 已创建 → cd 到该 worktree 目录；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-execute`，不得静默回主目录；`requested=false` → 在主目录执行。切换后检查构建配置文件（`.mvn/maven.config`、`settings-*.xml` 等）是否完整，缺失时从主目录复制。
 
-**强制前置检查 — harness-test（硬门禁）和 harness-review（参考性）**：
+**强制前置检查 — harness-execute（硬门禁）和 harness-review（参考性）**：
 
 通过 Glob 检查：
 - `.harness/changes/<change-name>/reports/test/test-report-*.md` 是否存在（旧路径 `tests/` 兼容）
@@ -21,19 +21,19 @@ description: harness-package 的8步工作流详细步骤、模块识别方法�
 如果缺失 test 报告，使用 `blocking user confirmation` 询问用户：
 
 ```
-检测到 harness-test 尚未运行（缺少测试报告）：
+检测到 harness-execute 尚未运行（缺少测试报告）：
 - 测试报告: <存在/缺失>
 - 审查报告: <存在/缺失>（参考性，不阻塞）
 
 打包前建议先运行测试。请选择：
-1. 先运行 harness-test — 退出 package 流程，运行 harness-test 后再 package（推荐）
+1. 先运行 harness-execute — 退出 package 流程，运行 harness-execute 后再 package（推荐）
 2. 跳过测试继续打包 — 风险自担，报告中明确标记
 3. 取消 package
 ```
 
 **默认不跳过 test**。用户确认跳过时，必须在执行日志和 package-report 中明确写明：
-- 执行日志：`- **跳过**: 用户确认跳过 harness-test`
-- package-report：`> ⚠️ 用户确认跳过 harness-test，打包结果未经测试验证`
+- 执行日志：`- **跳过**: 用户确认跳过 harness-execute`
+- package-report：`> ⚠️ 用户确认跳过 harness-execute，打包结果未经测试验证`
 
 **review 报告**：如果存在，记录路径和摘要供参考；如果不存在，不阻塞 package。review 结果不作为硬门禁。
 
@@ -46,7 +46,7 @@ description: harness-package 的8步工作流详细步骤、模块识别方法�
    - `diffHash` 与当前提交一致
    - submit 后无新提交（`git log <baseCommit>..HEAD` 为空）
    - 无行为性 post-test 修改（`postTestClassification` ∈ {无, NON_BEHAVIORAL_CLEANUP, COMMENT_ONLY, TEST_ONLY}）
-4. ledger 有效 → 默认 `mvn package -DskipTests` 复用测试；ledger 无效 → 带测试打包或要求先跑 `/harness-test`
+4. ledger 有效 → 默认 `mvn package -DskipTests` 复用测试；ledger 无效 → 带测试打包或要求先跑 `/harness-execute`
 
 **append `phase.start`**（含 worktree/baseCommit/ledger 摘要于 `note`）：
 

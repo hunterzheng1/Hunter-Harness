@@ -1,10 +1,10 @@
 ---
-description: harness-run 的原生执行协议。内化 TDD 与变更簇审查能力，但不运行时依赖 Superpowers。
+description: harness-execute 的原生执行协议。内化 TDD 与变更簇审查能力，但不运行时依赖 Superpowers。
 ---
 
-# harness-run 原生执行协议
+# harness-execute 原生执行协议
 
-本文件定义 `/harness-run` 的内置执行协议。它吸收 test-driven-development 与 subagent-driven-development 的有效做法，但正式流程不调用 Superpowers，也不把外部 skill 是否存在作为执行条件。
+本文件定义 `/harness-execute` 的内置执行协议。它吸收 test-driven-development 与 subagent-driven-development 的有效做法，但正式流程不调用 Superpowers，也不把外部 skill 是否存在作为执行条件。
 
 ## 协议一：run-tdd-protocol
 
@@ -15,7 +15,7 @@ description: harness-run 的原生执行协议。内化 TDD 与变更簇审查�
 | RED 类型 | 何时使用 | 证据要求 |
 |----------|----------|----------|
 | 真实 RED | 测试基础设施可用，能写测试并运行失败 | 测试编译通过，失败断言指向目标行为 |
-| 静态 RED | 测试基础设施不可用或目标层无法真实验证 | 记录降级原因、静态验证场景、待 harness-test 验证场景 |
+| 静态 RED | 测试基础设施不可用或目标层无法真实验证 | 记录降级原因、静态验证场景、待 harness-execute 验证场景 |
 | 复用 RED | 计划和测试场景已明确失败场景，且本轮只执行同一场景的实现 | 引用 test-scenarios 编号与前序证据，仍需在 run 日志登记 |
 
 RED 失败原因必须与目标 bug 或需求直接相关。无效 RED（测试搭建错误、private 访问限制、mock/stubbing 错误、依赖注入失败、NPE 来自测试夹具）不得进入 GREEN。

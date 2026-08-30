@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.9] — workflow-harness
+
+> 移除 run/test 遗留别名 skill：两者自 2026-08 阶段合并起就是 harness-execute
+> 的完整副本，双份内容持续漂移。纯 workflow-harness 变更，CLI 保持 0.4.10。
+
+### Removed — harness-run / harness-test 入口
+
+- 删除 `harness-run/`、`harness-test/` skill 目录（`/harness-run`、`/harness-test`
+  命令不再存在）；唯一用户场景由 `/harness-execute` 承担。阶段名归一不变：
+  `LEGACY_PHASE_ALIASES` 仍把旧 phase 名 `run`/`test` 映射为 execute。
+- 参考文档迁入 `harness-execute/`：`protocols.md`（TDD/变更簇审查）、
+  `coding-reference.md` / `coding-checklist.md`（编码侧）、`testing-reference.md` /
+  `testing-checklist.md` / `testing-pitfalls.md` / `testing-pitfalls-java.md`（验证侧）、
+  `scripts/runtime-helpers.mjs`。execute SKILL 的渐进披露引用全部指向同目录裸文件名。
+- Java overlay 同步合并：`overlays/java/harness-{run,test}.overlay.md` 合为
+  `harness-execute.overlay.md`（锚点对齐 execute 的「Workflow 概要」节），
+  `overlays/java/harness-{run,test}/` 参考文档迁入 `overlays/java/harness-execute/`；
+  `harness_deploy.py` 的 `pitfalls-java.md` 覆盖目标改为
+  `harness-execute/testing-pitfalls-java.md`。
+- `contracts/workflow-policy.json` 删除 harness-run / harness-test 条目（execute
+  条目的 inputs/artifacts/events/capabilities 已是两者的并集）。
+- `harness/README.md` 生命周期口径更新为 `plan → execute → review → submit →
+  archive`（此前仍描述 run/test 独立阶段，与实际状态机不符）。
+- `harness_acceptance.py` 的 apiSetupTestCleanup 检查改读
+  `harness-execute/testing-reference.md`；smoke:pack 的 support-file 断言改为
+  harness-execute 的新文件清单。
+
 ## [0.4.10] — hunter-harness
 
 > Plan 产物人读层优化：引用点短引用化 + 元数据标签中文化，plan_finalize

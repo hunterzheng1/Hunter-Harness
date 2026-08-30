@@ -854,13 +854,13 @@ def _node_commands(project: Path) -> dict[str, Any]:
         "apps/*/tests/**/*.tsx",
     ]
     # harness dogfood: canonical Python + .mjs sources feed npm run check (vitest
-    # imports harness-test/scripts; smoke:pack runs sync-harness.mjs).
+    # imports harness-execute/scripts; smoke:pack runs sync-harness.mjs).
     if (project / "harness").is_dir():
         inputs.extend(
             [
                 "harness/scripts/*.py",
-                "harness/harness-test/scripts/*.mjs",
-                "harness/harness-test/scripts/tests/*.mjs",
+                "harness/harness-execute/scripts/*.mjs",
+                "harness/harness-execute/scripts/tests/*.mjs",
                 "scripts/*.mjs",
             ]
         )

@@ -498,7 +498,7 @@ class HarnessGateTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        generated = self.project / ".cursor" / "skills" / "harness-run" / "SKILL.md"
+        generated = self.project / ".cursor" / "skills" / "harness-execute" / "SKILL.md"
         generated.parent.mkdir(parents=True)
         generated.write_text("bundle 0.2.64\n", encoding="utf-8")
         (self.project / ".harness" / "context-index.json").write_text(
@@ -511,7 +511,7 @@ class HarnessGateTests(unittest.TestCase):
         self.assertNotIn("production-code", result["signals"])
         self.assertEqual(
             result["workspaceBreakdown"]["harnessMaintenancePaths"],
-            [".cursor/skills/harness-run/SKILL.md", ".harness/context-index.json"],
+            [".cursor/skills/harness-execute/SKILL.md", ".harness/context-index.json"],
         )
         self.assertEqual(result["workspaceBreakdown"]["productPaths"], [])
 
@@ -634,7 +634,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_lint_skills_flags_handwritten_ledger_pattern(self) -> None:
         skills_root = Path(tempfile.mkdtemp(prefix="skills-root-"))
         try:
-            bad = skills_root / "harness-run" / "SKILL.md"
+            bad = skills_root / "harness-execute" / "SKILL.md"
             bad.parent.mkdir(parents=True)
             bad.write_text("Do not Write verification-ledger.json by hand.\n", encoding="utf-8")
             payload = gate.lint_skill_tree(skills_root)

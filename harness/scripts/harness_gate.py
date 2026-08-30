@@ -2220,7 +2220,7 @@ def _validate_scenario_coverage(
     is due by that phase are required to carry passing receipts. Scenarios
     owned by a later phase (e.g. `ownerPhase=test` at `run` close) are
     reported under `deferred` instead of blocking the close — this matches the
-    documented hand-off rule in harness-run/SKILL.md ("ownerPhase=test 按计划移交").
+    documented hand-off rule in harness-execute/SKILL.md ("ownerPhase=test 按计划移交").
     """
     manifest_path = change_dir / "meta" / "scenario-manifest.json"
     if not manifest_path.is_file():

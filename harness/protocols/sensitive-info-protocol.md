@@ -98,13 +98,13 @@ spring:
 > `HUNTER_HARNESS_SENSITIVE_SCAN=block` 才恢复阻断、`=off` 完全关闭。
 > 门禁放行不等于内容可以带明文凭据——本节的要求始终成立。
 
-profile `build-profile.json`、规则文档、Skill Markdown **不得包含凭据明文值**（spec §3.4 凭据边界：配置只含 env key、cache path、角色，不含值）。发布前用 `harness-test/scripts/runtime-helpers.mjs` 的 `findCredentialValues(text)` 扫描：
+profile `build-profile.json`、规则文档、Skill Markdown **不得包含凭据明文值**（spec §3.4 凭据边界：配置只含 env key、cache path、角色，不含值）。发布前用 `harness-execute/scripts/runtime-helpers.mjs` 的 `findCredentialValues(text)` 扫描：
 
 - 命中 `password/token/secret/accessKey/Authorization: Bearer/jdbc password=` 等明文值 → ❌FAIL，必须改为占位符 `<*_REDACTED>` 或 env 引用 `${ENV}` / `$ENV`。
 - 占位符 `<TOKEN_REDACTED>` 与 env 引用 `${TEST_TOKEN}` / `$DB_PASSWORD` 不报（credential 配置允许 env key）。
 
 ```js
-import { findCredentialValues } from '<skills-root>/harness-test/scripts/runtime-helpers.mjs';
+import { findCredentialValues } from '<skills-root>/harness-execute/scripts/runtime-helpers.mjs';
 const findings = findCredentialValues(fs.readFileSync('build-profile.json', 'utf8'));
 if (findings.length > 0) { /* ❌FAIL: 列出 line/code/snippet，改为 env key 或占位符 */ }
 ```

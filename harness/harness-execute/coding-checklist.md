@@ -1,8 +1,8 @@
 ---
-description: harness-run 的执行检查清单。仅在编码执行时读取。
+description: harness-execute 的执行检查清单。仅在编码执行时读取。
 ---
 
-# harness-run 执行检查清单
+# harness-execute 执行检查清单
 
 > 编码执行时逐项勾选，确保不遗漏关键步骤。
 
@@ -88,10 +88,10 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 ### 进入变更簇 RED 前：执行 run-tdd-protocol
 
-- [ ] 已读取 `harness-run/protocols.md`
+- [ ] 已读取 `protocols.md`
 - [ ] 为当前变更簇选择 RED 类型：真实 RED / 静态 RED / 复用 RED
 - [ ] 真实 RED → 测试编译通过且失败断言指向目标行为
-- [ ] 静态 RED → 记录降级原因、静态验证场景、待 harness-test 验证场景
+- [ ] 静态 RED → 记录降级原因、静态验证场景、待 harness-execute 验证场景
 - [ ] 复用 RED → 引用 test-scenarios 编号与前序证据，并在执行日志登记
 - [ ] 任何 RED 类型都已写入 events.ndjson（`decision` / `verification` / `issue`）
 
@@ -121,7 +121,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 ### 数据访问层查询条件验证检查
 
 - [ ] 如果变更涉及数据访问层查询逻辑（Java 的 Mapper/LambdaQueryWrapper/SQL/XML）→ 不得用纯 Mock 宣称"自动化测试通过"
-- [ ] 纯 Mock 数据访问层测试 → 标记为 🟡静态验证，交给 harness-test 真实 DB 验证
+- [ ] 纯 Mock 数据访问层测试 → 标记为 🟡静态验证，交给 harness-execute 真实 DB 验证
 - [ ] 如果必须自动化 → 使用真实数据访问层（非 mock）或可检查查询条件的测试方式
 
 ### 编码前检查（远程客户端 / stub 同源错误）
@@ -157,7 +157,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 如果使用静默模式（如 Maven `-q`）→ 报告中写 `exitCode=0`，**不得写"构建成功"字样（如 Java 的 BUILD SUCCESS）**
 - [ ] 最终构建只执行一次，如果前面已有构建成功证据，可复用 verification-ledger
 - [ ] 判断是否需要全量测试：改了公共模块/数据访问层/数据库迁移/权限认证/接口层/数据契约，或用户要求 full-run-validation → 执行测试命令（按技术栈，如 Java 的 `mvn test -pl <module> -o`）；否则跳过全量测试
-- [ ] 构建失败 → 先分析错误类型（见 reference.md 构建失败策略表）
+- [ ] 构建失败 → 先分析错误类型（见 coding-reference.md 构建失败策略表）
 - [ ] **经 `harness_ledger.py record` 写入 ledger**（禁止 Write/Edit `verification-ledger.json`）：`compile` 项必写；若执行了测试则 `unitTest` 项必写；未执行时标记 `NOT_RUN_BY_RUN`
 - [ ] 顶层写入 `diffHash` / `currentHead` / `module` / `profile`；`diffHash` 必须执行 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json`，纳入 test-tracking manifest 中的 ignored tests；`currentHead`=`git rev-parse HEAD`
 - [ ] test/submit/package 阶段如果 diffHash 一致，可复用 run 的 compile/unitTest 结果
@@ -181,7 +181,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 > 凡是修改了管理员/非管理员、orgCode、数据权限、越权异常等逻辑，必须强制生成。
 
-- [ ] 生成安全矩阵（模板见 reference.md）
+- [ ] 生成安全矩阵（模板见 coding-reference.md）
 - [ ] 覆盖：超级管理员 token 空/非空 × 请求 orgCode 空/指定 × projectType 有/无
 - [ ] 覆盖：非管理员 token 本组织/空 × 请求 orgCode 本组织/其他组织/空 × projectType 有/无
 - [ ] 如果任一权限边界预期不明确 → 不允许标记 ✅OK
@@ -237,12 +237,12 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 - [ ] 每个任务状态只更新到 `evidence/run-task-status.md`；不得修改 finalized plan 文件
 - [ ] 状态区分：✅ DONE_AUTOMATED_TESTED / 🟡 DONE_STATIC_ONLY / 🟡 DONE_NEEDS_INTERFACE_TEST / 🟡 NEEDS_DB_VALIDATION / ❌ FAILED
-- [ ] 确保后续 harness-test / harness-review 可读取待验证场景
+- [ ] 确保后续 harness-execute / harness-review 可读取待验证场景
 
 ## 事件收尾记录
 
 - [ ] append `phase.end` **仅**通过 `harness_gate.py close`（禁止手工 Edit `events.ndjson` / 直接 append phase.end 绕过 close 校验）
-- [ ] 如果存在 run-owned 🟡静态验证 P0 场景 → 下一步必须写 `必须先运行 /harness-test`，不得并列"提交代码"
+- [ ] 如果存在编码侧 🟡静态验证 P0 场景 → 下一步必须写 `必须先完成本阶段的验证执行（见 testing-checklist.md）`，不得并列"提交代码"
 - [ ] 如果 run 阶段负责的数据库迁移/DB 验证未完成 → 最终不得输出纯 ✅OK
 
 ### 最终状态分级

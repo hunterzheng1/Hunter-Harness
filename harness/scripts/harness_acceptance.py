@@ -216,7 +216,7 @@ def check_d13_static_rules(skills_root: Path, harness_tests_ok: bool, full_gate_
     return {
         "evidenceThreeState": text_contains_all(ledger, ["OK", "FAIL", "NOT_RUN"]),
         "tddRedRetained": "MANUAL_REVIEW_REQUIRED",
-        "apiSetupTestCleanup": text_contains_all(skills_root / "harness-test" / "SKILL.md", ["setup", "cleanup"]),
+        "apiSetupTestCleanup": text_contains_all(skills_root / "harness-execute" / "testing-reference.md", ["setup", "cleanup"]),
         "gitNoAutoOverwrite": text_contains_all(skills_root / "harness-apply" / "SKILL.md", ["overwrite"]),
         "sensitiveInfoGuarded": text_contains_all(skills_root / "shared" / "p0-trust.md", ["sensitive"]),
         "dbMigrationNotAuto": text_contains_all(skills_root / "harness-apply" / "SKILL.md", ["migration"]),

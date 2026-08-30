@@ -205,8 +205,9 @@ try {
       { cwd: project, capture: true });
     await stat(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
-    for (const supportFile of ["SKILL.md", "protocols.md", "reference.md", "checklist.md"]) {
-      await stat(join(project, ".agents", "skills", "harness-run", supportFile));
+    for (const supportFile of ["SKILL.md", "protocols.md", "coding-reference.md", "coding-checklist.md",
+      "testing-reference.md", "testing-checklist.md", "testing-pitfalls.md"]) {
+      await stat(join(project, ".agents", "skills", "harness-execute", supportFile));
     }
     await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"));
