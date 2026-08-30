@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.4.11] — hunter-harness + workflow-harness 0.4.10 + core 0.1.7
+
+> Plan 生命周期与知识查询实测修复（docs/harness-improvement-roadmap/plan-phase-lifecycle-and-knowledge-query-issues-2026-08-30.md）。
+> CLI 0.4.10 → 0.4.11，core 0.1.6 → 0.1.7，workflow-harness 0.4.9 → 0.4.10。
+> 平台侧配套修复在 hunter-platform 仓库（收据诚实化 + projection-status 增强）。
+
+### Fixed — plan 生命周期缺 phase.end（P0-2）
+
+- `harness_context.py close_transition` 自动补齐 phase.start/end 事件对：有 start
+  无 end 时复用 start 的 run_id/attempt 代写 end（返回体 `phaseEndPair.code
+  =PHASE_END_AUTO_PAIRED`），幂等重放路径同样自愈。平台 Run 计时不再永不停表；
+  gate close 先行写入 phase.end 的流程不受影响（顺序保证不双写）。
+
+### Fixed — 知识查询可诊断（P0-1 CLI 侧）
+
+- 新增 `knowledge status` 子命令：一次返回 fence 代数、job 状态计数
+  （queued/extracting/ready/failed）、可查询条目数与最近活动时间，区分
+  「job 没跑 / job 失败 / 结果为空」。
+- harness-knowledge-ingest 增加查询面回读验证步骤（knowledgeStatus=ready 不再
+  当验收终点）；harness-plan 阶段 1 要求知识查询结果（含 0 条）落事件。
+
+### Fixed — classify 写防呆（P1-1）
+
+- `classify` 对已发布 change（meta/plan-profile.json 存在）默认不再重写
+  gate-policy.json 工作副本，返回 `writeGuarded: true` 与提示；显式 `--force`
+  才重写。
+
+### Fixed — review-record 契约可发现（P1-2）
+
+- `plan review-record --print-template` 输出合法草稿骨架；reference.md 补齐
+  findings 元素键集与 severity 枚举文档。缺 --input/--receipt 时给使用提示。
+
+### Fixed — execute 阶段五项
+
+- **E-1**：`ledger scenario-receipt-template --out` 防双重拼接（cwd 相对路径已含
+  change-dir 前缀时按 cwd 解析），越出项目目录直接拒绝。
+- **E-2**：`ledger record` 在命令含测试选择器（-Dgroups=/-Dtest= 等）且证据显示
+  `Tests run: 0` 时输出 `ZERO_TESTS_WITH_SELECTOR` 警告；pitfalls-java 收录
+  surefire excludedGroups 覆盖优先级坑。
+- **E-3**：events append 缺失必填字段一次性全部列出，不再逐个往返。
+- **E-4**：`--change` / `--change-dir` 跨脚本互为别名（gate/context/events/ledger）。
+- **E-5**：`gate begin --phase execute` 提前校验场景表 execution_level 与
+  build-profile verificationGraph.targets 的覆盖关系，缺声明输出
+  `VERIFICATION_TARGETS_UNDECLARED` 警告与待补清单。
+- **E-8**：execute SKILL 注明 Git Bash 下 `--note` 不得以 `/` 开头（MSYS 路径转换）。
+- **P2**：`legacyBootstrap: true` 语义写入 plan SKILL（首个阶段无交接凭证的正常标记）。
+
 ## [0.4.9] — workflow-harness
 
 > 移除 run/test 遗留别名 skill：两者自 2026-08 阶段合并起就是 harness-execute

@@ -1624,6 +1624,15 @@ def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    """Python 3.9 兼容的 is_relative_to。"""
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 def _nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -3056,11 +3065,58 @@ def cmd_record(args: argparse.Namespace) -> int:
         "scenarioCoverage": entry.get("scenarioCoverage"),
         "migrationReceipt": migration_receipt,
     }
+    zero_warn = _zero_tests_with_selector_warning(
+        str(args.command), args.evidence, project_root
+    )
+    if zero_warn is not None:
+        payload["warnings"] = [zero_warn]
+        print(f"[harness-ledger] WARNING {zero_warn}", file=sys.stderr)
     emit_compact_or_verbose(
         payload, as_json=as_json, verbose=verbose,
         compact_fn=_compact_record_payload,
     )
     return 0
+
+
+def _zero_tests_with_selector_warning(
+    command: str, evidence: str | None, project_root: Path | None
+) -> str | None:
+    """选择器存在却 0 命中 → WARN（E-2）。
+
+    surefire 插件级 ``<excludedGroups>`` 会压过命令行空值覆盖，
+    `-Dgroups=X` 选择器 0 命中仍 exit 0——只看退出码就是假阳性
+    （2026-08-30 demo-datasource 集成测试静默 0 执行实测）。
+    证据文本出现 Tests run: 0 且命令含选择器时，record 给出醒目警告。
+    """
+    if not evidence:
+        return None
+    selectors = ("-Dgroups=", "-Dtest=", "--groups", "--filter", "-DfailIfNoSpecifiedTests")
+    if not any(selector in str(command) for selector in selectors):
+        return None
+    candidates = [Path(evidence)]
+    if project_root is not None and not Path(evidence).is_absolute():
+        candidates.insert(0, project_root / evidence)
+    text: str | None = None
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size <= 4 * 1024 * 1024:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+                break
+        except OSError:
+            continue
+    if text is None:
+        return None
+    zero = re.search(
+        r"Tests run:\s*0,\s*Failures:\s*0,\s*Errors:\s*0", text
+    )
+    ran_something = re.search(r"Tests run:\s*[1-9]", text)
+    if zero is not None and ran_something is None:
+        return (
+            "ZERO_TESTS_WITH_SELECTOR: 命令含测试选择器但 Tests run=0（exit 0 不代表通过）；"
+            "常见于 surefire 插件级 excludedGroups 压过命令行覆盖——检查 pom 是否写死 "
+            "<excludedGroups>（应改为 ${excludedGroups} 属性占位）"
+        )
+    return None
 
 
 def cmd_scenario_receipt_template(args: argparse.Namespace) -> int:
@@ -3202,8 +3258,32 @@ def cmd_scenario_receipt_template(args: argparse.Namespace) -> int:
         return 0
     out_path = Path(str(out_raw)).expanduser()
     if not out_path.is_absolute():
-        out_path = change_dir / out_path
+        # 防双重拼接（E-1）：调用方按 CLI 惯例传 cwd 相对路径时（如
+        # .harness/changes/<cn>/evidence/x.json），直接拼 change_dir 会产生嵌套
+        # 幽灵目录。相对路径若以 change-dir 自身前缀开头，按 cwd 解析；否则按
+        # 文档规则相对 change-dir 解析。
+        cwd = Path.cwd().resolve()
+        change_resolved = change_dir.resolve()
+        if _is_relative_to(change_resolved, cwd):
+            change_rel = change_resolved.relative_to(cwd)
+            if out_path.parts[: len(change_rel.parts)] == change_rel.parts:
+                out_path = cwd / out_path
+            else:
+                out_path = change_dir / out_path
+        else:
+            out_path = change_dir / out_path
     out_path = out_path.resolve()
+    change_resolved = change_dir.resolve()
+    cwd = Path.cwd().resolve()
+    if not (
+        _is_relative_to(out_path, change_resolved)
+        or _is_relative_to(out_path, cwd)
+    ):
+        return emit_error(
+            "--out 解析后越出项目目录: " + str(out_path),
+            as_json=as_json,
+            error_code="SCENARIO_RECEIPT_OUT_OF_PROJECT",
+        )
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(body, encoding="utf-8", newline="\n")
@@ -3321,7 +3401,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_hash.set_defaults(func=cmd_hash)
 
     p_reuse = sub.add_parser("can-reuse", parents=[shared_json], help="decide whether a verification can be reused")
-    p_reuse.add_argument("--change-dir", required=True)
+    p_reuse.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_reuse.add_argument(
         "--verification",
         required=True,
@@ -3389,7 +3469,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_reuse.set_defaults(func=cmd_can_reuse)
 
     p_record = sub.add_parser("record", parents=[shared_json], help="write validation result into ledger")
-    p_record.add_argument("--change-dir", required=True)
+    p_record.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_record.add_argument("--verification", required=True)
     p_record.add_argument("--status", required=True)
     p_record.add_argument("--command", required=True)
@@ -3515,7 +3595,7 @@ def build_parser() -> argparse.ArgumentParser:
             "pre-filled from meta/scenario-manifest.json"
         ),
     )
-    p_receipt.add_argument("--change-dir", required=True)
+    p_receipt.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_receipt.add_argument(
         "--scenario-ids",
         required=True,

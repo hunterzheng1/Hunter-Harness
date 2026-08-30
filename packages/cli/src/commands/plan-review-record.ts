@@ -15,12 +15,31 @@ import type { CommandDependencies } from "./configure.js";
 
 export interface PlanReviewRecordOptions {
   /** 证据包路径（plan evidence-pack 的产物） */
-  input: string;
+  input?: string;
   /** 收据草稿 JSON：{ reviewer_identity, review_mode?, findings?, completed_at? } */
-  receipt: string;
+  receipt?: string;
   /** 写回路径；缺省覆盖 --input */
   output?: string;
+  /** 打印合法草稿骨架（P1-2：契约可发现，不再靠报错反推） */
+  printTemplate?: boolean;
 }
+
+/** 合法草稿骨架：findings 元素键集与校验器精确一致。 */
+const REVIEW_RECEIPT_TEMPLATE = {
+  reviewer_identity: "inline:<评审者标识，小写字母开头>",
+  review_mode: "inline",
+  findings: [
+    {
+      finding_id: "finding-1",
+      category: "architecture",
+      severity: "advisory",
+      source_refs: ["<evidence_map_id>#<ref>"],
+      message_zh: "<中文问题描述>",
+      suggested_location: "<建议修改位置>"
+    }
+  ],
+  completed_at: "<RFC3339 时间戳，缺省由本命令填当前时间>"
+};
 
 /**
  * `hunter-harness plan review-record --input <evidence.json> --receipt <draft.json>`
@@ -114,8 +133,22 @@ export async function runPlanReviewRecord(
   dependencies: CommandDependencies
 ): Promise<number> {
   const now = () => new Date().toISOString();
+  if (options.printTemplate === true) {
+    dependencies.stdout(`${JSON.stringify(REVIEW_RECEIPT_TEMPLATE, null, 2)}\n`);
+    return 0;
+  }
+  if (options.input === undefined || options.receipt === undefined) {
+    return emitPlanError(dependencies.stdout, planErrorEnvelope({
+      code: "PLAN_REVIEW_RECORD_USAGE",
+      stage: "boundary",
+      field_path: "argv",
+      message: "需要 --input <证据包> 与 --receipt <草稿>；查看契约骨架：--print-template"
+    }));
+  }
+  const inputPath = options.input;
+  const receiptPath = options.receipt;
   try {
-    const pack = JSON.parse(await readFile(options.input, "utf8")) as PlanFinalizePackFile;
+    const pack = JSON.parse(await readFile(inputPath, "utf8")) as PlanFinalizePackFile;
     if (!isRecord(pack) || !isRecord(pack.trusted) || !isRecord(pack.publication) ||
         !isRecord(pack.context)) {
       return emitPlanError(dependencies.stdout, planErrorEnvelope({
@@ -125,7 +158,7 @@ export async function runPlanReviewRecord(
         message: "证据包必须含 trusted/publication/context（plan evidence-pack 的产物，不得手改）"
       }));
     }
-    const draft = JSON.parse(await readFile(options.receipt, "utf8")) as ReviewReceiptDraft;
+    const draft = JSON.parse(await readFile(receiptPath, "utf8")) as ReviewReceiptDraft;
     const problems: InputProblem[] = [];
     if (!isRecord(draft)) {
       problems.push({ field_path: "receipt", message: "必须是对象" });

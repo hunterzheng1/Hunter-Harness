@@ -450,6 +450,89 @@ class HarnessContextTest(unittest.TestCase):
             self.assertFalse(selected["reviewPhaseEnded"])
             self.assertIn("harness_gate.py close", selected["recoveryAction"])
 
+    def test_close_transition_auto_pairs_missing_phase_end(self) -> None:
+        """P0-2：不经 gate close 的阶段（plan）写交接收据时自动补齐 phase.end，
+        平台计时事件对不再缺口。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="plan", executor="cursor"
+            )
+            # plan 阶段的 phase.start（bootstrap-plan 的位置由调用方承担）
+            contract = project / ".harness/changes/change"
+            (contract / "events.ndjson").write_text(
+                json.dumps({
+                    "type": "phase.start", "phase": "plan",
+                    "run_id": "plan_demo", "attempt": 1,
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            closed = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="plan",
+                to_phase="execute",
+                executor="cursor",
+            )
+
+            self.assertTrue(closed["ok"], closed)
+            self.assertEqual(
+                closed["phaseEndPair"]["code"], "PHASE_END_AUTO_PAIRED"
+            )
+            events = [
+                json.loads(line)
+                for line in (contract / "events.ndjson").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            ends = [
+                e for e in events
+                if e.get("type") == "phase.end" and e.get("phase") == "plan"
+            ]
+            self.assertEqual(len(ends), 1)
+            self.assertEqual(ends[0]["run_id"], "plan_demo")
+
+            # 幂等：重复 close 不再追加第二条 phase.end
+            again = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="plan",
+                to_phase="execute",
+                executor="cursor",
+            )
+            self.assertTrue(again["ok"], again)
+            self.assertIsNone(again["phaseEndPair"])
+            events2 = (contract / "events.ndjson").read_text(encoding="utf-8")
+            self.assertEqual(events2.count('"phase.end"'), 1)
+
+    def test_close_transition_skips_pairing_when_gate_close_already_wrote_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="execute", executor="cursor"
+            )
+            contract = project / ".harness/changes/change"
+            (contract / "events.ndjson").write_text(
+                json.dumps({"type": "phase.start", "phase": "execute", "run_id": "ex_1", "attempt": 1}) + "\n"
+                + json.dumps({"type": "phase.end", "phase": "execute", "run_id": "ex_1", "attempt": 1, "status": "OK"}) + "\n",
+                encoding="utf-8",
+            )
+
+            closed = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="execute",
+                to_phase="review",
+                executor="cursor",
+            )
+
+            self.assertTrue(closed["ok"], closed)
+            self.assertIsNone(closed["phaseEndPair"])
+
     def test_handoff_repairs_closed_phase_without_transition(self) -> None:
         """P0-1：review 已关门（phase.end）但没写交接的断链状态，一条 handoff
         命令完成 补租约→写收据→begin 确认，不再需要六命令 choreography。"""

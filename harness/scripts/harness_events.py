@@ -884,13 +884,19 @@ def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dic
 def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
     """Validate type-specific append fields before any file is mutated."""
     event_type = str(args.type)
-    for field in _EVENT_REQUIRED_FIELDS.get(event_type, ()):
-        value = getattr(args, field, None)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return (
-                "EVENT_REQUIRED_FIELD",
-                f"EVENT_REQUIRED_FIELD: {event_type} requires --{field.replace('_', '-')}",
-            )
+    missing = [
+        f"--{field.replace('_', '-')}"
+        for field in _EVENT_REQUIRED_FIELDS.get(event_type, ())
+        if getattr(args, field, None) is None
+        or (isinstance(getattr(args, field, None), str)
+            and not getattr(args, field).strip())
+    ]
+    if missing:
+        # 一次性列出全部缺失字段——逐个报错会让调用方每个字段往返一轮（E-3）
+        return (
+            "EVENT_REQUIRED_FIELD",
+            f"EVENT_REQUIRED_FIELD: {event_type} requires " + ", ".join(missing),
+        )
     allowed = _EVENT_ALLOWED_FIELDS[event_type]
     for field in OPTIONAL_FIELDS:
         value = getattr(args, field, None)
@@ -2146,7 +2152,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="append one event and auto-render execution-log",
     )
-    p_append.add_argument("--change-dir", required=True)
+    p_append.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_append.add_argument("--phase", required=True)
     p_append.add_argument("--type", required=True)
     p_append.add_argument("--command", default=None)
@@ -2200,7 +2206,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="validate and append many events under one lock (H-15)",
     )
-    p_batch.add_argument("--change-dir", required=True)
+    p_batch.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_batch.add_argument(
         "--file",
         required=True,
@@ -2213,7 +2219,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="re-render execution-log.md from events.ndjson",
     )
-    p_render.add_argument("--change-dir", required=True)
+    p_render.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_render.set_defaults(func=cmd_render)
 
     p_summary = sub.add_parser(
@@ -2221,7 +2227,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="summarize phases/issues from events.ndjson",
     )
-    p_summary.add_argument("--change-dir", required=True)
+    p_summary.add_argument("--change-dir", "--change", dest="change_dir", required=True)
     p_summary.set_defaults(func=cmd_summary)
 
     return parser

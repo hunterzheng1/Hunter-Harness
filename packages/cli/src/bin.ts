@@ -30,6 +30,10 @@ import {
   type KnowledgeQueryOptions
 } from "./commands/knowledge-query.js";
 import {
+  runKnowledgeStatus,
+  type KnowledgeStatusOptions
+} from "./commands/knowledge-status.js";
+import {
   runInstructionApply,
   runInstructionAudit,
   type InstructionApplyOptions,
@@ -521,6 +525,14 @@ export async function runCli(
         dependencies
       );
     });
+  addCommonOptions(knowledge.command("status"))
+    .description("知识管道自查：fence 代数、job 状态计数、可查询条目数（诊断查询为空的缺口）")
+    .action(async (options: KnowledgeStatusOptions) => {
+      exitCode = await runKnowledgeStatus(
+        { ...program.opts<KnowledgeStatusOptions>(), ...options },
+        dependencies
+      );
+    });
   const instructions = program.command("instructions")
     .description("审计、预览并应用中文项目指令与规则提案");
   addCommonOptions(instructions.command("audit"))
@@ -578,9 +590,10 @@ export async function runCli(
     });
   planCmd.command("review-record")
     .description("记录对抗评审收据：内部算权威 input_hash/findings_hash 并写回证据包（assurance 发布前用）")
-    .requiredOption("--input <file>", "证据包 JSON（plan evidence-pack 的产物）")
-    .requiredOption("--receipt <file>", "收据草稿 JSON：{ reviewer_identity, review_mode?, findings?, completed_at? }")
+    .option("--input <file>", "证据包 JSON（plan evidence-pack 的产物）")
+    .option("--receipt <file>", "收据草稿 JSON：{ reviewer_identity, review_mode?, findings?, completed_at? }")
     .option("--output <file>", "写回路径（缺省覆盖 --input）")
+    .option("--print-template", "打印合法草稿骨架（findings 键集与 severity 枚举）")
     .action(async (options: PlanReviewRecordOptions) => {
       exitCode = await runPlanReviewRecord(options, dependencies);
     });

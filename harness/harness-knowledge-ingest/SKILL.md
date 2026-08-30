@@ -46,6 +46,12 @@ powershell.exe -Command "npx hunter-harness archive upload --file '<archive.zip>
 ```
 
 4. 检查响应中的包哈希、服务端保存状态和 `knowledge_status`。
+4.5. **查询面回读验证（强制）**：`knowledgeStatus=ready` 只是入库回执，不代表可查。
+    执行 `npx hunter-harness knowledge status --json` 确认 `pipeline.results_count`
+    符合预期（有候选的归档应 > 0）；再用归档中的已知关键词跑一次
+    `npx hunter-harness knowledge query "<已知关键词>" --json`，`count=0` 视为
+    ingest 未真正完成——报告 `pipeline.jobs` 状态（queued/extracting/failed）
+    并停止宣称 ready，不得仅凭上传回执收尾。
 5. 只有服务端确认原 ZIP 已持久保存且知识状态为 ready，才删除本地待上传 ZIP。
 6. 上传或 ingest 失败时保留 ZIP 与失败收据；修复连接后重试同一个 ZIP，不重新拼散文件。
 

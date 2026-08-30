@@ -5,6 +5,25 @@
 > 报告人：pi（主会话实测）
 > 版本：hunter-harness 0.4.10（npm 缓存实测）
 
+## 修复状态（2026-08-30，hunter-harness 0.4.11 / core 0.1.7 / workflow-harness 0.4.10 + hunter-platform 配套）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| P0-1 知识查询全 0 但回执 ready | ✅ 已修（两端） | CLI：新增 `knowledge status`（fence 代数/job 状态计数/条目数/最近活动），区分「job 没跑/失败/结果为空」；ingest skill 增加查询回读验证（ready 不再是空头收据）；plan 阶段 1 查询结果落事件。平台：finalize 只在无知识候选时置 ready，有候选置 indexing，job commit/fail 桥翻转为 ready/failed；`/knowledge/projection-status` 返回 pipeline 状态。生产库存量数据的修复动作：重跑一次归档上传即可触发翻转 |
+| P0-2 plan 缺 phase.end | ✅ 已修 | `close_transition` 自动补齐事件对（`PHASE_END_AUTO_PAIRED`，复用 start 的 run_id/attempt，幂等自愈）；gate close 先行写入的流程不双写。doctor/平台超时告警两项建议未做（见下行） |
+| P0-2 建议 2/3（doctor 检查 + 平台超时告警） | ⏳ 未做 | 结构性缺口已由自动配对消除，告警属锦上添花，待需要时单独立项 |
+| P1-1 classify 覆盖已发布 change | ✅ 已修 | 已发布 change（meta/plan-profile.json 存在）默认拒写并提示；`--force` 显式重算 |
+| P1-2 review-record 草稿契约 | ✅ 已修 | `plan review-record --print-template` 合法骨架 + reference.md 完整契约（键集/severity 枚举/identity 规则） |
+| P2 legacyBootstrap 语义 | ✅ 已修 | plan SKILL 0.5 行内注明（首阶段无凭证的正常标记） |
+| E-1 --out 双重拼接 | ✅ 已修 | 已含 change-dir 前缀的相对路径按 cwd 解析；越出项目目录拒绝（SCENARIO_RECEIPT_OUT_OF_PROJECT） |
+| E-2 集成测试静默 0 执行 | ✅ 已修 | ledger record 检出选择器 + Tests run: 0 → `ZERO_TESTS_WITH_SELECTOR` 警告；pitfalls-java 收录该坑（base + overlay 两份） |
+| E-3 必填字段逐个报错 | ✅ 已修 | events append 一次性列出全部缺失字段 |
+| E-4 --change/--change-dir 不统一 | ✅ 已修 | gate/context/events/ledger 双向互为别名 |
+| E-5 verification target 晚发现 | ✅ 已修 | gate begin（execute）提前校验 execution_level↔targets 覆盖，WARN `VERIFICATION_TARGETS_UNDECLARED` 附待补清单 |
+| E-8 MSYS 路径转换 | ✅ 已修（文档） | execute SKILL 注明 `--note` 不得以 `/` 开头或 `MSYS_NO_PATHCONV=1` |
+
+---
+
 ## TL;DR
 
 v2 证据包链路本身已达到「一次通过」：`evidence-pack` / `finalize` 各 1 次通过，`review-record` 仅因草稿契约无文档试错 2 次（报错定位精准，见 P1-2）。但本次暴露三类新问题：

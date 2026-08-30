@@ -2594,6 +2594,64 @@ def _normalize_gate_phase(args: argparse.Namespace, as_json: bool) -> int | None
     )
 
 
+def _verification_target_coverage_warning(
+    change_dir: Path, phase: str
+) -> dict[str, Any] | None:
+    """E-5：场景表引用未声明的 verification target 时提前 WARN。
+
+    场景带 execution_level（unit/integration/…），但 build-profile 的
+    verificationGraph.targets 未声明对应 target 时，问题要等到 ledger record
+    才以 unsupported verification 报错——太迟。gate begin 提前列出待补清单。
+    映射约定：unit → unitTest；其他 level → 任一以其名开头的 target。
+    """
+    if phase != "execute":
+        return None
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    profile_path = change_dir / "meta" / "build-profile.json"
+    if not profile_path.is_file():
+        # build-profile 常规位置在项目 .harness/config/；change meta 下优先
+        profile_path = change_dir.parents[2] / ".harness" / "config" / "build-profile.json"
+    if not manifest_path.is_file() or not profile_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        profile = json.loads(profile_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    content = manifest.get("content") if isinstance(manifest, dict) else None
+    scenarios = content.get("scenarios") if isinstance(content, dict) else None
+    if not isinstance(scenarios, list):
+        return None
+    levels = sorted({
+        str(s.get("execution_level")).strip()
+        for s in scenarios
+        if isinstance(s, dict) and str(s.get("execution_level") or "").strip()
+    })
+    graph = profile.get("verificationGraph")
+    targets = graph.get("targets") if isinstance(graph, dict) else None
+    target_names = set(targets.keys()) if isinstance(targets, dict) else set()
+    uncovered = [
+        level for level in levels
+        if level != "unit"
+        and not any(name.lower().startswith(level.lower()) for name in target_names)
+    ]
+    # unit 场景由 unitTest 覆盖；只在完全没有 unitTest 时才算缺口
+    if "unit" in levels and "unitTest" not in target_names:
+        uncovered.append("unit(→unitTest)")
+    if not uncovered:
+        return None
+    return {
+        "code": "VERIFICATION_TARGETS_UNDECLARED",
+        "message": (
+            "场景表涉及未声明的验证级别: " + ", ".join(uncovered) +
+            "；ledger record 将报 unsupported verification。请在 "
+            ".harness/config/build-profile.json 的 verificationGraph.targets "
+            "声明对应 target（如 integrationTest）"
+        ),
+        "uncoveredLevels": uncovered,
+    }
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     normalized = _normalize_gate_phase(args, as_json)
@@ -2911,6 +2969,14 @@ def cmd_begin(args: argparse.Namespace) -> int:
         )
         raise
 
+    coverage_warning = _verification_target_coverage_warning(change_dir, args.phase)
+    if coverage_warning is not None:
+        gate_warnings.append(coverage_warning)
+        print(
+            f"[harness-gate] WARNING {coverage_warning['code']}: "
+            f"{coverage_warning['message']}",
+            file=sys.stderr,
+        )
     payload = {
         "ok": True,
         "code": "PHASE_BEGUN",
@@ -3800,11 +3866,25 @@ def cmd_classify(args: argparse.Namespace) -> int:
     payload["classifiedAt"] = classified_at
 
     if change_dir is not None and change_dir.is_dir():
-        policy_doc = gate_policy_document(payload)
-        policy_path = change_dir / "meta" / "gate-policy.json"
-        _write_json(policy_path, policy_doc)
-        payload["policyPersisted"] = True
-        payload["policyPath"] = str(policy_path)
+        finalized = (change_dir / "meta" / "plan-profile.json").is_file()
+        if finalized and not getattr(args, "force", False):
+            # P1-1：classify 形态像只读查询，实际是写操作。已发布的 change
+            # 被误跑 classify 会覆盖 configure-plan 写入的工作副本（2026-08-30
+            # demo-datasource 实测 plannedPhases 被清）。默认拒写并显式提示。
+            payload["policyPersisted"] = False
+            payload["warning"] = (
+                "change 已发布（meta/plan-profile.json 存在），classify 不再重写 "
+                "meta/gate-policy.json 工作副本；确需重算请显式传 --force"
+            )
+            payload["writeGuarded"] = True
+        else:
+            policy_doc = gate_policy_document(payload)
+            policy_path = change_dir / "meta" / "gate-policy.json"
+            _write_json(policy_path, policy_doc)
+            payload["policyPersisted"] = True
+            payload["policyPath"] = str(policy_path)
+            if finalized:
+                payload["warning"] = "--force：已发布 change 的工作副本已被重写"
     else:
         payload["policyPersisted"] = False
         payload["warning"] = (
@@ -3930,7 +4010,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_begin = sub.add_parser("begin", parents=[shared])
     p_begin.add_argument("--phase", required=True)
-    p_begin.add_argument("--change", default=None)
+    p_begin.add_argument("--change", "--change-dir", dest="change", default=None)
     p_begin.add_argument(
         "--project",
         default=None,
@@ -3960,7 +4040,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="关闭阶段门禁（关门只调本命令；上下文交接由 --to-phase 内联完成，不要再单独调 harness_context.py close）",
     )
     p_close.add_argument("--phase", required=True)
-    p_close.add_argument("--change", default=None)
+    p_close.add_argument("--change", "--change-dir", dest="change", default=None)
     p_close.add_argument(
         "--project",
         default=None,
@@ -3985,7 +4065,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_classify = sub.add_parser("classify", parents=[shared])
     p_classify.add_argument("--project", default=None, type=Path, help=_PROJECT_ROOT_HELP)
-    p_classify.add_argument("--change", default=None)
+    p_classify.add_argument("--change", "--change-dir", dest="change", default=None)
     p_classify.add_argument("--stage", required=True, choices=["plan", "post-run"])
     p_classify.add_argument(
         "--tier-override",
@@ -3993,13 +4073,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["fast", "standard", "full"],
     )
     p_classify.add_argument("--override-by", default="user")
+    p_classify.add_argument(
+        "--force",
+        action="store_true",
+        help="已发布 change 也强制重写 gate-policy.json 工作副本",
+    )
     p_classify.set_defaults(func=cmd_classify)
 
     p_checkpoint = sub.add_parser("checkpoint", parents=[shared])
     p_checkpoint.add_argument("--project", default=None, type=Path, help=_PROJECT_ROOT_HELP)
     p_checkpoint.add_argument("checkpoint_action", choices=["status", "approve"])
     p_checkpoint.add_argument("--id", required=True)
-    p_checkpoint.add_argument("--change", default=None)
+    p_checkpoint.add_argument("--change", "--change-dir", dest="change", default=None)
     p_checkpoint.add_argument("--reviewer", default=None)
     p_checkpoint.set_defaults(func=cmd_checkpoint)
 

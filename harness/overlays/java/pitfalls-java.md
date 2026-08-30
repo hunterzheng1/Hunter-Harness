@@ -14,3 +14,4 @@
 | 8 | 唯一字段加前缀 | 409/冲突 BLOCKED | 测试数据撞库 | `TEST_<change>_<ts>_<rand>` |
 | 9 | runtime overlay | tracked 配置被改 | 直接 Edit yml | additional-location 叠加 |
 | 10 | Service Gate 先决策 | 旧服务 500 | 端口已有进程 | ensure → needs-user-decision 才问 |
+| 11 | surefire 写死 excludedGroups | `-Dgroups=` 0 命中 + exit 0 假绿 | 插件级配置压过命令行空值覆盖 | pom 改 `${excludedGroups}` 占位；ledger record 会报 ZERO_TESTS_WITH_SELECTOR |

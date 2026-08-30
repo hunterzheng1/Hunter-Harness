@@ -1,6 +1,6 @@
 {
   "name": "@hunter-harness/workflow-harness",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Harness workflow family data package (bundles, manifests, migrations)",
   "license": "MIT",
   "type": "module",

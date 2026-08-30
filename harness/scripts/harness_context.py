@@ -478,6 +478,55 @@ def _phase_has_ended(event_paths: list[Path], phase: str) -> bool:
     )
 
 
+def _ensure_phase_end_event(
+    contract_root: Path,
+    *,
+    phase: str,
+    status: str,
+    executor: str,
+) -> dict[str, Any] | None:
+    """补齐 phase.start/end 事件对（P0-2）。
+
+    平台 Run 计时由 events-sync 上报的 phase.start/end 事件对驱动。不经
+    gate close 收尾的阶段（典型：plan 走 finalize + context close）只写
+    transitions 收据，phase.end 永远缺席，平台计时永不停——连续两个 change
+    复现，属结构性缺口（2026-08-30 sales-insight-agent demo-datasource 实测）。
+    close_transition 是所有跨阶段推进的共同通道，在此按事件配对补齐：
+    有 start 无 end → 复用 start 的 run_id/attempt 代写 end；已有 end（gate
+    close 先行写入）或连 start 都没有 → 不动，返回 None。
+    """
+    import harness_events as he
+
+    events_file = contract_root / "events.ndjson"
+    events = _read_ndjson(events_file)
+    starts = [
+        item
+        for item in events
+        if hpaths.resolve_phase_name(item.get("phase")) == phase
+        and item.get("type") == "phase.start"
+    ]
+    if not starts or any(
+        hpaths.resolve_phase_name(item.get("phase")) == phase
+        and item.get("type") == "phase.end"
+        for item in events
+    ):
+        return None
+    start = starts[-1]
+    result = he.append_event(
+        contract_root,
+        phase=phase,
+        type_="phase.end",
+        run_id=str(start.get("run_id") or f"{phase}_unknown"),
+        attempt=int(start.get("attempt") or 1),
+        status=status,
+        executor_tool=executor,
+        note="context close 自动补齐 phase.end（平台计时事件对配对）",
+    )
+    if not result.get("ok"):
+        return {"code": "PHASE_END_PAIR_FAILED", "detail": result}
+    return {"code": "PHASE_END_AUTO_PAIRED", "event": result.get("event")}
+
+
 def _reselect_review_fixback(
     project: Path,
     change: str,
@@ -1334,6 +1383,12 @@ def close_transition(
             and latest.get("artifacts") == artifact_entries
             and (executor is None or latest.get("executor") == executor)
         ):
+            paired = _ensure_phase_end_event(
+                contract_root,
+                phase=from_phase,
+                status=status,
+                executor=executor or str(latest.get("executor") or "unknown"),
+            )
             return {
                 "ok": True,
                 "code": "TRANSITION_ALREADY_CLOSED",
@@ -1341,6 +1396,7 @@ def close_transition(
                 "receipt": latest,
                 "path": str(paths["transitions"]),
                 "invalidation": None,
+                "phaseEndPair": paired,
             }
         return {"ok": False, "code": "CONTEXT_LEASE_REQUIRED"}
     try:
@@ -1397,6 +1453,12 @@ def close_transition(
     receipt["receiptHash"] = _payload_hash(receipt)
     _append_ndjson(paths["transitions"], receipt)
     paths["lease"].unlink(missing_ok=True)
+    paired = _ensure_phase_end_event(
+        contract_root,
+        phase=from_phase,
+        status=status,
+        executor=effective_executor,
+    )
     invalidation = None
     if to_phase == "execute" and from_phase in {"execute", "review"}:
         invalidation = _invalidate_for_fixback(
@@ -1411,6 +1473,7 @@ def close_transition(
         "receipt": receipt,
         "path": str(paths["transitions"]),
         "invalidation": invalidation,
+        "phaseEndPair": paired,
     }
 
 
@@ -1898,7 +1961,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--json", action="store_true")
     prepare.add_argument("--project", required=True, type=Path)
-    prepare.add_argument("--change")
+    prepare.add_argument("--change", "--change-dir", dest="change")
     prepare.add_argument("--phase", required=True)
     prepare.add_argument("--executor", required=True)
     prepare.add_argument("--title")
@@ -1907,7 +1970,7 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap = sub.add_parser("bootstrap-plan")
     bootstrap.add_argument("--json", action="store_true")
     bootstrap.add_argument("--project", required=True, type=Path)
-    bootstrap.add_argument("--change", required=True)
+    bootstrap.add_argument("--change", "--change-dir", dest="change", required=True)
     bootstrap.add_argument("--executor", required=True)
     bootstrap.add_argument("--title")
     bootstrap.add_argument("--stage", default="plan", choices=["plan", "post-run"])
@@ -1915,7 +1978,7 @@ def build_parser() -> argparse.ArgumentParser:
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
     close.add_argument("--project", required=True, type=Path)
-    close.add_argument("--change", required=True)
+    close.add_argument("--change", "--change-dir", dest="change", required=True)
     close.add_argument("--from-phase", required=True)
     close.add_argument("--to-phase", required=True)
     close.add_argument("--executor", required=True)
@@ -1924,7 +1987,7 @@ def build_parser() -> argparse.ArgumentParser:
     begin = sub.add_parser("begin")
     begin.add_argument("--json", action="store_true")
     begin.add_argument("--project", required=True, type=Path)
-    begin.add_argument("--change", required=True)
+    begin.add_argument("--change", "--change-dir", dest="change", required=True)
     begin.add_argument("--phase", required=True)
     begin.add_argument("--executor", required=True)
     handoff = sub.add_parser(
@@ -1933,7 +1996,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     handoff.add_argument("--json", action="store_true")
     handoff.add_argument("--project", required=True, type=Path)
-    handoff.add_argument("--change", required=True)
+    handoff.add_argument("--change", "--change-dir", dest="change", required=True)
     handoff.add_argument("--to-phase", required=True)
     handoff.add_argument(
         "--from-phase",
@@ -1946,20 +2009,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     renew.add_argument("--json", action="store_true")
     renew.add_argument("--project", required=True, type=Path)
-    renew.add_argument("--change", required=True)
+    renew.add_argument("--change", "--change-dir", dest="change", required=True)
     renew.add_argument("--executor", required=True)
     renew.add_argument("--ttl-seconds", type=int, default=3600)
     configure = sub.add_parser("configure-plan")
     configure.add_argument("--json", action="store_true")
     configure.add_argument("--project", required=True, type=Path)
-    configure.add_argument("--change", required=True)
+    configure.add_argument("--change", "--change-dir", dest="change", required=True)
     configure.add_argument("--phases", required=True)
     configure.add_argument("--operator", required=True)
     configure.add_argument("--reason", required=True)
     view = sub.add_parser("view")
     view.add_argument("--json", action="store_true")
     view.add_argument("--project", required=True, type=Path)
-    view.add_argument("--change", required=True)
+    view.add_argument("--change", "--change-dir", dest="change", required=True)
     return parser
 
 

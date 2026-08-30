@@ -57,26 +57,15 @@ export class RemoteKnowledgeQueryError extends Error {
   }
 }
 
-export async function queryRemoteKnowledge(options: {
+/** 知识查询/状态共用的远端上下文：项目配置 + 凭据 + API client。 */
+export async function resolveKnowledgeRemoteContext(options: {
   projectRoot: string;
-  query: string;
-  limit: number;
   serverUrl?: string;
   tokenEnv?: string;
   env: Readonly<Record<string, string | undefined>>;
   fetch?: typeof globalThis.fetch;
-}) {
+}): Promise<{ client: HunterHarnessApiClient; projectId: string }> {
   const root = resolve(options.projectRoot);
-  if (options.query.trim() === "") {
-    throw new RemoteKnowledgeQueryError("查询内容不能为空", "KNOWLEDGE_QUERY_EMPTY", 4);
-  }
-  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 10) {
-    throw new RemoteKnowledgeQueryError(
-      "limit 必须是 1 到 10 的整数",
-      "KNOWLEDGE_QUERY_LIMIT_INVALID",
-      4
-    );
-  }
   let project: ReturnType<typeof projectConfigSchema.parse>;
   try {
     project = projectConfigSchema.parse(parseYaml(
@@ -122,11 +111,49 @@ export async function queryRemoteKnowledge(options: {
       4
     );
   }
-  const client = new HunterHarnessApiClient({
-    serverUrl: auth.serverUrl,
-    token: auth.token,
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch })
-  });
+  return {
+    client: new HunterHarnessApiClient({
+      serverUrl: auth.serverUrl,
+      token: auth.token,
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch })
+    }),
+    projectId
+  };
+}
+
+/** P0-1 自查：projection-status 一次返回 fence 代数、job 状态计数与结果条目数。 */
+export async function knowledgeRemoteStatus(options: {
+  projectRoot: string;
+  serverUrl?: string;
+  tokenEnv?: string;
+  env: Readonly<Record<string, string | undefined>>;
+  fetch?: typeof globalThis.fetch;
+}) {
+  const { client, projectId } = await resolveKnowledgeRemoteContext(options);
+  const status = await client.getKnowledgeProjectionStatus(projectId, uuidV7());
+  return { projectId, status };
+}
+
+export async function queryRemoteKnowledge(options: {
+  projectRoot: string;
+  query: string;
+  limit: number;
+  serverUrl?: string;
+  tokenEnv?: string;
+  env: Readonly<Record<string, string | undefined>>;
+  fetch?: typeof globalThis.fetch;
+}) {
+  if (options.query.trim() === "") {
+    throw new RemoteKnowledgeQueryError("查询内容不能为空", "KNOWLEDGE_QUERY_EMPTY", 4);
+  }
+  if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 10) {
+    throw new RemoteKnowledgeQueryError(
+      "limit 必须是 1 到 10 的整数",
+      "KNOWLEDGE_QUERY_LIMIT_INVALID",
+      4
+    );
+  }
+  const { client, projectId } = await resolveKnowledgeRemoteContext(options);
   const query = options.query.trim();
   const query_hash = sha256Bytes(query);
   const requestId = uuidV7();

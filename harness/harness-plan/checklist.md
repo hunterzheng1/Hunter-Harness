@@ -214,6 +214,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 - [ ] **v2**：只手写 `meta/plan-evidence-input.json`。`plans/*.md` 由 finalize 派生，手写的会被渲染覆盖，只是白写
 - [ ] 任何缺失**都不得手工补写**（包括 `phase.end`）；回到对应阶段改自然输入/staging 后重跑
+- [ ] **phase.start/end 事件对完整**：plan 不经 gate close，0.4.11 起 `context close`/`handoff` 会自动补齐缺失的 `phase.end`（返回体 `phaseEndPair.code=PHASE_END_AUTO_PAIRED`）；发现平台 Run 监控计时不停时先查这对事件，而不是手工写事件
 - [ ] v2 过渡期**不写** `meta/plan-finalization.json` 与 `logs/execution-log.md`；缺这两项不算失败，不得为凑表手工补
 
 

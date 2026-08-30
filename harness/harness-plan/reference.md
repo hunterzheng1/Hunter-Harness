@@ -376,6 +376,14 @@ finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PL
 1. 先完成阶段 7.5 对抗评审，把结论写成草稿 `meta/plan-review-draft.json`：
    `{ "reviewer_identity": "inline:<标识>", "findings": [] }`
    （`review_mode` 缺省 `inline`；`completed_at` 缺省取当前时间；`findings` 为空数组表示无发现）
+
+   **草稿完整契约**（0.4.11 起可 `plan review-record --print-template` 取合法骨架）：
+   顶层键集精确为 `reviewer_identity / review_mode? / findings? / completed_at?`；
+   `reviewer_identity` 匹配 `^[a-z][a-z0-9_.:-]{0,159}$`。`findings` 元素键集精确为
+   `finding_id / category / severity / source_refs / message_zh / suggested_location`，
+   其中 `severity ∈ {advisory, blocking}`、`source_refs` 至少一条非空字符串、
+   `finding_id` 同上面的 identity 规则。缺键/多键/枚举越界都会在
+   `PLAN_REVIEW_RECORD_INPUT_INVALID` 的 `problems[]` 里逐条给出 `field_path`。
 2. 跑 `plan review-record`：CLI 内部重跑 layer1/layer2/layer3 算出权威 `input_hash`，
    代算 `findings_hash`，把完整收据写回证据包顶层 `adversarial_review`（缺省覆盖 `--input`，
    可用 `--output` 写到别处）。stdout 的 `review_required: false` 表示该包未触发评审、收据不会被消费。

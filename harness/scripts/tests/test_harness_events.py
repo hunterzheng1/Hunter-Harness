@@ -779,6 +779,45 @@ class RenderQualityTests(unittest.TestCase):
         self.assertIn("EVENT_REQUIRED_FIELD", err)
         self.assertFalse((self.change_dir / "events.ndjson").exists())
 
+    def test_append_reports_all_missing_required_fields_at_once(self) -> None:
+        """E-3：verification 同时缺 --name 和 --status 时一次报全，不逐字段往返。"""
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "execute",
+                "--type",
+                "verification",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("EVENT_REQUIRED_FIELD", err)
+        self.assertIn("--name", err)
+        self.assertIn("--status", err)
+
+    def test_append_accepts_change_alias_for_change_dir(self) -> None:
+        """E-4：--change 与 --change-dir 跨脚本同义。"""
+        code, out, _ = self._run(
+            [
+                "append",
+                "--change",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "execute",
+                "--type",
+                "verification",
+                "--name",
+                "单元测试",
+                "--status",
+                "ok",
+            ]
+        )
+        self.assertEqual(code, 0, out)
+
     def test_ut212b_issue_rejects_verification_status_field(self) -> None:
         code, out, err = self._run(
             [

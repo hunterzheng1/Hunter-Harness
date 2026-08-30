@@ -2355,6 +2355,61 @@ class ScenarioReceiptTemplateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((self.change_dir / "runtime" / "receipt.json").is_file())
 
+    def test_out_path_with_change_dir_prefix_is_not_double_joined(self) -> None:
+        """E-1：cwd 相对路径已含 change-dir 前缀时不得拼出嵌套幽灵目录。"""
+        import os
+        project = self.change_dir.parents[2]  # <tmp>
+        old_cwd = os.getcwd()
+        os.chdir(project)
+        try:
+            code, out, _ = self._run(
+                "scenario-receipt-template",
+                "--change-dir", ".harness/changes/demo",
+                "--scenario-ids", "UT-001",
+                "--runner", "vitest",
+                "--out", ".harness/changes/demo/evidence/receipt.json",
+                "--json",
+            )
+        finally:
+            os.chdir(old_cwd)
+        self.assertEqual(code, 0, out)
+        expected = self.change_dir / "evidence" / "receipt.json"
+        self.assertTrue(expected.is_file(), expected)
+        nested = self.change_dir / ".harness"
+        self.assertFalse(nested.exists(), nested)
+
+    def test_zero_tests_with_selector_warns(self) -> None:
+        """E-2：选择器存在但 Tests run=0 → WARN（exit 0 的假阳性防护）。"""
+        evidence = self.change_dir / "runtime" / "it.log"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence.write_text(
+            "[INFO] Tests run: 0, Failures: 0, Errors: 0, Skipped: 0\n",
+            encoding="utf-8",
+        )
+        warn = harness_ledger._zero_tests_with_selector_warning(
+            "mvn -f backend test -Dgroups=mysql -DexcludedGroups=",
+            str(evidence),
+            self.change_dir,
+        )
+        self.assertIsNotNone(warn)
+        self.assertIn("ZERO_TESTS_WITH_SELECTOR", warn)
+        # 无选择器不告警（全量跑 0 个是另一回事）
+        self.assertIsNone(
+            harness_ledger._zero_tests_with_selector_warning(
+                "mvn test", str(evidence), self.change_dir
+            )
+        )
+        # 有真实命中不告警
+        evidence.write_text(
+            "[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0\n",
+            encoding="utf-8",
+        )
+        self.assertIsNone(
+            harness_ledger._zero_tests_with_selector_warning(
+                "mvn test -Dgroups=mysql", str(evidence), self.change_dir
+            )
+        )
+
     def test_unknown_scenario_id_is_rejected(self) -> None:
         code, _, err = self._run(
             "scenario-receipt-template",

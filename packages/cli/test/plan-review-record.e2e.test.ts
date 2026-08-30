@@ -131,6 +131,42 @@ describe("HP-15：plan review-record 收 Receipt 链路（P0-1）", () => {
     return draftPath;
   }
 
+  it("--print-template 输出合法草稿骨架，可直接当输入（P1-2）", async () => {
+    const out: string[] = [];
+    const exit = await runPlanReviewRecord({ printTemplate: true }, deps(out));
+    expect(exit).toBe(0);
+    const template = JSON.parse(out.join("")) as Record<string, unknown>;
+    expect(Object.keys(template).sort()).toEqual(
+      ["completed_at", "findings", "review_mode", "reviewer_identity"].sort()
+    );
+    const finding = (template.findings as Array<Record<string, unknown>>)[0] ?? {};
+    expect(Object.keys(finding).sort()).toEqual(
+      ["finding_id", "category", "severity", "source_refs", "message_zh", "suggested_location"].sort()
+    );
+
+    // 骨架换成合法值后能直接被本命令消费（不走二分试错）
+    const packPath = await buildPack();
+    const draft = {
+      reviewer_identity: "inline:reviewer-1",
+      review_mode: "inline",
+      findings: [],
+      completed_at: new Date().toISOString()
+    };
+    const draftPath = await writeDraft(draft);
+    const recordOut: string[] = [];
+    const recordExit = await runPlanReviewRecord(
+      { input: packPath, receipt: draftPath }, deps(recordOut)
+    );
+    expect(recordExit).toBe(0);
+  });
+
+  it("缺 --input/--receipt 且未 --print-template 时给使用提示", async () => {
+    const out: string[] = [];
+    const exit = await runPlanReviewRecord({}, deps(out));
+    expect(exit).not.toBe(0);
+    expect(out.join("")).toContain("--print-template");
+  });
+
   it("PLAN_REVIEW_REQUIRED 报错自曝期望 input_hash（公开契约）", async () => {
     const packPath = await buildPack();
     const out: string[] = [];

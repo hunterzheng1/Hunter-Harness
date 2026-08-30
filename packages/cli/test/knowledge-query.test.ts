@@ -131,6 +131,44 @@ describe("hunter-harness knowledge query", () => {
     )).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("knowledge status 返回管道自查（P0-1：查询为空时区分 job 未跑/失败/结果为空）", async () => {
+    const fetch = vi.fn(async () => json({
+      pending_count: 0,
+      pending_capped: false,
+      pipeline: {
+        project_id: "prj_knowledge",
+        generation: 1,
+        results_count: 0,
+        jobs: { queued: 1, extracting: 0, ready: 0, failed: 0 },
+        latest_job_updated_at: "2026-08-30T10:00:00.000Z"
+      },
+      request_id: "req_status_1"
+    }));
+    const code = await runCli(["knowledge", "status", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: { ...recoveryEnv },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code, stderr.join("\n")).toBe(0);
+    expect(String(fetch.mock.calls[0]?.[0])).toContain(
+      "/api/v1/projects/prj_knowledge/knowledge/projection-status"
+    );
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      command: "knowledge status",
+      ok: true,
+      project_id: "prj_knowledge",
+      pipeline: {
+        generation: 1,
+        results_count: 0,
+        jobs: { queued: 1, extracting: 0, ready: 0, failed: 0 }
+      }
+    });
+  });
+
   it("fails closed when the remote service is unavailable", async () => {
     const fetch = vi.fn(async () => {
       throw new Error("network unavailable");

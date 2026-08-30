@@ -1793,6 +1793,89 @@ class HarnessGateTests(unittest.TestCase):
         self.assertIn("classifiedAt", data)
         self.assertIn("tierOverride", data)
 
+    def test_classify_refuses_to_rewrite_finalized_change_without_force(self) -> None:
+        """P1-1：已发布 change 误跑 classify 不得覆盖工作副本。"""
+        meta = self.change_dir / "meta"
+        (meta / "plan-profile.json").write_text("{}\n", encoding="utf-8")
+        original = {"schemaVersion": 1, "tier": "full", "custom": "keep-me"}
+        (meta / "gate-policy.json").write_text(
+            json.dumps(original), encoding="utf-8"
+        )
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }):
+            args = gate.build_parser().parse_args(
+                ["classify", "--change", "demo", "--stage", "plan", "--json"]
+            )
+            self.assertEqual(gate.cmd_classify(args), 0)
+        # 工作副本未被覆盖
+        self.assertEqual(
+            json.loads((meta / "gate-policy.json").read_text(encoding="utf-8")),
+            original,
+        )
+        # --force 显式重算才允许重写
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }):
+            args = gate.build_parser().parse_args(
+                ["classify", "--change", "demo", "--stage", "plan", "--force", "--json"]
+            )
+            self.assertEqual(gate.cmd_classify(args), 0)
+        rewritten = json.loads((meta / "gate-policy.json").read_text(encoding="utf-8"))
+        self.assertIn("classifiedAt", rewritten)
+
+    def test_classify_accepts_change_dir_alias(self) -> None:
+        """E-4：gate 的 --change 接受 --change-dir 别名。"""
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }):
+            args = gate.build_parser().parse_args(
+                ["classify", "--change-dir", ".harness/changes/demo", "--stage", "plan", "--json"]
+            )
+            self.assertEqual(gate.cmd_classify(args), 0)
+
+    def test_verification_target_coverage_warns_for_undeclared_levels(self) -> None:
+        """E-5：场景表含 integration 场景但 build-profile 只有单测 target → 提前 WARN。"""
+        meta = self.change_dir / "meta"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "scenario-manifest.json").write_text(json.dumps({
+            "schema_version": 2,
+            "content": {
+                "scenarios": [
+                    {"scenario_id": "s1", "execution_level": "unit"},
+                    {"scenario_id": "s2", "execution_level": "integration"},
+                ]
+            },
+        }), encoding="utf-8")
+        config_dir = self.project / ".harness" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "build-profile.json").write_text(json.dumps({
+            "verificationGraph": {"targets": {"unitTest": {}, "unitTestFull": {}}}
+        }), encoding="utf-8")
+
+        warning = gate._verification_target_coverage_warning(self.change_dir, "execute")
+        self.assertIsNotNone(warning)
+        self.assertEqual(warning["code"], "VERIFICATION_TARGETS_UNDECLARED")
+        self.assertIn("integration", warning["uncoveredLevels"])
+        self.assertNotIn("unit(→unitTest)", warning["uncoveredLevels"])
+
+        # 声明 integrationTest 后不再告警
+        (config_dir / "build-profile.json").write_text(json.dumps({
+            "verificationGraph": {
+                "targets": {"unitTest": {}, "unitTestFull": {}, "integrationTest": {}}
+            }
+        }), encoding="utf-8")
+        self.assertIsNone(
+            gate._verification_target_coverage_warning(self.change_dir, "execute")
+        )
+        # 非 execute 阶段不检查
+        self.assertIsNone(
+            gate._verification_target_coverage_warning(self.change_dir, "review")
+        )
+
     def test_capability_tags_build_required_gate_dag(self) -> None:
         spec_dir = self.change_dir / "spec"
         spec_dir.mkdir(parents=True, exist_ok=True)

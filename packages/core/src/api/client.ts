@@ -208,6 +208,29 @@ export class HunterHarnessApiClient {
     );
   }
 
+  async getKnowledgeProjectionStatus(
+    projectId: string,
+    requestId: string
+  ): Promise<{
+    pending_count: number;
+    pending_capped: boolean;
+    pipeline?: {
+      project_id: string;
+      generation: number;
+      results_count: number;
+      jobs: { queued: number; extracting: number; ready: number; failed: number };
+      latest_job_updated_at: string | null;
+    };
+    request_id: string;
+  }> {
+    return this.request(
+      "GET",
+      "/api/v1/projects/" + encodeURIComponent(projectId) +
+        "/knowledge/projection-status",
+      { requestId }
+    );
+  }
+
   async createProposalSession(
     projectId: string,
     body: object,
