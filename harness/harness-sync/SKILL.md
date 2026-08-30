@@ -51,7 +51,7 @@ CLI 负责 Python runtime 解析、Adapter 事务、远端知识职责、文档�
 ## Interpret
 
 - `OK`：所有可验证组件通过。
-- `ADVISORY`：例如需要运行中文指令审计提案；退出码仍为 0，且 `sync` 本身没有改写文档。
+- `ADVISORY`：例如需要运行中文指令审计提案；退出码仍为 0，且 `sync` 本身没有改写文档。`CODEGRAPH_SERVICE_UNREACHABLE` 也属此级：daemon 未运行时索引仍可正常查询（CLI/MCP 直读数据库），仅增量自动同步暂停，不需要按 WARN 修复。
 - `WARN`：存在过期、冲突、待评审或 `UNKNOWN` 证据；按组件的中文 `nextAction` 处理。
 - `FAIL`：组件执行失败；不得宣称同步完成。
 - `BLOCKED`：runtime、项目状态或能力契约阻塞；先修复阻塞条件。

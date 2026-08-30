@@ -9,6 +9,39 @@ import { assessCodeGraphStatus } from "../src/sync/codegraph-status.js";
 const NOW = new Date("2026-07-29T12:00:00.000Z");
 
 describe("CodeGraph status assessment", () => {
+  it("S2: an unreachable daemon is advisory — the index remains queryable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-daemon-down-"));
+    const graph = join(root, ".codegraph");
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(graph, { recursive: true });
+    try {
+      const indexed = new Date(NOW.getTime() - 1_000);
+      await writeFile(join(root, "src", "app.ts"), "export const value = 1;\n");
+      await writeFile(join(graph, "codegraph.db"), "index");
+      await writeFile(
+        join(graph, "daemon.pid"),
+        JSON.stringify({ pid: 42, socketPath: "\\\\.\\pipe\\codegraph-test" })
+      );
+      await utimes(join(root, "src", "app.ts"), indexed, indexed);
+      await utimes(join(graph, "codegraph.db"), indexed, indexed);
+
+      const result = await assessCodeGraphStatus(root, {
+        now: () => NOW,
+        headCommit: "a".repeat(40),
+        socketProbe: async () => false,
+        statusProbe: async () => null
+      });
+
+      // daemon 未运行 ≠ 索引不可用：ADVISORY 而非 WARN
+      expect(result.status).toBe("ADVISORY");
+      expect(result.reasonCode).toBe("CODEGRAPH_SERVICE_UNREACHABLE");
+      expect(result.action).toContain("仍可正常查询");
+      expect(result.action).toContain("增量");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats an unchanged local index with an unverified watcher as advisory", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-unverified-watcher-"));
     const graph = join(root, ".codegraph");

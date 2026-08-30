@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.4.9] — hunter-harness
+
+> Sync 体验修复与规则候选质量过滤：解决 sales-insight-agent 实测暴露的
+> remediation 断链、CodeGraph 分级过重、事件摘要混入规则候选问题
+>（docs/harness-improvement-roadmap/sync-and-rules-auto-adoption-2026-08-30.md）。
+> CLI 0.4.8 → 0.4.9，core 0.1.4 → 0.1.5，workflow-harness 0.4.7 → 0.4.8。
+
+### Fixed — remediation 空 applyCommand（S1）
+
+- `buildSyncRemediations` 为 `codebase-map` / `codegraph` / `instruction-graph`
+  三个组件补齐可执行的 applyCommand：codebase-map 指向 `/harness-codebase-map`
+  skill 重建；codegraph 按 reasonCode 分岔（`CODEGRAPH_INDEX_MISSING` →
+  `codegraph init`，`INDEX_PENDING` → `codegraph index`，
+  `SERVICE_UNREACHABLE` → 无需修复的说明）；instruction-graph 指向
+  `instructions audit → apply` 提案流。WARN 到修复动作不再断链。
+
+### Fixed — CodeGraph「服务不可达」降级为 ADVISORY（S2）
+
+- daemon 未运行 ≠ 索引不可用：CLI/MCP 直读 `codegraph.db`，查询照常工作，
+  只有增量自动同步暂停。`CODEGRAPH_SERVICE_UNREACHABLE` 从 WARN 降为
+  ADVISORY，action 文案改为「索引仍可正常查询，仅增量同步暂停」。
+
+### Fixed — 规则候选质量过滤（上游问题）
+
+- `synchronizeRuleCandidates` 新增结构校验：候选必须是「条件 → 约束/动作」
+  结构（含 必须/应当/禁止/避免/确保/must/should/never/avoid 等约束标记）。
+  review 阶段 decision 事件的结果摘要（如「委派只读评审完成，OK 带 notes」）
+  在进入候选池前被过滤，计入 `rejected_untrusted`。
+- 报告提出的「规则自动采纳三层模型」（工具可验证 → 自动采纳 / 行为引导 →
+  批量审 / 权限边界 → 永不自动）方向采纳：候选质量过滤是其前置条件，已先行
+  落地；自动采纳本体待按该模型单独立项。
+
 ## [0.4.7] — workflow-harness
 
 > Submit / Archive 阶段修复：阶段交接恢复收敛为一条命令，archive 三个阻断

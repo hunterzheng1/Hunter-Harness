@@ -88,6 +88,17 @@ function severityOf(record: Record<string, unknown>): string {
   return typeof value === "string" ? value.toLowerCase() : "unknown";
 }
 
+// 规则候选必须是「条件 → 约束/动作」结构。2026-08-30 sales-insight-agent 实测：
+// 生成器把 review 阶段 decision 事件的结果摘要（“委派只读评审完成，OK 带
+// notes…”）直接当成了规则候选——事件记录不是行为约束，必须在进入候选池
+// 之前过滤，否则后续任何自动采纳分层都会加速垃圾候选的流入。
+const RULE_STRUCTURE =
+  /(?:必须|应当|应该|需要|禁止|不得|不准|一律|只能|避免|确保|务必|建议|先[^。；\n]{0,16}再|当[^。；\n]{0,24}时|\bmust\b|\bshould\b|\bnever\b|\balways\b|\bavoid\b|\bensure\b|\bdo not\b|\bdon't\b)/i;
+
+function isRuleLike(text: string): boolean {
+  return RULE_STRUCTURE.test(text);
+}
+
 function highSeverity(severity: string): boolean {
   return /^(?:red|critical|high|error|blocker|p0|p1)$/.test(severity);
 }
@@ -115,6 +126,7 @@ function observationFrom(
     proposedRule = `必须增加可重复验证，防止以下问题再次出现：${issue}`;
   }
   if (proposedRule === null || title === null) return null;
+  if (!isRuleLike(proposedRule)) return null;
   const recordId = record.id ?? record.code ?? record.name ?? null;
   return {
     title,

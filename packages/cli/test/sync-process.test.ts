@@ -164,6 +164,40 @@ describe("sync bounded process runner", () => {
     });
   });
 
+  it("S1: warn remediations always carry an executable next step", () => {
+    const receipt = (component: string, reasonCode: string, status: "WARN" | "ADVISORY" = "WARN") => ({
+      component,
+      status,
+      reasonCode,
+      observedAt: "2026-08-30T00:00:00.000Z",
+      durationMs: 1,
+      inputHash: null,
+      outputHash: null,
+      evidence: [],
+      autoFixed: false,
+      nextAction: "review",
+      details: {}
+    });
+
+    const remediations = buildSyncRemediations([
+      receipt("codebase-map", "CODEBASE_MAP_MISSING"),
+      receipt("codegraph", "CODEGRAPH_INDEX_MISSING"),
+      receipt("codegraph", "CODEGRAPH_SERVICE_UNREACHABLE", "ADVISORY"),
+      receipt("instruction-graph", "INSTRUCTION_TOPIC_MISSING")
+    ]);
+
+    expect(remediations).toHaveLength(4);
+    for (const remediation of remediations) {
+      expect(remediation.applyCommand.trim()).not.toBe("");
+    }
+    expect(remediations.find((item) => item.id === "rebuild-codebase-map")?.applyCommand)
+      .toContain("/harness-codebase-map");
+    expect(remediations.find((item) => item.id === "resolve-codegraph-codegraph-index-missing")?.applyCommand)
+      .toBe("codegraph init");
+    expect(remediations.find((item) => item.id === "repair-instruction-graph")?.applyCommand)
+      .toContain("instructions audit");
+  });
+
   it("keeps default JSON compact and exposes receipts only in verbose mode", () => {
     const components = [
       {

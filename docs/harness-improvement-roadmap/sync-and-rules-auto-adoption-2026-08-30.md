@@ -6,6 +6,17 @@
 > 版本：hunter-harness 0.4.7
 > 关联：前三份阶段问题报告（plan / execute / review+fixback / submit+archive）
 
+## 修复状态（2026-08-30，hunter-harness 0.4.9 / core 0.1.5 / workflow-harness 0.4.8）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| S1 remediation 空 applyCommand | ✅ 已修 | `buildSyncRemediations` 为 codebase-map / codegraph / instruction-graph 补齐可执行 applyCommand：codebase-map → `/harness-codebase-map` 重建；codegraph 按 reasonCode 分岔（`INDEX_MISSING` → `codegraph init`，`INDEX_PENDING` → `codegraph index`，`SERVICE_UNREACHABLE` → 无需修复说明）；instruction-graph → `instructions audit → apply` 提案流 |
+| S2 CODEGRAPH_SERVICE_UNREACHABLE 分级过重 | ✅ 已修 | daemon 未运行 ≠ 索引不可用（CLI/MCP 直读 codegraph.db）：WARN 降为 ADVISORY，action 改为「索引仍可正常查询，仅增量自动同步暂停」。reasonCode 不变（契约兼容） |
+| 上游问题：候选质量过滤缺失 | ✅ 已修 | `synchronizeRuleCandidates` 新增「条件 → 约束/动作」结构校验（必须/禁止/避免/确保/must/should/never/avoid 等标记）；事件摘要类文本进不了候选池，计入 `rejected_untrusted`。报告例句「委派只读评审完成，OK 带 notes」有回归测试 |
+| 规则自动采纳三层模型 | ✅ 方向采纳，待立项 | 认同「不能全自动」判断与三层划分；候选质量过滤是其前置条件，已先行落地。自动采纳本体（可工具验证规则的直接应用 + 审计记录、行为引导类的批量审）建议按该模型单独立项，不与本次修复混杂 |
+
+---
+
 ## TL;DR
 
 sync 本身一条命令跑通、摘要清晰，但 remediation 的 `applyCommand` 大面积为空，WARN 到可执行修复之间断链。规则自动采纳可以做，但必须按信任等级分层——先把"候选生成器把事件摘要当规则"的上游质量问题修掉，再谈自动化。

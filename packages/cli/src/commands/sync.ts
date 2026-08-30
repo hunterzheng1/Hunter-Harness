@@ -409,6 +409,74 @@ export function buildSyncRemediations(
       });
       continue;
     }
+    // S1（2026-08-30 实测）：applyCommand 不得为空——WARN 到可执行修复之间
+    // 不能断链。无法自动修复的组件，applyCommand 给出明确的下一步指令
+    //（skill 调用或 CLI 命令），而不是空字符串。
+    if (component.component === "codebase-map") {
+      remediations.push({
+        id: "rebuild-codebase-map",
+        component: component.component,
+        severity: component.status === "FAIL" ? "FAIL" : "WARN",
+        title: `重建 Codebase Map（${component.reasonCode}）`,
+        autoFixable: false,
+        risk: "low",
+        writes: [".harness/context-index.json", ".harness/codebase-map*"],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: true,
+        previewCommand: "npx hunter-harness sync --check --json",
+        applyCommand: "在主会话执行 /harness-codebase-map 重建代码地图，完成后重跑 npx hunter-harness sync --check --json 确认"
+      });
+      continue;
+    }
+    if (component.component === "codegraph") {
+      const applyCommand = component.reasonCode === "CODEGRAPH_INDEX_MISSING"
+        ? "codegraph init"
+        : component.reasonCode === "CODEGRAPH_INDEX_PENDING"
+          ? "codegraph index（或等待 watcher 增量同步完成），然后重跑 npx hunter-harness sync --check --json"
+          : component.reasonCode === "CODEGRAPH_SERVICE_UNREACHABLE"
+            ? "索引仍可查询，无需修复；需要恢复增量同步时重启 CodeGraph watcher（日志见 .codegraph/daemon.log）"
+            : "运行 codegraph status 查看诊断，必要时 codegraph index 重建后重跑 npx hunter-harness sync --check --json";
+      remediations.push({
+        id: `resolve-codegraph-${String(component.reasonCode).toLowerCase().replaceAll("_", "-")}`,
+        component: component.component,
+        severity: component.status === "FAIL"
+          ? "FAIL"
+          : component.status === "ADVISORY"
+            ? "ADVISORY"
+            : "WARN",
+        title: `处理 CodeGraph 状态：${component.reasonCode}`,
+        autoFixable: false,
+        risk: "low",
+        writes: [".codegraph/**"],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: true,
+        previewCommand: "codegraph status",
+        applyCommand
+      });
+      continue;
+    }
+    if (component.component === "instruction-graph") {
+      remediations.push({
+        id: "repair-instruction-graph",
+        component: component.component,
+        severity: component.status === "FAIL" ? "FAIL" : "WARN",
+        title: `修复指令图：${component.reasonCode}`,
+        autoFixable: false,
+        risk: "medium",
+        writes: ["AGENTS.md", "CLAUDE.md", ".harness/rules/**"],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: true,
+        previewCommand: "npx hunter-harness instructions audit --json",
+        applyCommand: "npx hunter-harness instructions audit --json 生成提案，审阅后用 npx hunter-harness instructions apply --proposal <proposal.json> --yes --json 应用"
+      });
+      continue;
+    }
     remediations.push({
       id: `resolve-${component.component}`,
       component: component.component,

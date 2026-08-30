@@ -96,4 +96,41 @@ describe("rule candidate learning", () => {
     expect(result.candidates).toBe(0);
     expect(result.rejected_untrusted).toBe(1);
   });
+
+  it("filters event summaries that are not condition-action rules", async () => {
+    // 2026-08-30 sales-insight-agent 实测：decision 事件的结果摘要被当成规则候选
+    const root = await mkdtemp(join(tmpdir(), "harness-rule-learning-"));
+    for (const archive of ["change-a", "change-b"]) {
+      await writeJson(
+        join(root, ".harness", "archive", archive, "runtime", "review-findings-input.json"),
+        {
+          findings: [
+            {
+              id: `${archive}-N1`,
+              severity: "OK",
+              title: "评审执行记录",
+              suggestion: "委派只读评审完成，OK 带 notes：主会话按 6 维度清单完成审查"
+            },
+            {
+              id: `${archive}-R1`,
+              severity: "YELLOW",
+              title: "Missing regression test",
+              suggestion: "Every bug fix must include a focused regression test."
+            }
+          ]
+        }
+      );
+    }
+
+    const result = await synchronizeRuleCandidates(root);
+
+    // 事件摘要被过滤；真正的条件-动作规则不受影响
+    expect(result.candidates).toBe(1);
+    const manifest = JSON.parse(await readFile(
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
+      "utf8"
+    )) as { candidates: Array<{ proposed_rule: string }> };
+    expect(manifest.candidates[0]?.proposed_rule)
+      .toBe("Every bug fix must include a focused regression test.");
+  });
 });

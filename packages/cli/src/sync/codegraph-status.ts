@@ -327,7 +327,10 @@ export async function assessCodeGraphStatus(
 
     if (serviceReachable === false || watcherActive === false) {
       return {
-        status: "WARN",
+        // daemon 未运行 ≠ 索引不可用：CLI/MCP 直读 codegraph.db，查询照常工作，
+        // 只有增量自动同步暂停。判 WARN 会把"可提示"放大成"待修复"，与
+        // CODEGRAPH_INDEX_MISSING（索引根本不存在）混为一谈（2026-08-30 实测）。
+        status: "ADVISORY",
         reasonCode: "CODEGRAPH_SERVICE_UNREACHABLE",
         serviceReachable,
         indexedCommit: null,
@@ -339,7 +342,7 @@ export async function assessCodeGraphStatus(
         indexObservedAt,
         watcherObservedAt,
         watcherActive,
-        action: "CodeGraph 服务或 watcher 已不可用；请检查并重启集成。本次同步不会自动执行全量重建。"
+        action: "CodeGraph daemon 未运行：索引仍可正常查询（CLI/MCP 直读数据库），仅增量自动同步暂停。需要恢复增量同步时重启 watcher（日志见 .codegraph/daemon.log）。本次同步不会自动执行全量重建。"
       };
     }
     if (pendingFileCount > 0) {
