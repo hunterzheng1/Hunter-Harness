@@ -15,6 +15,8 @@ v2 证据包链路本身已达到「一次通过」：`evidence-pack` / `finaliz
 
 问题 1、2 已在本地补救；问题 3 需要平台排查。
 
+> **2026-08-30 追加**：同一 change 的 execute 阶段问题见文末「追加：execute 阶段实测问题」。其中 E-1（`scenario-receipt-template --out` 路径双重拼接）、E-2（集成测试静默 0 执行）建议优先修。
+
 ---
 
 ## 🔴 P0-1：知识查询全量 0 条，但 ingest 回执宣称 ready（平台侧嫌疑）
@@ -117,3 +119,75 @@ npx hunter-harness events-sync --json   # cursor acked_lines 5→6，平台计�
 - hunter-harness 0.4.10（npx 缓存），Node v24.14.0，Python 3.11.15，Windows（Git Bash）
 - 项目：sales-insight-agent，change `demo-datasource`，master @ b26468a
 - 关键操作序列：`bootstrap-plan` → `configure-plan` → `evidence-pack`（1 次通过）→ `review-record`（2 次契约试错）→ `finalize`（1 次通过）→ `context close` →【误操作】`classify`（覆盖工作副本）→ `configure-plan` 恢复 → 补写 `phase.end` → `events-sync`（cursor 5→6）
+
+---
+
+# 追加：execute 阶段实测问题（2026-08-30，change `demo-datasource`）
+
+> 来源：同一 change 的 `/harness-execute` 全流程（prepare → begin → gate begin → TDD → ledger → 报告 → gate close）
+> 总体评价：execute 链路本身顺畅（gate close 幂等、自动写 phase.end 并同步平台、`derivedToPhase` 正确），以下按严重度排列。
+
+## 🔴 E-1：`ledger scenario-receipt-template --out` 相对路径被双重拼接
+
+**现象**
+
+```bash
+python harness_ledger.py scenario-receipt-template --change-dir .harness/changes/demo-datasource \
+  --out .harness/changes/demo-datasource/evidence/scenario-receipt-unit.json ...
+# 实际写到：.harness/changes/demo-datasource/.harness/changes/demo-datasource/evidence/scenario-receipt-unit.json
+```
+
+`--out` 的相对路径被拼到 `--change-dir` 之下，产生嵌套幽灵目录。返回体 `path` 字段如实显示了错误路径，但执行者不细看不会发现。
+
+**建议**：`--out` 相对路径统一相对 cwd 解析（CLI 惯例），或相对 change-dir 但在文档写明；同时在写文件前校验目标路径仍位于项目内且不含重复 change-dir 段。
+
+## 🔴 E-2：集成测试「静默 0 执行」——exit 0 + Tests run: 0，无告警
+
+**现象**
+
+- pom 在 surefire `<configuration>` 里写死 `<excludedGroups>mysql</excludedGroups>` 后，命令行 `-Dgroups=mysql -DexcludedGroups=` 的**空值覆盖不生效**（插件级配置压过用户属性），`@Tag(mysql)` 测试全部被排除
+- 结果是 `Tests run: 0, Failures: 0` + **exit 0**——如果只看退出码，这是一次“全绿”的假阳性
+- 修复方式：pom 改用 `${excludedGroups}` 属性占位，命令行空值才能生效（已在产品侧修复并记入测试报告）
+
+**建议（harness 侧）**
+
+1. `harness_test_runner.py exec` 或 ledger record 在结果解析时发现 `Tests run: 0` 且命令含 `-Dgroups=`/`-Dtest=` 选择器 → 至少 WARN（选择器存在却 0 命中，大概率是过滤配置问题）
+2. `harness-test/pitfalls-java.md` 收录此坑：surefire 插件级 excludedGroups 与命令行覆盖的优先级规则
+3. plan 阶段生成验证命令（场景表 `-Dgroups=mysql -DexcludedGroups=`）时，若项目 pom 无对应属性占位，应提示配置前置条件
+
+## 🟡 E-3：`harness_events.py append --type verification` 必填字段逐个报错
+
+- 先报 `--name` 缺失，补上后再报 `--status` 缺失，两次往返
+- **建议**：入口一次性校验全部必填字段并合并报错（对齐 `PLAN_EVIDENCE_INPUT_INVALID` 的 `problems[]` 风格）
+
+## 🟡 E-4：`--change` 与 `--change-dir` 参数名跨脚本不统一
+
+- `harness_gate.py begin/close` 用 `--change`；`harness_events.py append`、`harness_ledger.py record` 用 `--change-dir`；`harness_context.py` 又是 `--change`
+- 每次切换脚本都要查一次 usage，实测踩到一次（`gate begin --change-dir` 报 unrecognized）
+- **建议**：统一接受两个别名（argparse `add_argument("--change", "--change-dir", dest="change")` 成本极低），或至少全部接受 `--change-dir`
+
+## 🟡 E-5：plan 场景表引用未声明的 verification target 时不预警
+
+- 场景表验证命令包含集成测试（`-Dgroups=mysql`），但 `build-profile.json` 的 `verificationGraph.targets` 只有 compile/unitTest/unitTestFull；ledger record `--verification integrationTest` 时才报错 `unsupported verification`
+- 报错文案本身很好（指出声明位置），但发现时点太晚
+- **建议**：`plan finalize` 或 `gate begin`（execute）时校验：场景表涉及的 execution_level/verification 是否都有对应 target 声明，缺失时提前列出待补清单
+
+## 🟢 E-6：execute 的 `gate close` 正确处理了 phase.end —— 反证 plan 链路缺口
+
+- execute 关门时 close 内部自动写 `phase.end` + 平台事件同步（`acked_lines` 10 条），无需手工补写
+- 这证实 P0-2 的修复方向：把同一套逻辑接到 plan 的 close/finalize 路径即可
+
+## 🟢 E-7：其他正向观察
+
+- `harness_test_runner.py exec` 全程稳定（锁、超时、进程树清理无异常），资源档位语义清晰
+- `gate begin` 对 `-Dtest=` 探针测试与正式测试的区分没有干扰
+- 平台 Run 监控在 execute 阶段计时正确（对照 P0-2：execute 事件对完整）
+
+## 🟢 E-8：展示层小问题
+
+- `gate begin --note "/harness-execute 触发..."` 在 Git Bash 下被 MSYS 路径转换改写成 `C:/Program Files/Git/harness-execute 触发...`（事件 note 里可见）。工具侧可提示 note 避免 `/` 开头，或文档注明 `MSYS_NO_PATHCONV=1`
+
+## execute 复现环境
+
+- 同上文（hunter-harness 0.4.10 / Node 24.14 / Windows Git Bash）
+- 关键操作序列：`context prepare/begin` → `gate begin` → `state capture` → 基线 compile → RED（编译失败证据）→ GREEN（UT 20/20）→ 集成 10/10（含 E-2 修复）→ guard record（tdd-created）→ ledger 四条 → 测试报告 → `gate close`（derivedToPhase=review）
