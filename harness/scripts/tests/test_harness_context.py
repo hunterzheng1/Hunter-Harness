@@ -450,6 +450,97 @@ class HarnessContextTest(unittest.TestCase):
             self.assertFalse(selected["reviewPhaseEnded"])
             self.assertIn("harness_gate.py close", selected["recoveryAction"])
 
+    def test_handoff_repairs_closed_phase_without_transition(self) -> None:
+        """P0-1：review 已关门（phase.end）但没写交接的断链状态，一条 handoff
+        命令完成 补租约→写收据→begin 确认，不再需要六命令 choreography。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="execute", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="execute",
+                to_phase="review",
+                executor="cursor",
+            )
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            # review 关门但没交接（0.4.7 plain close 的产物）
+            state = project / ".harness/state/changes/change"
+            with (state / "events.ndjson").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "type": "phase.start", "phase": "review", "run_id": "run-1",
+                }) + "\n")
+                fh.write(json.dumps({
+                    "type": "phase.end", "phase": "review",
+                    "run_id": "run-1", "status": "OK",
+                }) + "\n")
+
+            result = CONTEXT.handoff_transition(
+                project, "change", to_phase="submit", executor="cursor"
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "HANDOFF_COMPLETED")
+            self.assertEqual(result["fromPhase"], "review")
+            self.assertEqual(result["toPhase"], "submit")
+            self.assertEqual(result["transition"]["code"], "TRANSITION_CLOSED")
+            view = CONTEXT.context_view(project, "change")
+            self.assertEqual(view["currentPhase"], "submit")
+            self.assertEqual(view["current"]["phase"], "submit")
+
+    def test_handoff_with_existing_transition_only_confirms_begin(self) -> None:
+        """收据已写、只欠 begin 确认的半成品状态：不写重复 receipt。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+
+            result = CONTEXT.handoff_transition(
+                project, "change", to_phase="submit", executor="cursor"
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(
+                result["transition"]["code"], "TRANSITION_ALREADY_CLOSED"
+            )
+            transitions = CONTEXT.context_view(project, "change")["transitions"]
+            review_submit = [
+                t for t in transitions
+                if t.get("fromPhase") == "review" and t.get("toPhase") == "submit"
+            ]
+            self.assertEqual(len(review_submit), 1, "不得写重复 receipt")
+
+    def test_handoff_refuses_to_hijack_an_open_phase(self) -> None:
+        """来源阶段还没关门（无 phase.end）时拒绝补交接——那是截胡。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="execute", executor="cursor"
+            )
+
+            result = CONTEXT.handoff_transition(
+                project, "change", to_phase="review", executor="cursor"
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "HANDOFF_SOURCE_NOT_CLOSED")
+            self.assertIn("harness_gate.py close", result["recoveryAction"])
+
     def test_cancel_prepared_fixback_removes_unstarted_target_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

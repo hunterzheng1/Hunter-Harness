@@ -1099,6 +1099,59 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     )
 
 
+def allow_local_release(project_root: Path, change_id: str) -> dict[str, Any]:
+    """在 gate-policy.json 写入 candidateVerification.allowLocalRelease=true。
+
+    archive 的 PROJECT_RELEASE_POLICY_BLOCKED 要求这个策略位，此前只能手工
+    编辑 meta/gate-policy.json（2026-08-30 sales-insight-agent archive 实测）。
+    这里给出正规入口：保留既有策略内容，只翻转一个布尔位；幂等。
+    """
+    resolved = resolve_change(project_root, change_id)
+    if not resolved.get("ok"):
+        return resolved
+    change_dir = Path(resolved["changeDir"])
+    policy_path = change_dir / "meta" / "gate-policy.json"
+    policy: dict[str, Any] = {"schemaVersion": 1}
+    if policy_path.is_file():
+        try:
+            data = _read_json(policy_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "code": "GATE_POLICY_INVALID",
+                "message": str(exc),
+                "path": str(policy_path),
+            }
+        if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+            return {
+                "ok": False,
+                "code": "GATE_POLICY_INVALID",
+                "message": "gate-policy.json 必须是 schemaVersion=1 的对象",
+                "path": str(policy_path),
+            }
+        policy = data
+    candidate = policy.get("candidateVerification")
+    candidate = dict(candidate) if isinstance(candidate, dict) else {}
+    if candidate.get("allowLocalRelease") is True:
+        return {
+            "ok": True,
+            "code": "LOCAL_RELEASE_ALREADY_ALLOWED",
+            "changeId": resolved["changeId"],
+            "path": str(policy_path),
+            "candidateVerification": candidate,
+        }
+    candidate["allowLocalRelease"] = True
+    policy["candidateVerification"] = candidate
+    _write_json(policy_path, policy)
+    return {
+        "ok": True,
+        "code": "LOCAL_RELEASE_ALLOWED",
+        "changeId": resolved["changeId"],
+        "path": str(policy_path),
+        "candidateVerification": candidate,
+    }
+
+
 def declare_product_ownership(
     project_root: Path, change_id: str, *, product_paths: list[str]
 ) -> dict[str, Any]:
@@ -1165,6 +1218,20 @@ def declare_product_ownership(
         "productPaths": normalized,
         "path": str(context_path),
     }
+
+
+def cmd_allow_local_release(args: argparse.Namespace) -> int:
+    project = resolve_main_project_root()
+    payload = allow_local_release(project, args.change)
+    if payload.get("ok"):
+        emit(payload, as_json=bool(args.json))
+        return 0
+    return emit_error(
+        str(payload.get("code", "ALLOW_LOCAL_RELEASE_FAILED")),
+        str(payload.get("message", "allow local release failed")),
+        as_json=bool(args.json),
+        extra={k: v for k, v in payload.items() if k not in {"ok", "message"}},
+    )
 
 
 def cmd_declare_ownership(args: argparse.Namespace) -> int:
@@ -1563,6 +1630,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="exact file or directory prefix (no globs); repeatable",
     )
     p_ownership.set_defaults(func=cmd_declare_ownership)
+
+    p_local_release = sub.add_parser(
+        "allow-local-release", parents=[shared],
+        help="set candidateVerification.allowLocalRelease=true in gate-policy.json",
+    )
+    p_local_release.add_argument("--change", required=True)
+    p_local_release.set_defaults(func=cmd_allow_local_release)
 
     p_claim = sub.add_parser("claim", parents=[shared])
     p_claim.add_argument("--change", required=True)

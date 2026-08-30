@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.4.7] — workflow-harness
+
+> Submit / Archive 阶段修复：阶段交接恢复收敛为一条命令，archive 三个阻断
+> 报错自带出路，密钥扫描不再误伤 harness 自生成的 recovery_token
+>（docs/harness-improvement-roadmap/submit-archive-phase-issues-2026-08-30.md）。
+> 纯 workflow-harness 修复，CLI 保持 0.4.8。
+
+### Added — `harness_context.py handoff` 组合命令
+
+- 一条命令补齐缺失的阶段交接：自动补建缺失/过期的 context 租约（prepare 幂等）
+  → 写交接收据 → begin 确认。收据已存在时只补 begin 确认，不写重复 receipt。
+  此前断链恢复要在 context close / change claim / context prepare / context
+  close / context begin / change release 之间试错六条命令（阶段租约本不需动）。
+- 来源阶段未关门（无 phase.end）时拒绝执行（`HANDOFF_SOURCE_NOT_CLOSED`）——
+  handoff 只补已关门阶段的交接，不能截胡进行中的阶段。
+- gate begin 的 `CONTEXT_HANDOFF_REQUIRED` / `CONTEXT_BEGIN_REQUIRED`
+  recoveryAction 改为指向该命令。
+
+### Added — `harness_change.py allow-local-release`
+
+- 在 `meta/gate-policy.json` 写入 `candidateVerification.allowLocalRelease=true`
+  的正规入口：保留既有策略内容、幂等，替代手工编辑。
+
+### Fixed — archive 阻断报错自带出路
+
+- `PROJECT_RELEASE_POLICY_BLOCKED` / `LOCAL_RELEASE_NOT_AUTHORIZED` →
+  nextAction 指向 `allow-local-release --change <cn>`；
+- `DIFF_ZERO_WITH_NONEMPTY_COMMIT` → nextAction 给出
+  `declare-ownership --product-path` 命令模板；
+- `SENSITIVE_EVIDENCE_UNQUARANTINED` → nextAction 展开为含全部 `--file`
+  路径的完整 quarantine 命令（一轮修完，不再串行暴露）。
+
+### Fixed — 密钥扫描豁免 harness 系统字段
+
+- `_sensitive_candidates` 豁免 `recovery_token`：plan finalize 发布日志里的
+  内部续跑凭证不是用户秘密，此前首轮+修订版两个发布日志会串行各阻断一次
+  archive。用户文件里的真实 token/password 赋值不受影响。
+
 ## [0.4.6] — workflow-harness
 
 > Review → Fixback 链路修复：解决 sales-insight-agent 实测暴露的 plain close 断链、

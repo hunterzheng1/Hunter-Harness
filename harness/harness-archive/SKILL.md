@@ -122,11 +122,12 @@ disallowed-tools:
 
 `execute` 内部运行自动门禁。实际计划最后阶段已终态、边界快照存在且 `status.archivable=true` 时直接执行；未满足时返回阻断且不移动原目录。用户取消后不得重跑。
 
-### 二·A、两个常见阻断的正规出路（不要自己拼 python -c）
+### 二·A、常见阻断的正规出路（不要自己拼 python -c）
 
 | 阻断 | 出路 |
 |------|------|
-| `SENSITIVE_EVIDENCE_UNQUARANTINED`（默认只告警，`HUNTER_HARNESS_SENSITIVE_SCAN=block` 时才阻断） | `python <skills-root>/scripts/harness_runtime.py quarantine-evidence --project . --change-dir ".harness/changes/<cn>" --file "<相对 change-dir 的路径>" --reason "<为什么是敏感证据>" --json`（`--file` 可重复）。私有根默认已与项目同盘、且在项目根之外——**不要**手工指定项目内的路径，归档的密钥扫描会以 `SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT` 拒绝 |
+| `PROJECT_RELEASE_POLICY_BLOCKED` / `LOCAL_RELEASE_NOT_AUTHORIZED`（本地可复现证据未获发布授权） | `python <skills-root>/scripts/harness_change.py allow-local-release --change <cn> --json`（在 `meta/gate-policy.json` 写入 `candidateVerification.allowLocalRelease=true`，幂等，保留既有策略内容）。**不要**手改 `gate-policy.json` |
+| `SENSITIVE_EVIDENCE_UNQUARANTINED`（默认只告警，`HUNTER_HARNESS_SENSITIVE_SCAN=block` 时才阻断） | 报错的 `nextAction` 自带含全部 `--file` 的完整命令；等价于 `python <skills-root>/scripts/harness_runtime.py quarantine-evidence --project . --change-dir ".harness/changes/<cn>" --file "<相对 change-dir 的路径>" --reason "<为什么是敏感证据>" --json`（`--file` 可重复）。私有根默认已与项目同盘、且在项目根之外——**不要**手工指定项目内的路径，归档的密钥扫描会以 `SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT` 拒绝。harness 自生成发布日志里的 `recovery_token` 是系统字段，0.4.7（workflow-harness）起扫描器已豁免，无需隔离 |
 | `DIFF_ZERO_WITH_NONEMPTY_COMMIT`（提交范围非空但 filesChanged=0） | 契约缺 `ownership.productPaths`，全部改动被判为 `foreignPaths`。用 `python <skills-root>/scripts/harness_change.py declare-ownership --change <cn> --product-path "<目录前缀或精确文件>" --json` 按计划的实际改动范围声明（可重复；只收精确路径，不支持通配）。**不要**手改 `change-context.json` |
 
 ### 二·A·1、发布内容预检与服务端 422

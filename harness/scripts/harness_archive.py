@@ -819,6 +819,10 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                     "evidenceValid": True,
                     "capabilities": sorted(capabilities),
                     "evidence": evidence,
+                    "nextAction": (
+                        "项目策略要求远端认证证据：先跑远端 CI 验证，或调整 "
+                        "meta/gate-policy.json 的 candidateVerification.remoteRequired"
+                    ),
                 }
             if not allow_local_release:
                 return {
@@ -833,6 +837,12 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                     "evidenceValid": True,
                     "capabilities": sorted(capabilities),
                     "evidence": evidence,
+                    "nextAction": (
+                        "本地可复现证据需要显式授权：harness_change.py "
+                        f"allow-local-release --change {change_dir.name}"
+                        "（写入 candidateVerification.allowLocalRelease=true），"
+                        "然后重跑 archive"
+                    ),
                 }
             return {
                 "ok": True,
@@ -2469,6 +2479,13 @@ def validate_sensitive_evidence_publication_gate(
         change_dir, exclude_dirs=hruntime.PUBLICATION_EXCLUDED_DIRS
     )
     if candidates:
+        quarantine_cmd = (
+            "harness_runtime.py quarantine-evidence --project . "
+            f"--change-dir {change_dir} "
+            + " ".join(
+                f"--file {item['path']}" for item in candidates
+            )
+        )
         return _advisory_sensitive_gate(
             {
                 "ok": False,
@@ -2476,7 +2493,8 @@ def validate_sensitive_evidence_publication_gate(
                 "receiptPath": str(receipt_path),
                 "unresolvedFailures": candidates,
                 "nextAction": (
-                    "Quarantine the original bytes before archive publication."
+                    "把明文证据逐条隔离出可发布树（原字节移入私有隔离区，"
+                    "一轮命令可带全部 --file）：" + quarantine_cmd
                 ),
             },
             policy,
@@ -6366,6 +6384,11 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
             "code": "DIFF_ZERO_WITH_NONEMPTY_COMMIT",
             "severity": "error",
             "message": f"final commit {final} differs from base {base} but filesChanged=0",
+            "nextAction": (
+                "产品代码路径未声明会导致 diff 归到 foreignPaths。声明后重跑 archive："
+                "harness_change.py declare-ownership --change <change> "
+                "--product-path <产品代码目录>（精确路径，可重复传）"
+            ),
         })
 
     # HH-ARCHIVE-20260730-001: refuse internally-consistent but truncated boundaries.
@@ -7160,6 +7183,10 @@ def _project_release_policy_gate(
                 "candidateVerification.allowLocalRelease=true"
             ),
             "remoteRequired": remote_required,
+            "nextAction": (
+                "本地发布需要显式授权：harness_change.py allow-local-release "
+                f"--change {change_dir.name}，然后重跑 archive"
+            ),
         }
     evidence = candidate_gate.get("evidence")
     evidence = evidence if isinstance(evidence, dict) else {}

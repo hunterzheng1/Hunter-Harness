@@ -802,6 +802,40 @@ class PublicationScopedScanTests(unittest.TestCase):
             # 但发布门禁不该被一个永远不发布的草稿挡住。
             self.assertEqual(scoped, [])
 
+    def test_harness_recovery_token_is_not_a_user_secret(self) -> None:
+        """P1-2：发布日志里 harness 自生成的 recovery_token 不该被扫成明文秘密。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            journals = change / "meta" / "publication-journals"
+            journals.mkdir(parents=True)
+            (journals / "plan_finalize-1.json").write_text(
+                json.dumps({"recovery_token": "a1b2c3d4e5f6", "status": "ok"}),
+                encoding="utf-8",
+            )
+            (journals / "plan_finalize-2.json").write_text(
+                json.dumps({"recovery_token": "f6e5d4c3b2a1"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(runtime.sensitive_evidence_candidates(change), [])
+
+            # 真实用户秘密仍然命中——豁免只覆盖 recovery_token 这一个系统字段
+            (change / "config.json").write_text(
+                json.dumps({"api_token": "sk_live_value_123"}),
+                encoding="utf-8",
+            )
+            candidates = runtime.sensitive_evidence_candidates(change)
+            self.assertEqual([item["path"] for item in candidates], ["config.json"])
+
+            # 同文件里 recovery_token 被豁免、另一个字段仍命中
+            (journals / "mixed.json").write_text(
+                '{"recovery_token": "a1b2c3d4", "password": "hunter2secret"}',
+                encoding="utf-8",
+            )
+            paths = [item["path"] for item in runtime.sensitive_evidence_candidates(change)]
+            self.assertIn("meta/publication-journals/mixed.json", paths)
+            self.assertNotIn("meta/publication-journals/plan_finalize-1.json", paths)
+
     def test_publishable_digest_ignores_runtime_churn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = self._change_with_runtime_scratch(Path(tmp))

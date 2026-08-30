@@ -779,6 +779,72 @@ class DeclareOwnershipTests(unittest.TestCase):
         self.assertEqual(args.product_path, ["kld-sdd/"])
 
 
+class AllowLocalReleaseTests(unittest.TestCase):
+    """PROJECT_RELEASE_POLICY_BLOCKED 的正规出路（2026-08-30 archive 实测）：
+    此前只能手工编辑 meta/gate-policy.json。"""
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-local-release-"))
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        (self.change_dir / "meta").mkdir(parents=True)
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps({"schemaVersion": 1, "changeId": "demo"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _policy(self) -> dict:
+        return json.loads(
+            (self.change_dir / "meta" / "gate-policy.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+
+    def test_creates_policy_when_missing(self) -> None:
+        result = change.allow_local_release(self.project, "demo")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "LOCAL_RELEASE_ALLOWED")
+        policy = self._policy()
+        self.assertEqual(policy["schemaVersion"], 1)
+        self.assertTrue(policy["candidateVerification"]["allowLocalRelease"])
+
+    def test_preserves_existing_policy_content(self) -> None:
+        (self.change_dir / "meta" / "gate-policy.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "tier": "full",
+                "candidateVerification": {"minimumAssurance": "local-reproducible"},
+            }),
+            encoding="utf-8",
+        )
+        result = change.allow_local_release(self.project, "demo")
+
+        self.assertTrue(result["ok"], result)
+        policy = self._policy()
+        self.assertEqual(policy["tier"], "full")
+        self.assertEqual(
+            policy["candidateVerification"]["minimumAssurance"], "local-reproducible"
+        )
+        self.assertTrue(policy["candidateVerification"]["allowLocalRelease"])
+
+    def test_idempotent_when_already_allowed(self) -> None:
+        change.allow_local_release(self.project, "demo")
+        second = change.allow_local_release(self.project, "demo")
+
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(second["code"], "LOCAL_RELEASE_ALREADY_ALLOWED")
+
+    def test_cli_exposes_allow_local_release(self) -> None:
+        parser = change.build_parser()
+        args = parser.parse_args([
+            "allow-local-release", "--change", "demo", "--json",
+        ])
+        self.assertEqual(args.change, "demo")
+
+
 class InspectLeaseStateTests(unittest.TestCase):
     """inspect_lease 把三种失败压成 None，调用方就没法分别应对。
 

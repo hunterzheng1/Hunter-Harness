@@ -6,6 +6,16 @@
 > 版本：hunter-harness 0.4.7
 > 关联：[plan v2 问题报告](./plan-v2-evidence-pack-issues-2026-08-30.md) · [execute 租约问题](./execute-phase-gate-close-lease-issue-2026-08-30.md) · [review/fixback 问题](./review-fixback-phase-issues-2026-08-30.md)
 
+## 修复状态（2026-08-30，workflow-harness 0.4.7）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| P0-1 阶段交接手工 choreography | ✅ 已修 | 新增 `harness_context.py handoff --to-phase <p>` 组合命令：补租约（prepare 幂等）→写收据→begin 确认一步完成；收据已存在时只补 begin 确认；来源阶段未关门报 `HANDOFF_SOURCE_NOT_CLOSED` 拒绝截胡。gate begin 的 `CONTEXT_HANDOFF_REQUIRED`/`CONTEXT_BEGIN_REQUIRED` recoveryAction 指向该命令；harness-submit SKILL 明确「不要再 claim 阶段租约」。0.4.6 的 close 自动派生已从根上消除新断链，本命令服务历史断链 |
+| P1-1 阻断报错不带出路 | ✅ 已修 | 三个报错均带 nextAction：`PROJECT_RELEASE_POLICY_BLOCKED`/`LOCAL_RELEASE_NOT_AUTHORIZED` → 新增 `harness_change.py allow-local-release --change <cn>`（幂等写策略位，保留既有 gate-policy 内容）；`DIFF_ZERO_WITH_NONEMPTY_COMMIT` → declare-ownership 命令模板；`SENSITIVE_EVIDENCE_UNQUARANTINED` → 展开为含全部 `--file` 的完整 quarantine 命令 |
+| P1-2 recovery_token 误伤 + 串行暴露 | ✅ 已修 | `_sensitive_candidates` 豁免 harness 自生成的 `recovery_token` 字段（用户真实 token/password 赋值不受影响，有测试）；串行暴露随之消失。扫描本身本就一次返回全部 unresolvedFailures，串行是重试产生新日志所致 |
+
+---
+
 ## TL;DR
 
 submit 本体顺利（验证复用 REUSED、commit+push 一次过），但**阶段间交接仍需手工补 context close + claim + release 三连**。archive 被三个可预期的门禁各拦一次：`DIFF_ZERO_WITH_NONEMPTY_COMMIT`、`PROJECT_RELEASE_POLICY_BLOCKED`、`SENSITIVE_EVIDENCE_UNQUARANTINED`（×2，串行暴露）。三个都有正规出路，但**报错信息没有告诉使用者出路在哪**。

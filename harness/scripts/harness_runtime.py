@@ -324,6 +324,7 @@ def _sensitive_candidates(
                 for pattern in (_SENSITIVE_ASSIGNMENT, _AUTHORIZATION_ASSIGNMENT)
                 for match in pattern.finditer(raw)
                 if not _is_sensitive_placeholder(match.group("value"))
+                and not _is_harness_internal_key(raw, match)
             ),
             None,
         )
@@ -335,6 +336,18 @@ def _sensitive_candidates(
             "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
         })
     return candidates
+
+
+def _is_harness_internal_key(raw: bytes, match: re.Match[bytes]) -> bool:
+    """harness 自己生成的系统字段不是用户秘密。
+
+    plan finalize 发布日志（meta/publication-journals/*.json）里的
+    ``recovery_token`` 是内部续跑凭证，会被通用 ``token`` 规则误伤
+    （2026-08-30 sales-insight-agent archive 实测：两个发布日志串行阻断）。
+    正则从关键字（如 ``token``）处起匹配，豁免看关键字前面的字段名前缀。
+    """
+    prefix = raw[max(0, match.start() - 16):match.start()]
+    return bool(re.search(rb'(?i)recovery_["\']?$', prefix))
 
 
 def _is_sensitive_placeholder(value: bytes) -> bool:

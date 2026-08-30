@@ -1543,6 +1543,134 @@ def _begin_transition_unlocked(
     }
 
 
+def handoff_transition(
+    project: Path,
+    change: str,
+    *,
+    to_phase: str,
+    executor: str,
+    from_phase: str | None = None,
+    status: str = "OK",
+) -> dict[str, Any]:
+    """一条命令补齐缺失的阶段交接：补租约 → close → begin 确认。
+
+    0.4.7 及之前的 plain gate close 不写交接，后继阶段 begin 撞
+    CONTEXT_HANDOFF_REQUIRED 后，使用者要在 context close（缺租约报错）→
+    change claim → context prepare → context close → context begin →
+    change release 之间试错（2026-08-30 sales-insight-agent submit 实测，
+    六条命令）。本命令把合法恢复收敛为一步：来源阶段必须已关门
+    （phase.end 落盘），缺失的 context 租约由 prepare 幂等重建，
+    交接收据与 begin 确认走与正常流程完全相同的状态机。阶段租约
+    （harness_change）在 gate close 时已释放，无需也不应重新 claim。
+    """
+    project = Path(project).resolve()
+    canonical_to = hpaths.resolve_phase_name(to_phase)
+    if canonical_to is None:
+        return _unknown_phase_error(to_phase)
+    to_phase = canonical_to
+    try:
+        contract_root, _contract_data, state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
+    paths = _paths(state_root)
+    transitions = _read_ndjson(paths["transitions"])
+    latest = transitions[-1] if transitions else None
+
+    if from_phase is None:
+        if (
+            isinstance(latest, dict)
+            and hpaths.resolve_phase_name(latest.get("toPhase")) == to_phase
+        ):
+            # 交接已写、只剩 begin 确认的半成品状态：来源从收据取
+            from_phase = str(latest.get("fromPhase") or "")
+        else:
+            view = context_view(project, change)
+            current = (
+                view.get("current") if isinstance(view.get("current"), dict) else {}
+            )
+            from_phase = str(current.get("phase") or "").strip()
+    canonical_from = hpaths.resolve_phase_name(from_phase or "")
+    if canonical_from is None:
+        return {
+            "ok": False,
+            "code": "HANDOFF_SOURCE_UNKNOWN",
+            "message": "无法确定交接来源阶段；请显式传 --from-phase。",
+            "toPhase": to_phase,
+        }
+    from_phase = canonical_from
+
+    closed: dict[str, Any]
+    if (
+        isinstance(latest, dict)
+        and hpaths.resolve_phase_name(latest.get("fromPhase")) == from_phase
+        and hpaths.resolve_phase_name(latest.get("toPhase")) == to_phase
+    ):
+        # 收据已存在——重放 close 只会写重复 receipt，直接进入 begin 确认
+        closed = {
+            "ok": True,
+            "code": "TRANSITION_ALREADY_CLOSED",
+            "idempotent": True,
+            "receipt": latest,
+        }
+    else:
+        event_paths = [state_root / "events.ndjson"]
+        if state_root != contract_root:
+            event_paths.append(contract_root / "events.ndjson")
+        if not _phase_has_ended(event_paths, from_phase):
+            return {
+                "ok": False,
+                "code": "HANDOFF_SOURCE_NOT_CLOSED",
+                "message": (
+                    f"{from_phase} 阶段尚未关门（无 phase.end）；handoff 只补齐"
+                    "已关门阶段的交接，不能截胡进行中的阶段。"
+                ),
+                "fromPhase": from_phase,
+                "toPhase": to_phase,
+                "recoveryAction": (
+                    f"先完成来源阶段关门：harness_gate.py close --phase {from_phase} "
+                    f"--change {change} --status <OK|WARN> --json"
+                    "（0.4.6+ 缺省 --to-phase 时自动派生交接），再重跑本命令。"
+                ),
+            }
+        # 缺失/过期的 context 租约由 prepare 幂等重建；被他人持有则原样报错
+        prepared = prepare_context(
+            project,
+            change=change,
+            phase=from_phase,
+            executor=executor,
+        )
+        if not prepared.get("ok"):
+            return prepared
+        closed = close_transition(
+            project,
+            change,
+            from_phase=from_phase,
+            to_phase=to_phase,
+            executor=executor,
+            status=status,
+        )
+        if not closed.get("ok"):
+            return closed
+    begun = begin_transition(project, change, phase=to_phase, executor=executor)
+    if not begun.get("ok"):
+        return {
+            "ok": False,
+            "code": "HANDOFF_BEGIN_FAILED",
+            "message": "交接收据已写入，但 begin 确认失败。",
+            "transition": closed,
+            "begin": begun,
+        }
+    return {
+        "ok": True,
+        "code": "HANDOFF_COMPLETED",
+        "changeName": change,
+        "fromPhase": from_phase,
+        "toPhase": to_phase,
+        "transition": closed,
+        "begin": begun,
+    }
+
+
 def begin_transition(
     project: Path,
     change: str,
@@ -1799,6 +1927,20 @@ def build_parser() -> argparse.ArgumentParser:
     begin.add_argument("--change", required=True)
     begin.add_argument("--phase", required=True)
     begin.add_argument("--executor", required=True)
+    handoff = sub.add_parser(
+        "handoff",
+        help="一条命令补齐缺失的阶段交接：补租约 → close → begin 确认",
+    )
+    handoff.add_argument("--json", action="store_true")
+    handoff.add_argument("--project", required=True, type=Path)
+    handoff.add_argument("--change", required=True)
+    handoff.add_argument("--to-phase", required=True)
+    handoff.add_argument(
+        "--from-phase",
+        help="缺省从当前上下文/最新交接收据推断",
+    )
+    handoff.add_argument("--executor", required=True)
+    handoff.add_argument("--status", default="OK")
     renew = sub.add_parser(
         "renew", help="extend the current phase lease without touching context"
     )
@@ -1858,6 +2000,15 @@ def main(argv: list[str] | None = None) -> int:
             args.change,
             phase=args.phase,
             executor=args.executor,
+        )
+    elif args.command == "handoff":
+        result = handoff_transition(
+            args.project,
+            args.change,
+            to_phase=args.to_phase,
+            from_phase=args.from_phase,
+            executor=args.executor,
+            status=args.status,
         )
     elif args.command == "renew":
         result = renew_lease(

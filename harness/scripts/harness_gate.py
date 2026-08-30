@@ -1980,10 +1980,10 @@ def validate_context_for_gate_begin(
             "expectedPhase": current_phase or None,
             "requestedPhase": phase,
             "recoveryAction": (
-                f"当前上下文停留在 {current_phase} 阶段。请先运行："
-                f"harness_context.py close --project . --change {change_id} "
-                f"--from-phase {current_phase} --to-phase {phase} --executor <tool> --json"
-                f"；或对上一阶段执行 harness_gate.py close --phase {current_phase} --to-phase {phase} --json。"
+                f"当前上下文停留在 {current_phase} 阶段。一条命令补齐交接"
+                "（自动补租约→写收据→begin 确认，无需 change claim/release）："
+                f"harness_context.py handoff --project . --change {change_id} "
+                f"--to-phase {phase} --executor <tool> --json"
                 + (f"（计划后继阶段：{'/'.join(candidates)}）" if candidates else "")
             ),
         }
@@ -2003,6 +2003,12 @@ def validate_context_for_gate_begin(
                 "code": "CONTEXT_BEGIN_REQUIRED",
                 "message": "阶段交接收据尚未确认，门禁未启动；请先执行上下文 begin。",
                 "requestedPhase": phase,
+                "recoveryAction": (
+                    "交接收据已写入但缺 begin 确认。一条命令补齐："
+                    f"harness_context.py handoff --project . --change {change_id} "
+                    f"--to-phase {phase} --executor <tool> --json"
+                    "（检测到收据已存在时只补 begin 确认，不写重复 receipt）"
+                ),
             }
     return {"ok": True, "code": "CONTEXT_READY"}
 
