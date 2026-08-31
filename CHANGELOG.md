@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.4.13] — hunter-harness + workflow-harness
+
+> Plan 阶段编排收口与诊断修复：实测一次 plan 从 bootstrap 到 close 53 分钟中约 23 分钟
+> 是可避免成本（finalize 裸错误码逆向排障 + approval 字段抄两遍抄错 + 收据仪式性重签）。
+> 本轮把编排收进 CLI、把诊断写进错误信封，门禁语义零改动。
+> CLI 0.4.12 → 0.4.13，workflow-harness 0.4.13 → 0.4.14，bundle 0.2.73 → 0.2.74，
+> minimumCliVersion 0.2.92 → 0.4.13（bundle 文档引用 plan publish / --renew，旧 CLI 没有这两条命令）。
+
+### Added — plan publish 编排收口（HP-18）
+
+- 新命令 `hunter-harness plan publish --input <meta/plan-evidence-input.json>`：一条命令完成
+  evidence-pack → 基线/attempt 自动记账 → finalize。中间产物仍落盘可审计，
+  编排方只拥有一份输入文件。
+- 重发布不再手填：`expected_baseline` 从 `meta/publication-journals` 的 committed journal
+  自动派生（上次 manifest 哈希 + generation）；`context.attempt` 低于 `plan-events.ndjson`
+  已发布 attempt 时自动递增；输入显式声明的值始终优先。
+- 评审收据因重建过期且 `--renew-review` 时自动续签后重试一次 finalize。
+- 失败输出带 `failed_step`（evidence-pack / review-renew / finalize）+ 该步骤完整结构化结果；
+  需要对抗评审时附 `guidance.review` 指引。
+
+### Added — 评审收据续签（HP-17）
+
+- `plan review-record --renew`：findings 未变的纯重建场景沿用 findings 重绑 `input_hash`，
+  不再重跑评审草稿；input_hash 未变时幂等返回 `renewed: false`。
+- fail closed：无收据（`PLAN_REVIEW_RENEW_NO_RECEIPT`）、findings 被手改 hash 不自洽
+  （`PLAN_REVIEW_RENEW_STALE_INVALID`）、重建引入语义 blocking findings
+  （`PLAN_REVIEW_RENEW_SEMANTIC_BLOCKED`，附 findings 明细）。
+
+### Fixed — finalize 质量门禁错误信封带 findings（HP-16）
+
+- receipt blocked 时不再把裸 `operation_id` 丢给编排方逆向排障：错误信封带三层 blocking
+  `findings[]`（按 finding_id 去重，含 `message_zh`/`suggested_location`）+ 逐层 status，
+  `stage` 定位 layer2/layer3；`code` 保持 `PLAN_FINALIZATION_QUALITY_INVALID` 兼容。
+
+### Fixed — approval goal/user_visible_outcome 与 intent 归一（HP-16）
+
+- `approval.content.goal/user_visible_outcome` 可整项省略、从 intent 继承（warnings 标
+  `approval_goal_inherited`），与 HP-14 scope 继承同构——同一份语义不再要求抄两遍。
+- 显式给出且与 intent 不一致时，evidence-pack 边界直接报 `PLAN_GOAL_MISMATCH` 并附 diff，
+  不再等到 finalize 才被 `semantic.goal_coverage` 拦截；`--print-template` 骨架默认省略写法。
+
+### Fixed — 文档漂移
+
+- harness-plan SKILL.md：knowledge query 落事件改 `--command/--note`
+  （原 `--name/--message` 必现 `EVENT_FIELD_NOT_ALLOWED`）。
+- reference.md：补 goal 逐字相等/继承规则、blocked 信封说明、publish/renew 契约。
+
 ## [0.4.13] — workflow-harness
 
 > 知识候选来源绑定修复：demo-datasource 归档包因一条 `quality/#L1`

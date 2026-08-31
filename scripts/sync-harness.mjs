@@ -30,7 +30,7 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy", "pi"];
-const BUNDLE_VERSION = "0.2.73";
+const BUNDLE_VERSION = "0.2.74";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
 // 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py
@@ -50,7 +50,7 @@ const BUNDLE_VERSION = "0.2.73";
 // ——本 Bundle 的 _verify_plan_v2 按前者校验 journal，而 0.2.91 仍会把派生视图写到
 // meta/gate-policy.json 上，既让 verify 报 RECEIPT_FILES_INCOMPLETE，也会把 classify
 // 写的门禁策略原子覆盖掉，之后 gate begin --phase run 直接 POLICY_LOAD_FAILED
-const MINIMUM_CLI_VERSION = "0.2.92";
+const MINIMUM_CLI_VERSION = "0.4.13";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",
