@@ -22,6 +22,13 @@ export interface PlanReviewRecordOptions {
   output?: string;
   /** 打印合法草稿骨架（P1-2：契约可发现，不再靠报错反推） */
   printTemplate?: boolean;
+  /**
+   * HP-17：续签模式——沿用证据包里的现有收据（reviewer_identity/findings 不动），
+   * 只对重建后的 pack 重算 input_hash 并重绑。与 --receipt 互斥。
+   * 语义：调用方（编排方）声明「原评审的 findings 对当前 pack 内容仍然成立」。
+   * 重建后若语义门禁出现 blocking findings（原评审未覆盖的内容），续签被拒绝。
+   */
+  renew?: boolean;
 }
 
 /** 合法草稿骨架：findings 元素键集与校验器精确一致。 */
@@ -53,7 +60,8 @@ const REVIEW_RECEIPT_TEMPLATE = {
  * 时间锚说明：layer3 input_hash 不绑定墙钟（completed_at 只进运行期信封），
  * 因此本命令算出的哈希与之后任何时刻的 finalize 运行一致（plan-finalize-review
  * e2e 冻结该不变量）。但收据绑定的是**证据包内容**——写回后任何对 pack 的修改
- * （包括重跑 evidence-pack）都会使收据失效，必须重跑本命令。
+ * （包括重跑 evidence-pack）都会使收据失效，必须重跑本命令；findings 未变的
+ * 纯重建场景可用 `--renew` 续签（沿用 findings 重绑 input_hash，见 HP-17）。
  */
 
 interface ReviewReceiptDraft {
@@ -137,12 +145,21 @@ export async function runPlanReviewRecord(
     dependencies.stdout(`${JSON.stringify(REVIEW_RECEIPT_TEMPLATE, null, 2)}\n`);
     return 0;
   }
-  if (options.input === undefined || options.receipt === undefined) {
+  if (options.input === undefined || (options.receipt === undefined && options.renew !== true)) {
     return emitPlanError(dependencies.stdout, planErrorEnvelope({
       code: "PLAN_REVIEW_RECORD_USAGE",
       stage: "boundary",
       field_path: "argv",
-      message: "需要 --input <证据包> 与 --receipt <草稿>；查看契约骨架：--print-template"
+      message: "需要 --input <证据包> 加 --receipt <草稿>（新评审）或 --renew（续签现有收据）；" +
+        "查看契约骨架：--print-template"
+    }));
+  }
+  if (options.receipt !== undefined && options.renew === true) {
+    return emitPlanError(dependencies.stdout, planErrorEnvelope({
+      code: "PLAN_REVIEW_RECORD_USAGE",
+      stage: "boundary",
+      field_path: "argv",
+      message: "--renew 与 --receipt 互斥：续签直接沿用证据包里的现有收据，不读草稿"
     }));
   }
   const inputPath = options.input;
@@ -158,11 +175,15 @@ export async function runPlanReviewRecord(
         message: "证据包必须含 trusted/publication/context（plan evidence-pack 的产物，不得手改）"
       }));
     }
-    const draft = JSON.parse(await readFile(receiptPath, "utf8")) as ReviewReceiptDraft;
+    // 草稿只在非续签模式读取（续签沿用 pack 里的现有收据）
+    const draft = options.renew === true
+      ? undefined
+      : JSON.parse(await readFile(receiptPath as string, "utf8")) as ReviewReceiptDraft;
     const problems: InputProblem[] = [];
-    if (!isRecord(draft)) {
-      problems.push({ field_path: "receipt", message: "必须是对象" });
-    } else {
+    if (options.renew !== true) {
+      if (!isRecord(draft)) {
+        problems.push({ field_path: "receipt", message: "必须是对象" });
+      } else {
       const unexpected = Object.keys(draft).filter((key) =>
         !(DRAFT_KEYS as readonly string[]).includes(key));
       if (unexpected.length > 0) {
@@ -191,9 +212,10 @@ export async function runPlanReviewRecord(
           !Number.isFinite(Date.parse(String(draft.completed_at)))) {
         problems.push({ field_path: "receipt.completed_at", message: "必须是可解析的 ISO 8601 时间" });
       }
+      }
     }
     const firstProblem = problems[0];
-    if (firstProblem !== undefined || !isRecord(draft)) {
+    if (options.renew !== true && (firstProblem !== undefined || !isRecord(draft))) {
       return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_REVIEW_RECORD_INPUT_INVALID",
         stage: "boundary",
@@ -231,18 +253,97 @@ export async function runPlanReviewRecord(
       prefer_delegated: false,
       completed_at: completedAt
     });
-    const findings = draft.findings ?? [];
+
+    // HP-17：续签分支——沿用现有收据的 reviewer_identity/review_mode/findings，
+    // 只对当前 pack 重算 input_hash 重绑。前置条件全部 fail-closed：
+    // ① pack 里必须已有收据；② 收据自身 findings_hash 必须自洽（防手改 findings）；
+    // ③ 重建后的内容不得带语义门禁 blocking findings（原评审未覆盖这些内容）。
+    if (options.renew === true) {
+      const stale = pack.adversarial_review;
+      if (!isRecord(stale)) {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_REVIEW_RENEW_NO_RECEIPT",
+          stage: "layer3",
+          field_path: "adversarial_review",
+          message: "证据包里没有可续签的对抗评审收据；首次评审请用 --receipt 草稿"
+        }));
+      }
+      const staleFindings = Array.isArray(stale.findings)
+        ? stale.findings as readonly Record<string, unknown>[]
+        : undefined;
+      const staleFindingsHash = staleFindings === undefined ? undefined :
+        `sha256:${createHash("sha256").update(canonicalJson(staleFindings), "utf8").digest("hex")}`;
+      if (staleFindings === undefined || stale.findings_hash !== staleFindingsHash ||
+          typeof stale.reviewer_identity !== "string" || stale.reviewer_identity.trim() === "") {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_REVIEW_RENEW_STALE_INVALID",
+          stage: "layer3",
+          field_path: "adversarial_review.findings_hash",
+          message: "现有收据的 findings 与 findings_hash 不自洽（可能被手改过）；请用 --receipt 重新记录评审"
+        }));
+      }
+      const semanticBlocking = layer2.findings.filter((finding) => finding.severity === "blocking");
+      if (semanticBlocking.length > 0) {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_REVIEW_RENEW_SEMANTIC_BLOCKED",
+          stage: "layer2",
+          message: "重建后的内容带语义门禁 blocking findings，原评审未覆盖；" +
+            "先修正这些问题（或完成后用 --receipt 重新评审），再续签",
+          findings: semanticBlocking
+        }));
+      }
+      const renewedInputHash = layer3.review_execution.input_hash;
+      const output = options.output ?? options.input;
+      if (stale.input_hash === renewedInputHash) {
+        dependencies.stdout(JSON.stringify({
+          ok: true,
+          code: "PLAN_REVIEW_RECEIPT_RENEWED",
+          renewed: false,
+          output,
+          input_hash: renewedInputHash,
+          findings_hash: staleFindingsHash,
+          message: "input_hash 未变，现有收据仍然有效，无需续签"
+        }) + "\n");
+        return 0;
+      }
+      const renewedReceipt = {
+        schema_version: 1 as const,
+        reviewer_identity: stale.reviewer_identity,
+        review_mode: stale.review_mode === "delegated" ? "delegated" as const : "inline" as const,
+        input_hash: renewedInputHash,
+        findings_hash: staleFindingsHash,
+        findings: staleFindings,
+        completed_at: completedAt
+      };
+      await writeFile(output, JSON.stringify({ ...pack, adversarial_review: renewedReceipt }));
+      dependencies.stdout(JSON.stringify({
+        ok: true,
+        code: "PLAN_REVIEW_RECEIPT_RENEWED",
+        renewed: true,
+        output,
+        previous_input_hash: stale.input_hash,
+        input_hash: renewedInputHash,
+        findings_hash: staleFindingsHash,
+        review_required: layer3.status !== "skipped",
+        layer3_status: layer3.status
+      }) + "\n");
+      return 0;
+    }
+
+    const findings = draft?.findings ?? [];
+    // 非续签路径 draft 一定存在且已过校验（上面边界检查已拦截）
+    const receiptDraft = draft as ReviewReceiptDraft;
     const receipt = {
       schema_version: 1 as const,
-      reviewer_identity: draft.reviewer_identity,
-      review_mode: draft.review_mode ?? "inline" as const,
+      reviewer_identity: receiptDraft.reviewer_identity,
+      review_mode: receiptDraft.review_mode ?? "inline" as const,
       input_hash: layer3.review_execution.input_hash,
       findings_hash:
         `sha256:${createHash("sha256").update(canonicalJson(findings), "utf8").digest("hex")}`,
       findings,
-      completed_at: draft.completed_at === undefined
+      completed_at: receiptDraft.completed_at === undefined
         ? completedAt
-        : new Date(Date.parse(String(draft.completed_at))).toISOString()
+        : new Date(Date.parse(String(receiptDraft.completed_at))).toISOString()
     };
     const output = options.output ?? options.input;
     await writeFile(output, JSON.stringify({ ...pack, adversarial_review: receipt }));

@@ -354,7 +354,24 @@ status: approved
 
 ### 阶段 8 v2 路径（结构化证据包流程，新 change 优先）
 
-阶段 8 v2 标准三步流（证据包自举，阶段 14 起可用）：
+**推荐：一条命令收口（HP-18）**：
+
+```bash
+npx hunter-harness plan publish --input .harness/changes/<cn>/meta/plan-evidence-input.json
+# 评审收据因重建过期且 findings 未变时：自动续签
+npx hunter-harness plan publish --input .harness/changes/<cn>/meta/plan-evidence-input.json --renew-review
+```
+
+`publish` 内部按序完成：evidence-pack → 基线/attempt 自动记账（见下）→ finalize。
+中间产物 `plan-evidence.json` 仍落盘可审计，编排方只拥有输入文件。失败时输出
+`failed_step`（evidence-pack / review-renew / finalize）+ 该步骤的完整结构化结果，
+需要对抗评审时附 `guidance.review` 指引。
+
+**自动记账**：重发布不再手填——`expected_baseline` 从 `meta/publication-journals`
+里 committed journal 派生（上次 manifest 哈希 + generation），`context.attempt`
+低于 `plan-events.ndjson` 已发布 attempt 时自动递增；输入显式声明的值始终优先。
+
+阶段 8 v2 分解三步流（证据包自举，阶段 14 起可用；publish 不可用时的等价路径）：
 
 ```bash
 # 1) 规划自然产出 → 证据包（结构化身份/哈希全由冻结模块推导）
@@ -394,7 +411,11 @@ finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PL
 - `PLAN_REVIEW_REQUIRED` 报错的 `expected_review.input_hash` 就是绑定期望值——校验器自曝期望，
   手工构造收据时用它；`findings_hash` 是你端 `findings` 数组 canonical JSON 的 sha256。
 - 收据绑定**证据包内容**：`review-record` 写回后任何对 pack 的修改（包括重跑 evidence-pack）
-  都使收据失效，必须重跑 `review-record`。墙钟时间不进 `input_hash`，不必担心时间戳漂移。
+  都使收据失效。findings 未变的纯重建不必重跑评审——`plan review-record --input <pack> --renew`
+  沿用 findings 重绑 input_hash（HP-17）；重建后若语义门禁出现 blocking findings
+  （原评审未覆盖的内容），续签被拒绝并逐条列出。墙钟时间不进 `input_hash`，不必担心时间戳漂移。
+  要让收据在重跑 evidence-pack 后仍在场，把它拷回**自然输入**顶层的 `adversarial_review`
+  （evidence-pack 透传该字段）；只写进 pack 的收据会在下次重建时丢失。
 
 **自然输入文件**（`meta/plan-evidence-input.json`，权威定义 `packages/cli/src/commands/plan-evidence-pack.ts` 的 `EvidencePackInputFile`）由规划阶段逐步沉淀，各字段定稿时点不得倒置。
 

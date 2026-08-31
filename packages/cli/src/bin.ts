@@ -18,6 +18,7 @@ import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
 import { runPlanReviewRecord, type PlanReviewRecordOptions } from "./commands/plan-review-record.js";
+import { runPlanPublish, type PlanPublishOptions } from "./commands/plan-publish.js";
 import { runArchiveOutboxGc, type ArchiveOutboxGcOptions } from "./commands/archive-outbox-gc.js";
 import { composeArchiveProduction } from "./archive-production/compose.js";
 import { runPush, type PushOptions } from "./commands/push.js";
@@ -593,6 +594,7 @@ export async function runCli(
     .option("--input <file>", "证据包 JSON（plan evidence-pack 的产物）")
     .option("--receipt <file>", "收据草稿 JSON：{ reviewer_identity, review_mode?, findings?, completed_at? }")
     .option("--output <file>", "写回路径（缺省覆盖 --input）")
+    .option("--renew", "续签现有收据：沿用 findings 重绑重建后 pack 的 input_hash（与 --receipt 互斥）")
     .option("--print-template", "打印合法草稿骨架（findings 键集与 severity 枚举）")
     .action(async (options: PlanReviewRecordOptions) => {
       exitCode = await runPlanReviewRecord(options, dependencies);
@@ -603,6 +605,15 @@ export async function runCli(
     .option("--change-dir <path>", "change 目录（默认按 context.change_key 推导）")
     .action(async (options: PlanFinalizeOptions) => {
       exitCode = await runPlanFinalize(options, dependencies);
+    });
+  planCmd.command("publish")
+    .description("HP-18 编排收口：evidence-pack → 基线/attempt 自动记账 →（--renew-review 续签）→ finalize，一条命令发布")
+    .requiredOption("--input <file>", "自然输入 JSON（meta/plan-evidence-input.json）")
+    .option("--output <file>", "证据包输出路径（缺省与输入同目录的 plan-evidence.json）")
+    .option("--change-dir <path>", "change 目录（默认 <cwd>/.harness/changes/<change_key>）")
+    .option("--renew-review", "评审收据因重建过期且 findings 未变时自动续签（review-record --renew）")
+    .action(async (options: PlanPublishOptions) => {
+      exitCode = await runPlanPublish(options, dependencies);
     });
   addCommonOptions(program.command("cleanup"))
     .description("清理已完成事务和过期服务端缓存")

@@ -315,4 +315,114 @@ describe("HP-15：plan review-record 收 Receipt 链路（P0-1）", () => {
     expect(exit).toBe(1);
     expect(JSON.parse(out.join("")).code).toBe("PLAN_REVIEW_BINDING_FAILED");
   });
+
+  // HP-17：重建后 findings 未变时 --renew 续签，不再重跑评审草稿
+  async function buildStaleReceiptPack(): Promise<{ rebuiltPath: string; oldInputHash: string }> {
+    const packPath = await buildPack();
+    const draftPath = await writeDraft({ reviewer_identity: "inline:main-session" });
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord({ input: packPath, receipt: draftPath }, deps(recordOut)))
+      .toBe(0);
+    const oldInputHash = (JSON.parse(recordOut.join("")) as { input_hash: string }).input_hash;
+
+    const input = naturalInput();
+    input.intent.goal = "迁移路径可回滚且可观测";
+    input.approval.content.goal = "迁移路径可回滚且可观测";
+    const inputPath = join(root, "natural-v2.json");
+    await fs.writeFile(inputPath, JSON.stringify(input));
+    const rebuiltPath = join(root, "evidence-v2.json");
+    const packOut: string[] = [];
+    expect(await runPlanEvidencePack({ input: inputPath, output: rebuiltPath }, deps(packOut)))
+      .toBe(0);
+    const oldPack = JSON.parse(await fs.readFile(packPath, "utf8")) as Record<string, unknown>;
+    const rebuilt = JSON.parse(await fs.readFile(rebuiltPath, "utf8")) as Record<string, unknown>;
+    rebuilt.adversarial_review = oldPack.adversarial_review;
+    await fs.writeFile(rebuiltPath, JSON.stringify(rebuilt));
+    return { rebuiltPath, oldInputHash };
+  }
+
+  it("--renew 续签过期收据：findings 沿用、input_hash 重绑，finalize 一次通过（HP-17）", async () => {
+    const { rebuiltPath, oldInputHash } = await buildStaleReceiptPack();
+
+    const renewOut: string[] = [];
+    const renewExit = await runPlanReviewRecord({ input: rebuiltPath, renew: true }, deps(renewOut));
+    if (renewExit !== 0) console.error("RENEW-OUT:", renewOut.join(""));
+    expect(renewExit).toBe(0);
+    const renewResult = JSON.parse(renewOut.join("")) as {
+      code: string; renewed: boolean; previous_input_hash: string; input_hash: string;
+      findings_hash: string; review_required: boolean;
+    };
+    expect(renewResult.code).toBe("PLAN_REVIEW_RECEIPT_RENEWED");
+    expect(renewResult.renewed).toBe(true);
+    expect(renewResult.previous_input_hash).toBe(oldInputHash);
+    expect(renewResult.input_hash).not.toBe(oldInputHash);
+
+    const finOut: string[] = [];
+    const finExit = await runPlanFinalize({ input: rebuiltPath }, deps(finOut));
+    if (finExit !== 0) console.error("FIN-OUT:", finOut.join(""));
+    expect(finExit).toBe(0);
+    expect(JSON.parse(finOut.join("")).code).toBe("PLAN_FINALIZED");
+  });
+
+  it("--renew 时 input_hash 未变 → renewed:false 幂等返回（HP-17）", async () => {
+    const packPath = await buildPack();
+    const draftPath = await writeDraft({ reviewer_identity: "inline:main-session" });
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord({ input: packPath, receipt: draftPath }, deps(recordOut)))
+      .toBe(0);
+
+    const renewOut: string[] = [];
+    const renewExit = await runPlanReviewRecord({ input: packPath, renew: true }, deps(renewOut));
+    expect(renewExit).toBe(0);
+    const renewResult = JSON.parse(renewOut.join("")) as { code: string; renewed: boolean };
+    expect(renewResult.code).toBe("PLAN_REVIEW_RECEIPT_RENEWED");
+    expect(renewResult.renewed).toBe(false);
+  });
+
+  it("--renew 但 pack 里没有收据 → PLAN_REVIEW_RENEW_NO_RECEIPT（HP-17）", async () => {
+    const packPath = await buildPack();
+
+    const out: string[] = [];
+    const exit = await runPlanReviewRecord({ input: packPath, renew: true }, deps(out));
+
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_REVIEW_RENEW_NO_RECEIPT");
+  });
+
+  it("--renew 时 findings 被手改（与 findings_hash 不自洽）→ PLAN_REVIEW_RENEW_STALE_INVALID（HP-17）", async () => {
+    const packPath = await buildPack();
+    const draftPath = await writeDraft({
+      reviewer_identity: "inline:main-session",
+      findings: [{
+        finding_id: "finding-1", category: "architecture", severity: "advisory",
+        source_refs: ["map:bridge#plan_bridge"], message_zh: "建议拆分", suggested_location: "plan.md"
+      }]
+    });
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord({ input: packPath, receipt: draftPath }, deps(recordOut)))
+      .toBe(0);
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as {
+      adversarial_review: { findings: { message_zh: string }[] };
+    } & Record<string, unknown>;
+    pack.adversarial_review.findings[0].message_zh = "篡改后的描述";
+    await fs.writeFile(packPath, JSON.stringify(pack));
+
+    const out: string[] = [];
+    const exit = await runPlanReviewRecord({ input: packPath, renew: true }, deps(out));
+
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_REVIEW_RENEW_STALE_INVALID");
+  });
+
+  it("--renew 与 --receipt 互斥，同时给出在边界报错（HP-17）", async () => {
+    const packPath = await buildPack();
+    const draftPath = await writeDraft({ reviewer_identity: "inline:main-session" });
+
+    const out: string[] = [];
+    const exit = await runPlanReviewRecord(
+      { input: packPath, receipt: draftPath, renew: true }, deps(out));
+
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_REVIEW_RECORD_USAGE");
+  });
 });
