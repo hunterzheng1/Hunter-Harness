@@ -176,10 +176,24 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
         "changeName": doc.get("changeName") or Path(change_dir).name,
         "findings": assigned,
     }
+    # 目录路径的 finding 下游产不出可绑定的知识候选（source_refs 会拒整包），
+    # 写入时提前可见——demo-datasource 的 quality/#L1 就是这么漏出去的
+    directory_paths = [
+        str(f.get("path"))
+        for f in assigned
+        if isinstance(f.get("path"), str) and f["path"].rstrip().endswith("/")
+    ]
     out = findings_path(change_dir)
     _write_json_atomic(out, payload)
-    return {"ok": True, "code": "FINDINGS_WRITTEN", "path": str(out),
-            "count": len(assigned)}
+    result = {"ok": True, "code": "FINDINGS_WRITTEN", "path": str(out),
+              "count": len(assigned)}
+    if directory_paths:
+        result["warnings"] = [
+            "以下 finding 的 path 是目录而非文件，知识候选生成时会整条跳过"
+            "（source_refs 无法绑定文件）：" + "; ".join(directory_paths) +
+            "。请改为具体文件路径后重新写入"
+        ]
+    return result
 
 
 def _load_findings(change_dir: Path) -> dict[str, Any] | None:

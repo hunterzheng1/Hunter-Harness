@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.13] — workflow-harness
+
+> 知识候选来源绑定修复：demo-datasource 归档包因一条 `quality/#L1`
+>（目录 + 行号）伪 source_ref 被服务端 ARCHIVE_CANDIDATE_SOURCE_UNBOUND 整包拒绝。
+> 纯 workflow-harness 变更，CLI 保持 0.4.12。
+
+### Fixed — 知识候选 source_refs 结构校验
+
+- `harness_knowledge_candidates.py` 新增 `_valid_source_path`（与服务端同源规则）：
+  拒绝目录引用（尾部 `/`）、空路径段、`.`/`..` 段、绝对路径、盘符、反斜杠。
+  finding/decision 候选的 path 非法时**整条跳过**（不再生成「目录+行号」伪来源），
+  并在 stderr 打印跳过原因；path 缺失时仍回退 `archive:<id>` 级来源。
+- 归档打包的候选生成（`harness_archive.py` → `hkc.build_knowledge_candidates`）
+  同链路受益——本机生成阶段就拦住，不再等到服务端 422。
+- `harness_review.py write-findings` 对目录路径 finding 输出 warnings：提前告知
+  该 finding 下游会被知识候选跳过，请改为具体文件路径。
+
 ## [0.4.12] — hunter-harness + workflow-harness
 
 > Submit/Archive 实测修复（docs/harness-improvement-roadmap/submit-archive-phase-issues-2026-08-31.md）。

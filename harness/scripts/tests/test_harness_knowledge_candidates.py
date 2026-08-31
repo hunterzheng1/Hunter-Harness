@@ -99,6 +99,74 @@ def build(summary=None):
     )
 
 
+class SourceRefBindingTests(unittest.TestCase):
+    """source_refs 必须绑定真实仓库文件（服务端 ARCHIVE_CANDIDATE_SOURCE_UNBOUND
+    同源规则）：目录/非法路径的候选直接跳过，不生成伪来源（2026-08-31 实测：
+    `quality/#L1` 一条挡掉 42 条候选的整包）。"""
+
+    def test_directory_ref_skips_the_candidate(self) -> None:
+        finding = {
+            "id": "f-5e6c7edd899d9b97",
+            "title": "质量模块测试",
+            "severity": "YELLOW",
+            "disposition": "FIXED",
+            "path": "backend/src/main/java/com/klerp/salesinsight/quality/",
+            "line": 1,
+        }
+        self.assertIsNone(hkc._finding_candidate(
+            finding,
+            change_key="demo-datasource",
+            archive_id="arc_x",
+            producer_version="1",
+            created_at="t",
+        ))
+
+    def test_valid_file_ref_is_kept_with_line_anchor(self) -> None:
+        finding = {
+            "id": "f-1",
+            "title": "质量模块测试",
+            "severity": "YELLOW",
+            "disposition": "FIXED",
+            "path": "backend/src/main/java/com/klerp/salesinsight/quality/QualityGate.java",
+            "line": 1,
+        }
+        candidate = hkc._finding_candidate(
+            finding,
+            change_key="demo-datasource",
+            archive_id="arc_x",
+            producer_version="1",
+            created_at="t",
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(
+            candidate["source_refs"],
+            ["backend/src/main/java/com/klerp/salesinsight/quality/QualityGate.java#L1"],
+        )
+
+    def test_missing_path_falls_back_to_archive_ref(self) -> None:
+        finding = {
+            "id": "f-1", "title": "t", "severity": "RED",
+            "disposition": "FIXED", "path": "", "line": 0,
+        }
+        candidate = hkc._finding_candidate(
+            finding,
+            change_key="c", archive_id="arc_x",
+            producer_version="1", created_at="t",
+        )
+        self.assertEqual(candidate["source_refs"], ["archive:arc_x"])
+
+    def test_path_structure_validation(self) -> None:
+        for bad in (
+            "a\\b\\c.java", "/abs/path.java", "C:/x/y.java",
+            "a//b.java", "a/../b.java", "./a.java", "dir/",
+        ):
+            self.assertIsNone(hkc._valid_source_path(bad), bad)
+        self.assertEqual(
+            hkc._valid_source_path("backend/src/Main.java"),
+            "backend/src/Main.java",
+        )
+
+
 class MappingTableTests(unittest.TestCase):
     def test_only_adopted_sources_become_candidates(self) -> None:
         candidates = build()

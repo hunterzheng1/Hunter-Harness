@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import sys
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -44,6 +46,44 @@ _DISPOSITION_ENTRY_TYPES = {
     "DEFERRED": "risk",
 }
 _SEVERITY_CONFIDENCE = {"RED": 0.95, "YELLOW": 0.85}
+
+
+def _valid_source_path(path: Any) -> str | None:
+    """source_ref 的结构校验（与服务端 ARCHIVE_CANDIDATE_SOURCE_UNBOUND 同规则）。
+
+    合法形态：`relative/path/to/file.ext`（调用方再附 `#L<line>`）。
+    拒绝：目录引用（尾部斜杠）、空路径段、`.`/`..` 段、绝对路径、盘符、
+    反斜杠。返回规范化路径；不合法返回 None——调用方必须跳过该候选，
+    不得生成「目录 + 行号」的伪来源（2026-08-31 demo-datasource 实测：
+    `quality/#L1` 一条不合法 ref 挡掉整份 42 条候选的包）。
+    """
+    if not isinstance(path, str):
+        return None
+    raw = path.strip()
+    if not raw:
+        return None
+    if "\\" in raw:  # 反斜杠路径不合法（服务端拒绝，不做静默转换）
+        return None
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None
+    if raw.endswith("/"):  # 目录引用——尾部斜杠形成空路径段
+        return None
+    segments = raw.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        return None
+    return raw
+
+
+def _bound_source_refs(path: Any, line: Any, archive_id: str) -> list[str] | None:
+    """构造可绑定文件来源；path 缺失时回退 archive 级来源，非法时返回 None。"""
+    if not path or not isinstance(path, str) or not path.strip():
+        return [f"archive:{archive_id}"]
+    valid = _valid_source_path(path)
+    if valid is None:
+        return None
+    if isinstance(line, int) and line > 0:
+        return [f"{valid}#L{line}"]
+    return [valid]
 _KNOWN_RISK_CONFIDENCE = 0.85
 
 # decisions[]（来自 change 的 evidence/decisions.json，经 summary.decisions 传入）
@@ -141,12 +181,16 @@ def _finding_candidate(
         disposition,
     )
     source_ref = f"archive:{archive_id}#{finding_id}" if finding_id else f"archive:{archive_id}"
-    if path and location != path:
-        source_refs = [f"{path}#L{line}"]
-    elif path:
-        source_refs = [path]
-    else:
-        source_refs = [f"archive:{archive_id}"]
+    source_refs = _bound_source_refs(path, line, archive_id)
+    if source_refs is None:
+        # 目录/非法路径——跳过整条候选，不生成伪来源（服务端会拒绝整包）；
+        # 跳过必须可见，否则「少了一条候选」无从追溯
+        print(
+            "[harness-knowledge-candidates] 跳过候选：source_refs 非法"
+            f"（path={path!r}，finding={finding_id or title!r}）",
+            file=sys.stderr,
+        )
+        return None
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -266,12 +310,14 @@ def _decision_candidate(
         segments[-2] if len(segments) >= 2 else "",
         entry_type,
     )
-    if path and location != path:
-        source_refs = [f"{path}#L{line}"]
-    elif path:
-        source_refs = [path]
-    else:
-        source_refs = [f"archive:{archive_id}"]
+    source_refs = _bound_source_refs(path, line, archive_id)
+    if source_refs is None:
+        print(
+            "[harness-knowledge-candidates] 跳过候选：source_refs 非法"
+            f"（path={path!r}）",
+            file=sys.stderr,
+        )
+        return None
 
     return {
         "schema_version": SCHEMA_VERSION,

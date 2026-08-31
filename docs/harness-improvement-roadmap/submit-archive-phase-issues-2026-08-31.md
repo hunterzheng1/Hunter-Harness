@@ -22,6 +22,7 @@
 | A-2 record-only 被授权门禁阻断 | ✅ 部分为既有 + 已补 | record-only 的阻断豁免在 0.4.3 起就存在（转警告）；但警告原文透传授权要求，读起来像阻断指引——已改为明确「record-only 不要求发布授权」 |
 | A-3 blockers 不带 recoveryAction | ✅ 已修 | blockers 透传 issue 的 nextAction 为 recoveryAction（对齐二·A 表） |
 | A-4 knowledgeStatus 滞留 indexing | ✅ 平台侧已修（0.4.11 配套） | hunter-platform 9507538：job commit/fail 桥翻转状态 + projection-status 自查。滞留意味着 extraction job 未完成——需部署新版平台后跑 `knowledge status` 看 job 停在哪 |
+| A-4b 候选 source_refs 伪来源拒整包（追加，2026-08-31 夜） | ✅ 已修（0.4.13） | 42 条候选中 1 条 `quality/#L1`（目录+行号）被服务端 ARCHIVE_CANDIDATE_SOURCE_UNBOUND 整包拒绝。`harness_knowledge_candidates` 新增同源结构校验：非法 path 的候选整条跳过（stderr 留痕），path 缺失回退 `archive:<id>`；`write-findings` 对目录路径 finding 提前输出 warnings |
 
 ---
 
