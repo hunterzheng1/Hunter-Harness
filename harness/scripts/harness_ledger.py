@@ -2565,6 +2565,20 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_input_missing_warning(
+    verification: str, target: Any, profile_input: str | None
+) -> str | None:
+    """S-4：profile 声明了 target 却没带 --profile-input 时提前预警。"""
+    if profile_input or not isinstance(target, dict):
+        return None
+    return (
+        "PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的"
+        " scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑："
+        f"record --verification {verification} --profile-input <key> --project . "
+        "（key 见 build-profile.json verificationInputs）"
+    )
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     verbose = bool(getattr(args, "verbose", False))
@@ -2612,6 +2626,11 @@ def cmd_record(args: argparse.Namespace) -> int:
             "verificationGraph.targets",
             as_json=as_json,
         )
+    # S-4：profile 声明了 target 却没带 --profile-input，条目缺身份字段，
+    # can-reuse 事后才报 MISSING_FIELDS——只能重跑一遍（2026-08-31 实测）。
+    profile_input_missing_warn = _profile_input_missing_warning(
+        verification, target, profile_input
+    )
     if profile_input:
         resolved_files, err = expand_profile_input_files(project_root, profile_input)
         if err:
@@ -3068,9 +3087,14 @@ def cmd_record(args: argparse.Namespace) -> int:
     zero_warn = _zero_tests_with_selector_warning(
         str(args.command), args.evidence, project_root
     )
-    if zero_warn is not None:
-        payload["warnings"] = [zero_warn]
-        print(f"[harness-ledger] WARNING {zero_warn}", file=sys.stderr)
+    record_warnings = [
+        warning for warning in (zero_warn, profile_input_missing_warn)
+        if warning is not None
+    ]
+    if record_warnings:
+        payload["warnings"] = record_warnings
+        for warning in record_warnings:
+            print(f"[harness-ledger] WARNING {warning}", file=sys.stderr)
     emit_compact_or_verbose(
         payload, as_json=as_json, verbose=verbose,
         compact_fn=_compact_record_payload,

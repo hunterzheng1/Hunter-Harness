@@ -1,4 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -236,6 +236,22 @@ export async function runPlanFinalize(
       recovery_token: `plan_recovery:${canonicalHash(`${operationId}${idempotencyKey}`)}` as `plan_recovery:${string}`
     });
 
+    // A-1：finalize 成功后把 plan 的 ownership 派生进 change-context.json
+    //（归档的 ownership diff 读它）。派生失败不阻断 finalize 结果。
+    let ownershipProjection: { applied: boolean; productPaths: string[] } = {
+      applied: false, productPaths: []
+    };
+    if (result.ok) {
+      try {
+        ownershipProjection = await deriveOwnershipProductPaths(
+          changeDir,
+          input.trusted.human_input.structured_input
+        );
+      } catch {
+        ownershipProjection = { applied: false, productPaths: [] };
+      }
+    }
+
     dependencies.stdout(JSON.stringify({
       ok: result.ok,
       code: result.ok ? "PLAN_FINALIZED" : (result.reason_code ?? "PLAN_FINALIZE_FAILED"),
@@ -243,6 +259,7 @@ export async function runPlanFinalize(
       status: result.status,
       publication_receipt: result.publication_receipt,
       event_outbox_id: result.event_outbox?.outbox_id ?? null,
+      ownership_projection: ownershipProjection,
       change_dir: changeDir
     }) + "\n");
     return result.ok ? 0 : 1;
@@ -262,3 +279,66 @@ export async function runPlanFinalize(
 }
 
 export { buildFsPublicationAuthority };
+
+/** A-1：finalize 成功时把 plan 的 ownership 派生进 change-context.json。
+ *
+ * plan v2 的 structured_input 明确定义了 ownership/affected_paths，但归档读的
+ * 是 change-context.json 的 ownership.productPaths——两端之间此前没有任何写入方，
+ * 只能靠人肉 declare-ownership，必漏（2026-08-31 demo-datasource 实测补了 9 条）。
+ * 已显式声明过 productPaths 的从不动；目录内 ≥2 个文件归并为目录前缀。
+ */
+async function deriveOwnershipProductPaths(
+  changeDir: string,
+  structuredInput: {
+    readonly ownership?: readonly { readonly path: string }[];
+    readonly tasks: readonly { readonly affected_paths: readonly string[] }[];
+  }
+): Promise<{ applied: boolean; productPaths: string[] }> {
+  const none = { applied: false, productPaths: [] as string[] };
+  const contextPath = join(changeDir, "meta", "change-context.json");
+  let context: Record<string, unknown>;
+  try {
+    context = JSON.parse(
+      (await readFile(contextPath, "utf8")).replace(/^\uFEFF/, "")
+    ) as Record<string, unknown>;
+  } catch {
+    return none;
+  }
+  const ownership = context.ownership;
+  const existing = typeof ownership === "object" && ownership !== null
+    ? (ownership as { productPaths?: unknown }).productPaths
+    : undefined;
+  if (Array.isArray(existing) && existing.length > 0) return none;
+
+  const explicit = (structuredInput.ownership ?? []).map((item) => item.path);
+  const fromTasks = structuredInput.tasks.flatMap((task) => [...task.affected_paths]);
+  const paths = [...new Set((explicit.length > 0 ? explicit : fromTasks)
+    .map((path) => path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, ""))
+    .filter((path) => path !== "" && !/[*?[\]]/.test(path)))];
+  if (paths.length === 0) return none;
+
+  const byDir = new Map<string, string[]>();
+  for (const path of paths) {
+    const idx = path.lastIndexOf("/");
+    const dir = idx < 0 ? "" : path.slice(0, idx);
+    byDir.set(dir, [...(byDir.get(dir) ?? []), path]);
+  }
+  const productPaths = [...byDir.entries()]
+    .map(([dir, files]) => (dir !== "" && files.length > 1 ? `${dir}/` : (files[0] ?? dir)))
+    .sort();
+
+  const next = {
+    ...context,
+    ownership: {
+      ...(typeof ownership === "object" && ownership !== null
+        ? ownership as Record<string, unknown>
+        : {}),
+      productPaths,
+      derivedFrom: "plan-finalize"
+    }
+  };
+  const tmp = `${contextPath}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(next, null, 2) + "\n", "utf8");
+  await rename(tmp, contextPath);
+  return { applied: true, productPaths };
+}

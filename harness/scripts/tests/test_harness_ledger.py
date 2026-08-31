@@ -2378,6 +2378,24 @@ class ScenarioReceiptTemplateTests(unittest.TestCase):
         nested = self.change_dir / ".harness"
         self.assertFalse(nested.exists(), nested)
 
+    def test_profile_input_missing_warns(self) -> None:
+        """S-4：target 存在但未带 --profile-input → 提前预警可复用性缺口。"""
+        warn = harness_ledger._profile_input_missing_warning(
+            "unitTestFull", {"id": "unitTestFull"}, None
+        )
+        self.assertIsNotNone(warn)
+        self.assertIn("PROFILE_INPUT_MISSING", warn)
+        # 带了 profile-input 不预警
+        self.assertIsNone(
+            harness_ledger._profile_input_missing_warning(
+                "unitTestFull", {"id": "unitTestFull"}, "unit-full"
+            )
+        )
+        # 未声明 target 的场景不预警（那是另一类报错路径）
+        self.assertIsNone(
+            harness_ledger._profile_input_missing_warning("custom", None, None)
+        )
+
     def test_zero_tests_with_selector_warns(self) -> None:
         """E-2：选择器存在但 Tests run=0 → WARN（exit 0 的假阳性防护）。"""
         evidence = self.change_dir / "runtime" / "it.log"

@@ -3010,8 +3010,12 @@ def check_status(
                 if archive_intent == "record-only"
                 else str(ci_gate.get("code") or "PRODUCT_CANDIDATE_NOT_VERIFIED")
             ),
-            "message": str(
-                ci_gate.get("message") or "product candidate not verified"
+            "message": (
+                # A-2：record-only 豁免阻断，但原文透传授权要求会误读成阻断指引
+                "record-only 归档不要求发布授权，本项仅记录："
+                + str(ci_gate.get("message") or "product candidate not verified")
+                if archive_intent == "record-only"
+                else str(ci_gate.get("message") or "product candidate not verified")
             ),
         }
         if archive_intent == "record-only":
@@ -3104,15 +3108,18 @@ def check_status(
         code = str(issue.get("code") or "REPORT_ADEQUACY_FAILED")
         if any(item.get("code") == code for item in blockers):
             continue
-        blockers.append(
-            {
-                "code": code,
-                "message": adequacy_messages_zh.get(
-                    code,
-                    str(issue.get("message") or "归档报告不完整"),
-                ),
-            }
-        )
+        blocker: dict[str, Any] = {
+            "code": code,
+            "message": adequacy_messages_zh.get(
+                code,
+                str(issue.get("message") or "归档报告不完整"),
+            ),
+        }
+        # A-3：出路必须随阻断项下发（对齐 SKILL 二·A 表），不再让使用者翻文档
+        next_action = issue.get("nextAction")
+        if isinstance(next_action, str) and next_action.strip():
+            blocker["recoveryAction"] = next_action.strip()
+        blockers.append(blocker)
     for issue in report_adequacy.get("issues") or []:
         if not isinstance(issue, dict) or issue.get("severity") != "warning":
             continue

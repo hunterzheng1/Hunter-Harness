@@ -1324,6 +1324,42 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(emitted[0]["derivedToPhase"], "submit")
         self.assertEqual(handoff.call_args.kwargs["to_phase"], "submit")
 
+    def test_close_repairs_missing_context_lease_and_retries_handoff(self) -> None:
+        """S-1：交接因 context 租约缺失失败时，close 自愈一次（prepare 重建租约
+        + 重试交接），不再让“原样重跑”永远撞同一个 CONTEXT_LEASE_REQUIRED。"""
+        self._write_checkpoints("approved")
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        emitted: list[dict] = []
+        handoff_results = [
+            {"ok": False, "code": "CONTEXT_LEASE_REQUIRED"},
+            {"ok": True, "code": "TRANSITION_CLOSED", "receipt": {}},
+        ]
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.hctx, "context_view", return_value={
+                 "ok": True, "current": {"phase": "execute", "executor": "pi"}, "transitions": [],
+             }), \
+             mock.patch.object(gate.hctx, "allowed_next_phases", return_value=["review", "execute"]), \
+             mock.patch.object(gate.hctx, "prepare_context", return_value={"ok": True}) as prepare, \
+             mock.patch.object(gate.hctx, "close_transition", side_effect=handoff_results) as handoff, \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
+            code = gate.cmd_close(self._close_args())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(emitted[0]["code"], "PHASE_CLOSED")
+        # 自愈链：租约重建一次 + 交接重试成功，且标记 leaseRepaired
+        prepare.assert_called_once()
+        self.assertEqual(handoff.call_count, 2)
+        self.assertTrue(emitted[0]["contextHandoff"].get("leaseRepaired"))
+
     def test_close_without_to_phase_stays_plain_when_no_context_state(self) -> None:
         """上下文跟踪从未启用（无 current context）时不凭空创建交接状态。"""
         self._write_checkpoints("approved")

@@ -70,7 +70,7 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 4. **提交方式** — 主目录：blocking user confirmation 三选项（commit+push / 仅本地 / 取消）；**worktree：固定仅本地 commit**
 5. **commit-message.txt** ⚠️ — 展示 staged、diff stat、完整中文 message；用户确认
 6. **commit / push** — `git commit -F`；主目录按选项 push（push 前 fetch 检查远端）；无 upstream 时允许仅本地 commit。commit 后立即重新运行 `harness_archive.py certify-local`：若验证输入未变化，脚本把候选从提交前身份安全重绑定到最终 commit，不得重跑测试或手工复制账本；**worktree：只 commit，记录 local hash**
-7. **收尾** — `harness_gate.py close --phase submit --status ... --to-phase <实际计划后继>`；通常后继为 Archive，但不得显示“等待 merge”或固定写死。主目录停止并提示真实下一阶段；worktree 才接续下方同一 Submit 内的合并流程。
+7. **收尾** — `harness_gate.py close --phase submit --status ... --to-phase <实际计划后继>`；通常后继为 Archive，但不得显示“等待 merge”或固定写死。主目录停止并提示真实下一阶段；worktree 才接续下方同一 Submit 内的合并流程。`--json` 的 stdout 只含 JSON；关门摘要横幅在 stderr——管道给 `jq` 时**不要** `2>&1` 合并（stderr 不缓冲会先写，合并后横幅会混进 JSON 流）。
 
 详细步骤见 `checklist.md`。
 

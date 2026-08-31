@@ -10,6 +10,21 @@
 > 其实已写在 harness-submit/harness-archive SKILL.md 的二·A 表里，执行者未预读才撞上。
 > 这类条目仅保留「报错内联出路」的体验改进建议，不算文档缺失。
 
+## 修复状态（2026-08-31，hunter-harness 0.4.12 / workflow-harness 0.4.12）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| S-1 恢复指引与实际路径不符 | ✅ 已修 | close 的 handoff 撞 CONTEXT_LEASE_REQUIRED 时自动 prepare 重建租约并重试交接（`leaseRepaired: true`）；主路径与续跑路径同规则。recoveryAction 补 handoff 命令兑底 |
+| S-2 --json 输出混入横幅 | ✅ 部分为既有 + 已补 | 横幅自 0.4.5 起就在 stderr；实测「混入」是 `2>&1` 合并时 stderr 不缓冲先写所致。submit SKILL 已注明管道 jq 不要合并流 |
+| S-3 fixback close 派错后继 | ✅ 已在 0.4.11 修复 | 同 F-4：fixback 回环的 execute 关门现派生 submit（本次实测环境的缓存先于该修复） |
+| S-4 record 不带 profile-input 身份不全 | ✅ 已修 | record 检出 target 已声明但未带 --profile-input 时输出 `PROFILE_INPUT_MISSING` 警告 |
+| A-1 ownership 接线断裂 | ✅ 已修 | plan finalize 自动从 structured_input.ownership（回退 affected_paths）归并目录前缀写入 change-context.json 的 ownership.productPaths；已声明的不动 |
+| A-2 record-only 被授权门禁阻断 | ✅ 部分为既有 + 已补 | record-only 的阻断豁免在 0.4.3 起就存在（转警告）；但警告原文透传授权要求，读起来像阻断指引——已改为明确「record-only 不要求发布授权」 |
+| A-3 blockers 不带 recoveryAction | ✅ 已修 | blockers 透传 issue 的 nextAction 为 recoveryAction（对齐二·A 表） |
+| A-4 knowledgeStatus 滞留 indexing | ✅ 平台侧已修（0.4.11 配套） | hunter-platform 9507538：job commit/fail 桥翻转状态 + projection-status 自查。滞留意味着 extraction job 未完成——需部署新版平台后跑 `knowledge status` 看 job 停在哪 |
+
+---
+
 ## TL;DR
 
 submit 推送成功（56c537c → origin/master）、archive durable（arc_1f86f8d2…）+ 受管快照 6 项上传成功，目标全部达成。但 close 的恢复指引错误（S-1）、`--json` 输出混入横幅（S-2）属必修项；ownership 从 plan 到 archive 的接线断裂（A-1）是跨阶段契约缺口。

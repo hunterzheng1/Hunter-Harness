@@ -2085,6 +2085,52 @@ def _terminal_matches_context_session(
     )
 
 
+def _repair_handoff_missing_lease(
+    project: Path,
+    change_id: str,
+    args: argparse.Namespace,
+    *,
+    status: str,
+    handoff: dict[str, Any],
+) -> dict[str, Any] | None:
+    """S-1：交接因 context 租约缺失失败时自愈一次。
+
+    阶段租约仍持有但 context 租约已被消费/缺失时，close_transition 只能报
+    CONTEXT_LEASE_REQUIRED——原样重跑永远撞同一错误（2026-08-31 submit 实测，
+    recoveryAction 声称“会重试”但重试无自愈能力）。这里补齐缺口：
+    prepare_context 幂等重建本阶段 context 租约后重试一次交接，与
+    `harness_context.py handoff` 命令同源（同 prepare→close 顺序）。
+    """
+    if handoff.get("code") != "CONTEXT_LEASE_REQUIRED":
+        return None
+    executor = getattr(args, "executor", None)
+    if not executor:
+        view = hctx.context_view(project, change_id)
+        current = view.get("current") if isinstance(view, dict) else None
+        executor = (
+            str(current.get("executor"))
+            if isinstance(current, dict) and current.get("executor")
+            else None
+        )
+    if not executor:
+        return None
+    try:
+        prepared = hctx.prepare_context(
+            project,
+            change=change_id,
+            phase=args.phase,
+            executor=executor,
+        )
+    except Exception:
+        return None
+    if not prepared.get("ok"):
+        return None
+    repaired = _close_context_handoff(project, change_id, args, status=status)
+    if isinstance(repaired, dict):
+        repaired = {**repaired, "leaseRepaired": True}
+    return repaired
+
+
 def _close_context_handoff(
     project: Path,
     change_id: str,
@@ -3155,6 +3201,14 @@ def _resume_closed_phase(
             )
     monitor = _sync_after_phase_close(project, change_dir)
     if isinstance(handoff, dict) and not handoff.get("ok"):
+        # S-1：续跑路径同样的自愈
+        repaired = _repair_handoff_missing_lease(
+            project, change_id, args,
+            status=close_status, handoff=handoff,
+        )
+        if repaired is not None:
+            handoff = repaired
+    if isinstance(handoff, dict) and not handoff.get("ok"):
         return emit_error(
             "PHASE_HANDOFF_PENDING",
             "phase gate is closed, but context handoff still needs attention",
@@ -3738,6 +3792,15 @@ def cmd_close(args: argparse.Namespace) -> int:
     )
     platform_monitor = _sync_after_phase_close(project, change_dir)
     if isinstance(context_handoff, dict) and not context_handoff.get("ok"):
+        # S-1：context 租约缺失时自愈一次（prepare 幂等重建 + 重试交接），
+        # 修复前“原样重跑”永远撞同一个 CONTEXT_LEASE_REQUIRED
+        repaired = _repair_handoff_missing_lease(
+            project, str(resolved["changeId"]), args,
+            status=close_status, handoff=context_handoff,
+        )
+        if repaired is not None:
+            context_handoff = repaired
+    if isinstance(context_handoff, dict) and not context_handoff.get("ok"):
         record_gate_blocked(
             change_dir,
             phase=args.phase,
@@ -3759,7 +3822,12 @@ def cmd_close(args: argparse.Namespace) -> int:
                 "platformMonitor": platform_monitor,
                 "recoveryAction": (
                     "租约仍持有，无需重新 claim——原样重跑同一 close 命令即可幂等续跑"
-                    "（phase.end 已落会跳过，handoff 会重试）"
+                    "（phase.end 已落会跳过，handoff 会重试；context 租约缺失时会自动"
+                    "补建）。仍失败时用一条命令补齐交接："
+                    "harness_context.py handoff --project . "
+                    f"--change {resolved['changeId']} --to-phase "
+                    f"{getattr(args, 'to_phase', None) or '<后继阶段>'} "
+                    "--executor <tool> --json"
                 ),
             },
         )

@@ -239,6 +239,58 @@ describe("hunter-harness plan finalize (e2e)", () => {
     expect(finalized.events.length).toBeGreaterThan(0);
   });
 
+  it("finalize 成功后把 ownership 派生进 change-context.json（A-1）", async () => {
+    const changeDir = join(root, ".harness", "changes", CHANGE_KEY);
+    await fs.mkdir(join(changeDir, "meta"), { recursive: true });
+    await fs.writeFile(
+      join(changeDir, "meta", "change-context.json"),
+      JSON.stringify({ schemaVersion: 1, changeId: CHANGE_KEY }),
+      "utf8"
+    );
+    const outputs: string[] = [];
+    const exitCode = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(outputs.join("")) as {
+      ownership_projection: { applied: boolean; productPaths: string[] };
+    };
+    expect(result.ownership_projection.applied).toBe(true);
+    expect(result.ownership_projection.productPaths).toEqual([
+      "packages/cli/src/commands/plan-finalize.ts"
+    ]);
+    const written = JSON.parse(await fs.readFile(
+      join(changeDir, "meta", "change-context.json"), "utf8"
+    )) as { ownership: { productPaths: string[]; derivedFrom: string } };
+    expect(written.ownership.productPaths).toEqual([
+      "packages/cli/src/commands/plan-finalize.ts"
+    ]);
+    expect(written.ownership.derivedFrom).toBe("plan-finalize");
+
+    // 已显式声明的 productPaths 不被覆盖
+    await fs.writeFile(
+      join(changeDir, "meta", "change-context.json"),
+      JSON.stringify({
+        schemaVersion: 1, changeId: CHANGE_KEY,
+        ownership: { productPaths: ["backend/"] }
+      }),
+      "utf8"
+    );
+    const outputs2: string[] = [];
+    const second = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs2.push(chunk); return true; },
+      stderr: () => true
+    });
+    expect(second).toBe(0);
+    const again = JSON.parse(await fs.readFile(
+      join(changeDir, "meta", "change-context.json"), "utf8"
+    )) as { ownership: { productPaths: string[] } };
+    expect(again.ownership.productPaths).toEqual(["backend/"]);
+  });
+
   it("runs the full v2 chain: gates → finalize → FS publication → event outbox", async () => {
     const outputs: string[] = [];
     const exitCode = await runPlanFinalize({ input: inputPath }, {

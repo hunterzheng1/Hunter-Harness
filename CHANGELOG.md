@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.4.12] — hunter-harness + workflow-harness
+
+> Submit/Archive 实测修复（docs/harness-improvement-roadmap/submit-archive-phase-issues-2026-08-31.md）。
+> CLI 0.4.11 → 0.4.12，workflow-harness 0.4.11 → 0.4.12，core 保持 0.1.7。
+
+### Fixed — close 交接重试自愈（S-1）
+
+- `gate close` 的 handoff 因 context 租约缺失失败（CONTEXT_LEASE_REQUIRED）时，
+  自动用 prepare_context 幂等重建租约并重试一次交接（返回体标
+  `leaseRepaired: true`）；此前 recoveryAction 声称「原样重跑即可」但重试永远
+  撞同一错误。主路径与 `PHASE_CLOSE_RESUMED` 续跑路径同样自愈。仍失败时
+  recoveryAction 指向 `harness_context.py handoff` 一条命令。
+
+### Added — plan finalize 自动派生 ownership（A-1）
+
+- finalize 成功后把 plan 的 `structured_input.ownership`（缺省回退 tasks 的
+  affected_paths）归并成目录前缀写入 `change-context.json` 的
+  `ownership.productPaths`（`derivedFrom: "plan-finalize"` 留痕）。已显式声明的
+  productPaths 从不动；派生失败不阻断 finalize。plan→archive 的 ownership
+  接线断裂（DIFF_ZERO_WITH_NONEMPTY_COMMIT 必撞）从根上消失。
+
+### Fixed — record-only 授权语义与阻断出路
+
+- **A-2**：record-only 的 CI 门禁警告文案不再原文透传授权要求（读起来像阻断
+  指引），明确「record-only 归档不要求发布授权，本项仅记录」。
+- **A-3**：归档阻断 blockers 透传 issue 的 `nextAction` 为 `recoveryAction`
+  （对齐 SKILL 二·A 表），不再让使用者翻文档找出路。
+- **S-4**：`ledger record` 在 build-profile 声明了 target 但未带
+  `--profile-input` 时输出 `PROFILE_INPUT_MISSING` 警告（can-reuse 事前可知）。
+- **S-2**：submit SKILL 注明 `--json` 横幅在 stderr、管道 jq 不要 `2>&1` 合并。
+
 ## [0.4.11] — workflow-harness
 
 > Review/Fixback 二轮实测修复（docs/harness-improvement-roadmap/review-fixback-phase-issues-2026-08-31.md）。
