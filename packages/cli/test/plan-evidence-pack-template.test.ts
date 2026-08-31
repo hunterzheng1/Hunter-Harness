@@ -241,6 +241,40 @@ describe("hunter-harness plan evidence-pack 自然输入边界", () => {
       .toContain("approval_scope_inherited:in_scope,out_of_scope");
   });
 
+  it("模板默认省略 approval.content.goal/user_visible_outcome，由 intent 继承（HP-16）", async () => {
+    const input = await template();
+    const content = (input.approval as { content: Record<string, unknown> }).content;
+    // 模板即推荐写法：两个逐字相等字段不抄第二遍
+    expect("goal" in content).toBe(false);
+    expect("user_visible_outcome" in content).toBe(false);
+
+    const { exit, body } = await pack(input);
+
+    if (exit !== 0) console.error("PACK-OUT:", JSON.stringify(body));
+    expect(exit).toBe(0);
+    expect((body as unknown as { warnings?: string[] }).warnings)
+      .toContain("approval_goal_inherited:goal,user_visible_outcome");
+  });
+
+  it("approval.content.goal 与 intent 措辞不同时边界报 PLAN_GOAL_MISMATCH（HP-16）", async () => {
+    const input = await template();
+    const content = (input.approval as { content: Record<string, unknown> }).content;
+    content.goal = "换了措辞的目标";
+
+    const { exit, body } = await pack(input);
+
+    expect(exit).toBe(1);
+    expect(body.code).toBe("PLAN_GOAL_MISMATCH");
+    expect(body.stage).toBe("boundary");
+    expect(body.field_path).toBe("approval.content.goal");
+    const diff = (body as unknown as {
+      diff: { goal: { intent: string; approval: string } };
+    }).diff;
+    expect(diff.goal.approval).toBe("换了措辞的目标");
+    // 不再是 finalize 阶段的无定位 PLAN_FINALIZATION_QUALITY_INVALID
+    expect(JSON.stringify(body)).not.toContain("PLAN_FINALIZATION_QUALITY_INVALID");
+  });
+
   it("approval.content.acceptance_examples 少于 3 条时在边界报出（P0-2）", async () => {
     const input = await template();
     const content = (input.approval as { content: Record<string, unknown> }).content;

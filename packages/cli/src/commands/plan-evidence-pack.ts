@@ -64,7 +64,10 @@ const EVIDENCE_PACK_TEMPLATE = {
     source_input: "<用户原话需求>",
     goal: "<一句话目标>",
     user_visible_outcome: "<用户能观察到的结果>",
-    // in_scope / out_of_scope 必须与 approval.content 的同名字段集合相等（顺序无关）
+    // 与 approval.content 的一致性规则：in_scope/out_of_scope 集合相等（顺序无关），
+    // goal/user_visible_outcome 逐字相等（语义门禁逐字比较，差一个字都会在 finalize 被
+    // semantic.goal_coverage 拦截）。approval 侧这四个字段都可整项省略、由命令从这里继承
+    //（推荐：少抄一遍就少一次 drift）
     in_scope: ["<纳入范围条目>"],
     out_of_scope: ["<明确排除条目>"],
     constraints: [],
@@ -78,8 +81,10 @@ const EVIDENCE_PACK_TEMPLATE = {
     // 必须来自阶段 4 blocking confirmation 的真实结果，本命令不伪造审批。
     // decided_at 可选：省略取当前时间；有真实审批时刻时补 ISO 8601 字符串。
     content: {
-      goal: "<一句话目标>",
-      user_visible_outcome: "<用户能观察到的结果>",
+      // goal/user_visible_outcome 已整项省略：从 intent 继承（warnings 会标
+      // approval_goal_inherited）。显式给出时 goal/user_visible_outcome 必须与 intent
+      // 逐字一致，in_scope/out_of_scope 集合一致；不一致在边界报 PLAN_GOAL_MISMATCH /
+      // PLAN_SCOPE_MISMATCH，不必等到 finalize
       in_scope: ["<纳入范围条目>"],
       out_of_scope: ["<明确排除条目>"],
       recommended_design: "<采纳的设计方案>",
@@ -206,9 +211,12 @@ interface EvidencePackInputFile {
     uncertainties?: readonly string[];
   };
   approval: {
-    // in_scope/out_of_scope 未显式给出时从 intent 继承（HP-14；两边必须集合相等，
-    // 继承消掉"同一份边界抄两遍抄错"的纯往返）
-    content: Omit<ApprovalContentInput, "in_scope" | "out_of_scope"> & {
+    // goal/user_visible_outcome/in_scope/out_of_scope 未显式给出时从 intent 继承
+    //（HP-14 scope / HP-16 goal；语义门禁逐字比较 goal、集合比较 scope，
+    // 继承消掉“同一份内容抄两遍抄错”的纯往返）
+    content: Omit<ApprovalContentInput, "in_scope" | "out_of_scope" | "goal" | "user_visible_outcome"> & {
+      goal?: string;
+      user_visible_outcome?: string;
       in_scope?: readonly string[];
       out_of_scope?: readonly string[];
     };
@@ -278,11 +286,12 @@ const INTENT_REQUIRED_KEYS = ["source_input", "goal", "user_visible_outcome", "i
 const INTENT_OPTIONAL_KEYS = ["constraints", "uncertainties"] as const;
 const APPROVAL_KEYS = ["content", "approver_id"] as const;
 const APPROVAL_OPTIONAL_KEYS = ["decided_at"] as const;
-const APPROVAL_CONTENT_REQUIRED_KEYS = ["goal", "user_visible_outcome", "recommended_design",
+const APPROVAL_CONTENT_REQUIRED_KEYS = ["recommended_design",
   "key_alternatives", "invariants", "failure_behaviors", "compatibility_boundaries", "risks",
   "acceptance_examples"] as const;
-// in_scope/out_of_scope 可从 intent 继承，故不是必填键
-const APPROVAL_CONTENT_INHERITABLE_KEYS = ["in_scope", "out_of_scope"] as const;
+// goal/user_visible_outcome 与 in_scope/out_of_scope 一样可从 intent 继承，故不是必填键
+const APPROVAL_CONTENT_INHERITABLE_KEYS = ["goal", "user_visible_outcome", "in_scope",
+  "out_of_scope"] as const;
 const DECISION_NODE_KEYS = ["schema_version", "decision_id", "decision_version", "type",
   "depends_on", "status", "tradeoffs", "affected_behaviors", "evidence_refs"] as const;
 const DECISION_NODE_OPTIONAL_KEYS = ["question", "recommendation", "recommendation_reason",
@@ -398,7 +407,7 @@ function collectInputProblems(input: EvidencePackInputFile): readonly InputProbl
     }
   }
 
-  // approval 层：content 键集 + 各内容数组条数（缺失的 scope 键由继承逻辑补，不算问题）
+  // approval 层：content 键集 + 各内容数组条数（缺失的可继承键由继承逻辑补，不算问题）
   const approvalValue: unknown = input.approval;
   if (!isRecord(approvalValue)) {
     problems.push({ field_path: "approval", message: "必须是对象" });
@@ -810,10 +819,11 @@ export async function runPlanEvidencePack(
       input.approval.decided_at = new Date(parsedTime).toISOString();
     }
     const createdAt = input.approval.decided_at ?? now();
-    // HP-14：approval.content 的 in_scope/out_of_scope 未显式给出时从 intent 继承
-    // （两边必须集合相等；继承消掉“同一份边界抄两遍抄错”的纯往返，不伪造审批——
-    // 继承值就是编排方在阶段 4 确认过的同一份边界）
+    // HP-14/HP-16：approval.content 的 in_scope/out_of_scope 与 goal/user_visible_outcome
+    // 未显式给出时从 intent 继承（两边语义门禁要求一致；继承消掉“同一份内容抄两遍抄错”
+    // 的纯往返，不伪造审批——继承值就是编排方在阶段 4 确认过的同一份内容）
     const scopeInherited: string[] = [];
+    const goalInherited: string[] = [];
     const approvalContent = input.approval.content;
     if (approvalContent.in_scope === undefined) {
       (approvalContent as { in_scope: readonly string[] }).in_scope = [...input.intent.in_scope];
@@ -824,8 +834,37 @@ export async function runPlanEvidencePack(
         [...input.intent.out_of_scope];
       scopeInherited.push("out_of_scope");
     }
-    // 继承后 content 已完整（边界校验 + 继承保证 in_scope/out_of_scope 存在）
+    if (approvalContent.goal === undefined) {
+      (approvalContent as { goal: string }).goal = input.intent.goal;
+      goalInherited.push("goal");
+    }
+    if (approvalContent.user_visible_outcome === undefined) {
+      (approvalContent as { user_visible_outcome: string }).user_visible_outcome =
+        input.intent.user_visible_outcome;
+      goalInherited.push("user_visible_outcome");
+    }
+    // 继承后 content 已完整（边界校验 + 继承保证四个可继承字段存在）
     const completedApprovalContent = approvalContent as ApprovalContentInput;
+    // HP-16：goal/user_visible_outcome 显式给出时必须与 intent 逐字一致——core 语义门禁
+    //（semantic.goal_coverage）就是逐字比较；在边界提前报清，不再等到 finalize 才 blocked
+    if (completedApprovalContent.goal !== input.intent.goal ||
+        completedApprovalContent.user_visible_outcome !== input.intent.user_visible_outcome) {
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
+        code: "PLAN_GOAL_MISMATCH",
+        field_path: "approval.content.goal",
+        message: "approval.content 的 goal/user_visible_outcome 必须与 intent 逐字一致；" +
+          "两个字段都可整项省略，由命令从 intent 继承",
+        extra: {
+          diff: {
+            goal: { intent: input.intent.goal, approval: completedApprovalContent.goal },
+            user_visible_outcome: {
+              intent: input.intent.user_visible_outcome,
+              approval: completedApprovalContent.user_visible_outcome
+            }
+          }
+        }
+      }));
+    }
     // HP-04：intent 与 approval scope 集合语义等价校验（missing/extra 明细）
     const canonicalScope = (values: readonly string[]) => [...new Set(values)].sort();
     const intentIn = canonicalScope(input.intent.in_scope ?? []);
@@ -1170,7 +1209,8 @@ export async function runPlanEvidencePack(
     const warnings: string[] = [
       ...(fullFanout ? ["graph_density_full_fanout"] : []),
       ...(requiredRetained.length > 0 ? ["phase_set_required_retained"] : []),
-      ...(scopeInherited.length > 0 ? [`approval_scope_inherited:${scopeInherited.join(",")}`] : [])
+      ...(scopeInherited.length > 0 ? [`approval_scope_inherited:${scopeInherited.join(",")}`] : []),
+      ...(goalInherited.length > 0 ? [`approval_goal_inherited:${goalInherited.join(",")}`] : [])
     ];
     dependencies.stdout(JSON.stringify({
       ok: true,

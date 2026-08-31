@@ -19,7 +19,7 @@ export interface PlanErrorEnvelope {
 }
 
 const STAGE_BY_PREFIX: readonly [RegExp, PlanErrorStage][] = [
-  [/^PLAN_(RUN_ID|TIME|SCOPE)_/u, "boundary"],
+  [/^PLAN_(RUN_ID|TIME|SCOPE|GOAL)_/u, "boundary"],
   [/^PLAN_REVIEW_/u, "layer3"],
   [/^PLANNING_/u, "intent"],
   [/^PLAN_DECISION_/u, "decision"],

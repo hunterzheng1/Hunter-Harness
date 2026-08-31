@@ -421,6 +421,8 @@ finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PL
 - `intent.acceptance_examples` 2~5 条，`approval.content.acceptance_examples` 3~7 条 → 取 3 条同时满足
 - `key_alternatives` / `invariants` / `failure_behaviors` / `compatibility_boundaries` 各至少 1 条
 - `intent.in_scope`/`out_of_scope` 与 `approval.content` 同名字段必须**集合相等**；0.4.8 起 approval 侧可以**整项省略**（从 intent 继承，成功输出的 `warnings` 会标 `approval_scope_inherited`），写了就必须相等
+- `intent.goal`/`user_visible_outcome` 与 `approval.content` 同名字段必须**逐字相等**（语义门禁 `semantic.goal_coverage` 逐字比较，差一个字 finalize 都会 blocked）；approval 侧同样可以**整项省略**（从 intent 继承，`warnings` 标 `approval_goal_inherited`，模板默认就是省略写法），显式给出且不一致时边界直接报 `PLAN_GOAL_MISMATCH` 并附 diff
+- 质量门禁 blocked 时 `plan finalize` 的错误信封（`PLAN_FINALIZATION_QUALITY_INVALID`）带全部 blocking `findings[]`（含 `message_zh`/`suggested_location`）与逐层状态，不再只有裸 `operation_id`
 - `intent.uncertainties` 非空时，每一项都会生成未决决策 `intent_uncertainty:<sha256(文本)>`，必须在 `decision_nodes` 提供**同 id** 的节点（通常是一条 `product_decision`，`status: "resolved"` + `resolution`/`resolved_by: "user"`/`resolved_at` 三元）；不想走决策图就留空数组。缺节点时边界报错会直接列出期望的决策 id
 - `tasks[].affected_paths` 必须是**文件形态**的相对路径：正斜杠分隔、不能以 `/` 结尾、不含 `.`/`..` 段、不接受盘符/绝对路径。目录路径会被拒——改为列出其中的具体文件
 - tasks 只写 `task_id/objective/affected_paths/owner_phase`，六个 refs 数组由命令接线；多写 `cluster`/`title` 这类键会因精确键集被拒

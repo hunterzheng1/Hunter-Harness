@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { canonicalJson } from "@hunter-harness/contracts";
 import {
   PLAN_PHASES,
   classifyPlan,
@@ -43,9 +44,9 @@ function testHash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex")}`;
 }
 
-function approvalContent(): ApprovalContentInput {
+function approvalContent(overrides?: { goal?: string }): ApprovalContentInput {
   return {
-    goal: "端到端发布验证", user_visible_outcome: "结构化证据包完成发布", in_scope: ["plan_finalize"],
+    goal: overrides?.goal ?? "端到端发布验证", user_visible_outcome: "结构化证据包完成发布", in_scope: ["plan_finalize"],
     out_of_scope: ["python_finalizer"], recommended_design: "三层收据驱动唯一发布意图",
     key_alternatives: ["继续依赖叙述式自检"], invariants: ["结构失败绝不发布"],
     failure_behaviors: ["结构失败绝不发布"], compatibility_boundaries: ["旧质量记录只读"],
@@ -54,7 +55,9 @@ function approvalContent(): ApprovalContentInput {
   };
 }
 
-function humanInput(): HumanArtifactBuildInput {
+function humanInput(options?: { approvalGoal?: string }): HumanArtifactBuildInput {
+  const content = options?.approvalGoal === undefined ? approvalContent()
+    : { ...approvalContent(), goal: options.approvalGoal };
   const profile = classifyPlan({ schema_version: 1, change_id: CHANGE_KEY,
     risk_signals: ["production_code", "cross_file"], created_at: now });
   const phase_set = configurePlannedPhases(profile, { schema_version: 1, is_git: true, has_remote: true,
@@ -75,7 +78,7 @@ function humanInput(): HumanArtifactBuildInput {
   const decision = createPlanDecisionModule();
   const graph = decision.evaluateDecisionGraph({ schema_version: 1, profile, phase_set, context, intent, evidence,
     nodes: [], evaluated_at: now });
-  const approval_package_input = { content: approvalContent(), created_at: now };
+  const approval_package_input = { content, created_at: now };
   const approval_package = decision.buildApprovalPackage({ schema_version: 1, profile, phase_set, context, intent,
     evidence, graph, ...approval_package_input });
   const approval_receipt = decision.recordApproval({ package: approval_package, graph, profile, phase_set, context,
@@ -135,8 +138,8 @@ function humanInput(): HumanArtifactBuildInput {
   };
 }
 
-function trusted(): TrustedArtifactSetInput {
-  const input = humanInput();
+function trusted(options?: { approvalGoal?: string }): TrustedArtifactSetInput {
+  const input = humanInput(options);
   const model = createPlanArtifactModel();
   const human = model.buildHumanArtifacts(input);
   const machine_input = { schema_version: 2 as const, profile: input.profile, phase_set: input.phase_set,
@@ -237,6 +240,61 @@ describe("hunter-harness plan finalize (e2e)", () => {
     expect(layer1.status).toBe("passed");
     expect(finalized.receipt.receipt_id.length).toBeGreaterThan(0);
     expect(finalized.events.length).toBeGreaterThan(0);
+  });
+
+  it("质量门禁 blocked 时错误信封带逐层 findings（HP-16，不再裸 operation_id）", async () => {
+    // 复现真实事故：approval 的 goal 换了措辞，语义门禁 semantic.goal_coverage 逐字比较拦截。
+    // 收据按公开契约用 CLI 同款探针代算 input_hash + findings_hash，保证绑定通过、走到
+    // receipt blocked 分支（否则先被 PLAN_REVIEW_REQUIRED 拦下）。
+    const trustedValue = trusted({ approvalGoal: "与 intent 措辞不一致的目标" });
+    const quality = createPlanQualityModule();
+    const layer2 = quality.runSemanticGates({ trusted: trustedValue, completed_at: now });
+    const probe = quality.runAdversarialGates({ trusted: trustedValue, semantic: layer2,
+      explicit_adversarial: false, prefer_delegated: false, completed_at: now });
+    const adversarialReview = {
+      schema_version: 1 as const,
+      reviewer_identity: "inline:e2e",
+      review_mode: "inline" as const,
+      input_hash: probe.review_execution.input_hash,
+      findings_hash: `sha256:${createHash("sha256").update(canonicalJson([]), "utf8").digest("hex")}`,
+      findings: [],
+      completed_at: now
+    };
+    await fs.writeFile(inputPath, JSON.stringify({
+      trusted: trustedValue,
+      publication: publicationEvidence(trustedValue),
+      context: { project_id: "prj_e2e", change_key: CHANGE_KEY, run_id: "run_e2e01",
+        branch_name: "main", attempt: 1 },
+      expected_baseline: { state: "absent", manifest_hash: null, generation: 0 },
+      adversarial_review: adversarialReview
+    }));
+
+    const outputs: string[] = [];
+    const exitCode = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+
+    if (exitCode !== 0 && !outputs.join("").includes("PLAN_FINALIZATION_QUALITY_INVALID")) {
+      console.error("CMD-OUT:", outputs.join(""));
+    }
+    expect(exitCode).toBe(1);
+    const body = JSON.parse(outputs.join("")) as {
+      code: string; stage: string; status?: string;
+      findings: readonly { finding_id: string; severity: string; suggested_location: string; message_zh: string }[];
+      layers?: readonly { layer: string; status: string }[];
+    };
+    expect(body.code).toBe("PLAN_FINALIZATION_QUALITY_INVALID");
+    expect(body.stage).toBe("layer2");
+    expect(body.status).toBe("blocked");
+    const goalFinding = body.findings.find((finding) => finding.finding_id === "semantic.goal_coverage");
+    expect(goalFinding).toBeDefined();
+    expect(goalFinding?.suggested_location).toBeTruthy();
+    expect(goalFinding?.message_zh).toContain("目标");
+    expect(body.findings.every((finding) => finding.severity === "blocking")).toBe(true);
+    expect(body.layers?.map((layer) => layer.layer)).toEqual(
+      ["layer1_deterministic", "layer2_semantic", "layer3_adversarial"]);
   });
 
   it("finalize 成功后把 ownership 派生进 change-context.json（A-1）", async () => {

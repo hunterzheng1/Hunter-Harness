@@ -205,6 +205,32 @@ export async function runPlanFinalize(
       completed_at: completedAt
     });
 
+    // HP-16：receipt blocked 时三层 findings 已在内存，直接写进错误信封——
+    // 不再把裸 operation_id 丢给编排方去逆向排障（2026-09 实测该类排障 25min）。
+    // 事务层对 blocked receipt 的同名短码返回保留兼容；编排方正常路径不再到达那里。
+    if (finalized.receipt.status === "blocked") {
+      const blockingFindings = [...layer1.findings, ...layer2.findings, ...layer3.findings]
+        .filter((finding, index, all) => finding.severity === "blocking" &&
+          all.findIndex((other) => other.finding_id === finding.finding_id) === index);
+      const blockedStage: "layer2" | "layer3" =
+        layer2.findings.every((finding) => finding.severity !== "blocking") ? "layer3" : "layer2";
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
+        code: "PLAN_FINALIZATION_QUALITY_INVALID",
+        stage: blockedStage,
+        message: "计划质量门禁 blocked；findings 逐条给出 blocking 原因与建议位置，" +
+          "修正 meta/plan-evidence-input.json 对应字段后重跑 evidence-pack + finalize",
+        findings: blockingFindings,
+        extra: {
+          status: "blocked",
+          layers: [
+            { layer: "layer1_deterministic", status: layer1.status, findings: layer1.findings },
+            { layer: "layer2_semantic", status: layer2.status, findings: layer2.findings },
+            { layer: "layer3_adversarial", status: layer3.status, findings: layer3.findings }
+          ]
+        }
+      }));
+    }
+
     const operationId = input.operation_id ?? `plan_finalize:${context.change_key}:${finalized.receipt.receipt_hash.slice(7, 23)}`;
     const idempotencyKey = input.idempotency_key ?? `plan_finalize:${canonicalHash({ change_key: context.change_key, receipt_hash: finalized.receipt.receipt_hash })}`;
     const finalization = Object.freeze({
