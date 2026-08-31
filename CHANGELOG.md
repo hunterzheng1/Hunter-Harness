@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.4.11] — workflow-harness
+
+> Review/Fixback 二轮实测修复（docs/harness-improvement-roadmap/review-fixback-phase-issues-2026-08-31.md）。
+> 纯 workflow-harness 变更，CLI 保持 0.4.11、core 保持 0.1.7。
+
+### Fixed — fixback 批次收尾
+
+- **F-4（方向性错误）**：fixback 回环（最新交接为 review→execute 且
+  `trigger=review-fixback`）的 execute 关门，自动派生从「再来一轮 review」
+  改为 review 的计划后继（submit）；续跑路径同一规则。
+- **F-5**：`close_batch` 同步把 `fixback-session.json` 置 CLOSED——此前批次已关
+  会话仍 ACTIVE，后续 launch-review 被 CONTEXT_PREPARATION_ACTIVE 误拦。
+- **F-2**：fixback 会话（`--verification fixback-*`）缺 `--product-identity` 时，
+  OPEN 批次的 `baseProductIdentity` 自动注入（回执记录
+  `productIdentitySource`）；无 OPEN 批次当场拒绝，不再白跑一轮到 register 才拒。
+- **F-6**：execute SKILL 补全 fixback 步骤序列（launch→RED 会话→证据注册→修复
+  →GREEN→resolve→dispositions→affected/review 收据→close batch→gate close）。
+
+### Fixed — Windows 启动器与路径
+
+- **F-1**：`harness_process.resolve_windows_executable`——Windows 上无扩展名命令
+  （mvn/npm 等 .cmd 包装）经 shutil.which/PATHEXT 解析后再 spawn，run-start 不再
+  WinError 2。
+- **F-3**：`harness_fixback.py evidence-template --out` 防双重拼接（与 ledger
+  E-1 同规则：已含 change-dir 前缀的相对路径按 cwd 解析）。
+
+### Fixed — 事件契约报错
+
+- **R-4/R-5**：`EVENT_FIELD_NOT_ALLOWED` 一次列出全部不被接受的字段；
+  harness-review SKILL 补 review decision 事件的完整可复制示例（decision 不收
+  --name/--status；issue 必须 --severity）。
+
+### 判定为「陈旧缓存复现、0.4.5~0.4.8 已修」（R-1/R-2/R-3）
+
+实测环境跑的是 workflow 0.4.3 缓存（0.4.4~0.4.7 从未发 npm）：R-1 的 scaffold
+链文档于 0.4.6 补齐；R-2 的释放顺序 + LEASE_ABSENT 自愈于 0.4.5；R-3 的自动
+交接派生于 0.4.6。CLI 的 latestWorkflowCacheIsStale 机制会在在线时自动刷新
+缓存；离线保留缓存是设计选择。本轮无代码变更，状态表记录判定依据。
+
 ## [0.4.11] — hunter-harness + workflow-harness 0.4.10 + core 0.1.7
 
 > Plan 生命周期与知识查询实测修复（docs/harness-improvement-roadmap/plan-phase-lifecycle-and-knowledge-query-issues-2026-08-30.md）。

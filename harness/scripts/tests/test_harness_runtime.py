@@ -585,6 +585,43 @@ class ManagedRunSessionTests(unittest.TestCase):
             terminal = self._wait_for_terminal(root, third["sessionId"])
             self.assertEqual(terminal["status"], "OK", terminal)
 
+    def test_fixback_session_without_batch_requires_product_identity(self) -> None:
+        """F-2：fixback-* 会话缺 product-identity 且无 OPEN 批次 → 当场拒绝。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError) as ctx:
+                runtime.start_run_session(
+                    state_root=root,
+                    verification="fixback-red",
+                    argv=[sys.executable, "-c", "pass"],
+                    working_directory=root,
+                )
+            self.assertIn("FIXBACK_PRODUCT_IDENTITY_REQUIRED", str(ctx.exception))
+
+    def test_fixback_session_injects_open_batch_identity(self) -> None:
+        """F-2：OPEN 批次存在时自动注入 baseProductIdentity，不再白跑一轮。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batches = root / "fixback" / "batches"
+            batches.mkdir(parents=True)
+            (batches / "batch-1.json").write_text(json.dumps({
+                "batchId": "batch-1",
+                "status": "OPEN",
+                "baseProductIdentity": "sha256:base-identity",
+            }), encoding="utf-8")
+            started = runtime.start_run_session(
+                state_root=root,
+                verification="fixback-green",
+                argv=[sys.executable, "-c", "pass"],
+                working_directory=root,
+                heartbeat_seconds=0.05,
+            )
+            self.assertEqual(started["productIdentity"], "sha256:base-identity")
+            self.assertEqual(
+                started["productIdentitySource"], "fixback-batch:batch-1"
+            )
+            self._wait_for_terminal(root, started["sessionId"])
+
     def test_resource_locks_are_exclusive_across_state_roots(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ,

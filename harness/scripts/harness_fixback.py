@@ -75,6 +75,14 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value
+
+
 def _load(change_dir: Path, batch_id: str) -> dict[str, Any]:
     path = _batch_path(change_dir, batch_id)
     try:
@@ -1186,7 +1194,21 @@ def evidence_template(
         "provenance": provenance,
     }
     target = Path(out) if out else Path("runtime") / f"fixback-{resolved_id}.json"
-    path = target if target.is_absolute() else (change_dir / target)
+    if target.is_absolute():
+        path = target
+    else:
+        # F-3：与 ledger --out 同一类坑——相对路径已含 change-dir 前缀时直接拼
+        # change_dir 会产生嵌套幽灵目录（2026-08-31 实测）。前缀命中按 cwd 解析。
+        cwd = Path.cwd().resolve()
+        change_resolved = change_dir.resolve()
+        if _is_within(change_resolved, [cwd]):
+            change_rel = change_resolved.relative_to(cwd)
+            if target.parts[: len(change_rel.parts)] == change_rel.parts:
+                path = cwd / target
+            else:
+                path = change_dir / target
+        else:
+            path = change_dir / target
     path = path.resolve()
     if not _is_within(path, [change_dir.resolve(), state_root, _project_root(change_dir)]):
         return {
@@ -1708,6 +1730,20 @@ def close_batch(
         }
     )
     _write_json(_batch_path(change_dir, batch_id), batch)
+    # F-5：批次关闭会同步把托管会话置为 CLOSED——否则 session 永远 ACTIVE，
+    # 后续 launch-review 被 CONTEXT_PREPARATION_ACTIVE 幂等保护误拦（2026-08-31
+    # demo-datasource 实测）。
+    session_file = _session_path(change_dir)
+    session = _read_json(session_file)
+    if (
+        isinstance(session, dict)
+        and session.get("batchId") == batch_id
+        and session.get("status") == "ACTIVE"
+    ):
+        session["status"] = "CLOSED"
+        session["nextStep"] = "done"
+        session["updatedAt"] = closed_at
+        _write_json(session_file, session)
     return batch
 
 

@@ -898,14 +898,18 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
             f"EVENT_REQUIRED_FIELD: {event_type} requires " + ", ".join(missing),
         )
     allowed = _EVENT_ALLOWED_FIELDS[event_type]
-    for field in OPTIONAL_FIELDS:
-        value = getattr(args, field, None)
-        if value is not None and field not in allowed:
-            return (
-                "EVENT_FIELD_NOT_ALLOWED",
-                "EVENT_FIELD_NOT_ALLOWED: "
-                f"{event_type} does not accept --{field.replace('_', '-')}",
-            )
+    disallowed = [
+        f"--{field.replace('_', '-')}"
+        for field in OPTIONAL_FIELDS
+        if getattr(args, field, None) is not None and field not in allowed
+    ]
+    if disallowed:
+        # 一次列出全部不被接受的字段——逐个报错会让调用方每字段往返一轮（R-4）
+        return (
+            "EVENT_FIELD_NOT_ALLOWED",
+            f"EVENT_FIELD_NOT_ALLOWED: {event_type} does not accept "
+            + ", ".join(disallowed),
+        )
     for field, length in (("trace_id", 32), ("span_id", 16), ("parent_span_id", 16)):
         value = getattr(args, field, None)
         if value is not None and not re.fullmatch(rf"[0-9a-f]{{{length}}}", str(value)):

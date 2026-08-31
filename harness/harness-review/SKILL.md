@@ -62,6 +62,17 @@ review 默认优先在独立上下文执行，避免主会话已形成的实现�
 
 无隔离能力、定义损坏、spawn 失败、空返回或只有元数据时，不重试，立即由主会话按同一 6 维度检查清单完成审查。无论是否委派，都必须追加一条结构化 `decision` 事件：`--execution-mode delegated|inline` 标明执行方式；委派时写 `--executor-agent harness-reviewer --decision-reason-code REVIEW_DELEGATED`；回退时只写一个 `--fallback-reason-code REVIEW_INLINE_UNAVAILABLE|REVIEW_INLINE_SPAWN_FAILED|REVIEW_INLINE_INVALID_RESULT`。`decision` 和 `reason` 必须用中文完整说明，禁止把原因码拼进正文。正常主会话评审是可接受结果，不显示成流程故障；`fallbackPolicy=inline-no-retry`。
 
+完整示例（委派路径，可直接复制改参）：
+
+```bash
+python <skills-root>/scripts/harness_events.py append --change-dir ".harness/changes/<cn>" \
+  --phase review --type decision --execution-mode delegated \
+  --executor-agent harness-reviewer --decision-reason-code REVIEW_DELEGATED \
+  --decision "已使用独立评审完成 6 维度审查" --reason "固定 reviewer 可用，避免主会话实现结论影响审查" --json
+```
+
+注意：`decision` 事件**不接受** `--name`/`--status`（那是 verification 的字段）；`issue` 事件必须带 `--severity`。
+
 项目规模小、风险低或没有 CodeGraph 都不是跳过独立评审的理由。原因码是稳定机器字段，仅用于协议与技术详情；面向用户的事件摘要必须写成「已使用独立评审」或「当前环境没有可用的隔离评审能力，已由主会话完成评审」等中文说明。
 
 3. **持久化报告与事实 sidecar（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`，并调用 `python <skills-root>/scripts/harness_review.py scaffold --change-dir <change-dir> [--run-id <id>]` 生成 findings 写入骨架（runId 缺省从 events.ndjson 最新 review phase.start 推断），补齐每一条发现后经 `harness_review.py write-findings --change-dir <change-dir> --stdin` 落地。每条发现必须填写 `fixbackAction=code|manual|workflow`：只有确实需要修改产品代码的项使用 `code`；人工验收用 `manual`；流程、暂存或工具使用建议用 `workflow`。权威计数来自 `reports/review/review-findings.json`，不是 Markdown。任一写入缺失 → 评审未完整结束，不得关门。

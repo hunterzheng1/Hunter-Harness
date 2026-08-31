@@ -818,6 +818,33 @@ class RenderQualityTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, out)
 
+    def test_field_not_allowed_lists_all_disallowed_fields_at_once(self) -> None:
+        """R-4：decision 同时传 --name/--status 时一次报全，不再逐个往返。"""
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "review",
+                "--type",
+                "decision",
+                "--name",
+                "评审",
+                "--status",
+                "ok",
+                "--decision",
+                "采用独立评审",
+                "--reason",
+                "固定 reviewer 可用",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("EVENT_FIELD_NOT_ALLOWED", err)
+        self.assertIn("--name", err)
+        self.assertIn("--status", err)
+
     def test_ut212b_issue_rejects_verification_status_field(self) -> None:
         code, out, err = self._run(
             [

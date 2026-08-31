@@ -4,6 +4,7 @@ import datetime as dt
 import importlib.util
 import inspect
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -337,6 +338,31 @@ class ProcessProviderTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reasonCode"], "IDENTITY_UNVERIFIABLE")
         self.assertEqual(signalled, [])
+
+
+
+
+class WindowsExecutableResolutionTests(unittest.TestCase):
+    def test_resolve_windows_executable_behaves_safely(self) -> None:
+        """F-1：Windows 上无扩展名命令解析为 PATHEXT 命中（mvn→mvn.cmd），其余原样。"""
+        resolved = PROCESS.resolve_windows_executable(["python", "-c", "pass"])
+        if os.name == "nt":
+            # python 在 PATH 中：首参被解析为绝对路径（.exe）
+            self.assertTrue(
+                resolved[0].lower().endswith(("python.exe", "python.bat", "python.cmd")),
+                resolved,
+            )
+            self.assertEqual(resolved[1:], ["-c", "pass"])
+        else:
+            self.assertEqual(resolved, ["python", "-c", "pass"])
+        # 已带扩展名/路径的命令不触碰
+        untouched = PROCESS.resolve_windows_executable(["C:/tools/mvn.cmd", "-v"])
+        self.assertEqual(untouched[0], "C:/tools/mvn.cmd")
+        # PATH 中不存在的命令原样返回（交给 Popen 报原生错误）
+        self.assertEqual(
+            PROCESS.resolve_windows_executable(["definitely-not-a-real-cmd-xyz"])[0],
+            "definitely-not-a-real-cmd-xyz",
+        )
 
 
 if __name__ == "__main__":

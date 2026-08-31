@@ -6,6 +6,23 @@
 > 版本：hunter-harness 0.4.10（npm 缓存实测）
 > 关联：`plan-phase-lifecycle-and-knowledge-query-issues-2026-08-30.md`（plan + execute 问题）
 
+## 修复状态（2026-08-31，workflow-harness 0.4.11）
+
+| 条目 | 状态 | 修复点 |
+|---|---|---|
+| R-1 close 结构化前置无文档 | ✅ 已在 0.4.6 修复，实测环境为陈旧缓存 | scaffold 链与 SKILL 文档已于 0.4.6 落地（write-findings/scaffold/write-dispositions），REVIEW_OUTPUTS_INCOMPLETE 的 recoveryAction 已指向 scaffold。实测环境跑的是 workflow 0.4.3 npm 缓存（0.4.4~0.4.7 从未发布）。在线时 latestWorkflowCacheIsStale 会自动刷新 |
+| R-2 LEASE_ABSENT | ✅ 已在 0.4.5 修复，同上 | 0.4.3 的 close 是「释放在前」，中途失败留下无租约中间态；0.4.5 起释放移至末位 + 幂等续跑。实测症状（失败后租约消失 + 续跑不触发 PHASE_CLOSE_RESUMED）与 0.4.3 行为精确吻合 |
+| R-3 交接未落盘但报 CLOSED | ✅ 已在 0.4.6 修复，同上 | plain close 自动派生交接（review→submit）是 0.4.6 特性；0.4.3 无此行为 |
+| R-4/R-5 事件字段契约试错 | ✅ 已修 | EVENT_FIELD_NOT_ALLOWED 一次列出全部不接受字段；harness-review SKILL 补 decision 事件完整示例命令（decision 不收 --name/--status；issue 必须 --severity） |
+| F-1 mvn spawn WinError 2 | ✅ 已修 | `harness_process.resolve_windows_executable`：无扩展名命令经 shutil.which/PATHEXT 解析（mvn→mvn.cmd）；run-start 与 detached worker 两路都走 |
+| F-2 run-start 缺 product-identity 白跑 | ✅ 已修 | fixback-* 会话缺省时从 OPEN 批次 baseProductIdentity 自动注入（回执含 productIdentitySource）；无 OPEN 批次当场拒绝 FIXBACK_PRODUCT_IDENTITY_REQUIRED |
+| F-3 evidence-template --out 双重拼接 | ✅ 已修 | 与 ledger E-1 同规则：已含 change-dir 前缀的相对路径按 cwd 解析 |
+| F-4 fixback close 派错后继 | ✅ 已修 | fixback 回环（trigger=review-fixback）的 execute 关门派生 review 的计划后继（submit），主路径与续跑路径同规则 |
+| F-5 session 不随批次关闭 | ✅ 已修 | close_batch 同步把 fixback-session 置 CLOSED（nextStep=done） |
+| F-6 fixback 步骤序列无文档 | ✅ 已修 | execute SKILL 补全步骤序列（launch→RED→证据→修复→GREEN→resolve→dispositions→收据→close batch→gate close） |
+
+---
+
 ## TL;DR
 
 两阶段业务目标全部达成（review 总体 YELLOW 0 RED；fixback 批次 7 项 code 全部 RESOLVED、3 项 manual/workflow 处置完毕、RED/GREEN 证据闭环），但过程各踩了 5+ 个工具坑。共性模式：**多处关键契约只在报错时逐字段暴露**（事件字段、结构化 findings/dispositions 前置、产品身份），文档与报错不同步。修复优先级建议：R-3（交接落盘丢失）> R-2（租约神秘消失）> F-4（fixback close 派错下一阶段）> 其余体验项。

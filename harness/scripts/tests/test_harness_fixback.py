@@ -373,6 +373,129 @@ class FixbackBatchTests(unittest.TestCase):
             self.assertFalse(ledger["validations"]["unitTestFull"]["reusable"])
             self.assertTrue(ledger["validations"]["apiTest"]["reusable"])
 
+    def test_close_batch_flips_fixback_session_to_closed(self) -> None:
+        """F-5：批次关闭时托管会话必须同步 CLOSED，不再误拦后续 launch-review。"""
+        self.assertTrue(SCRIPT.is_file(), "harness_fixback.py must be implemented")
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            module.open_batch(
+                change_dir,
+                batch_id="batch-1",
+                product_identity="sha256:before",
+                root_cause="shared collection contract",
+            )
+            module.add_issue(
+                change_dir,
+                batch_id="batch-1",
+                issue_id="I-1",
+                summary="问题一",
+                risk_tags=[],
+            )
+            src = change_dir / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "i1.ts").write_text("export {};\n", encoding="utf-8")
+            module.resolve_issue(
+                change_dir,
+                batch_id="batch-1",
+                issue_id="I-1",
+                red_evidence=write_evidence(
+                    change_dir,
+                    "evidence/red-i1.json",
+                    kind="red",
+                    status="FAIL",
+                    product_identity="sha256:before",
+                    evidence_id="red-i1",
+                ),
+                green_evidence=write_evidence(
+                    change_dir,
+                    "evidence/green-i1.json",
+                    kind="green",
+                    status="PASS",
+                    product_identity="sha256:after",
+                    evidence_id="green-i1",
+                ),
+                changed_files=["src/i1.ts"],
+            )
+            affected = write_evidence(
+                change_dir,
+                "evidence/affected.json",
+                kind="verification",
+                status="PASS",
+                product_identity="sha256:after",
+                evidence_id="affected-1",
+                passed_gates=["affected"],
+            )
+            review = write_evidence(
+                change_dir,
+                "reports/review.json",
+                kind="review",
+                status="PASS",
+                product_identity="sha256:after",
+                evidence_id="review-1",
+                passed_gates=["review"],
+            )
+            # 托管会话（launch-review 产物）：批次开着时 ACTIVE
+            session_path = module._session_path(change_dir)
+            session_path.parent.mkdir(parents=True, exist_ok=True)
+            session_path.write_text(
+                json.dumps({
+                    "schemaVersion": 1,
+                    "status": "ACTIVE",
+                    "batchId": "batch-1",
+                    "runId": "run-1",
+                    "attempt": 1,
+                    "nextStep": "resolve-issues",
+                }),
+                encoding="utf-8",
+            )
+
+            closed = module.close_batch(
+                change_dir,
+                batch_id="batch-1",
+                final_product_identity="sha256:after",
+                affected_receipt=affected,
+                review_receipt=review,
+            )
+            self.assertEqual(closed["status"], "CLOSED")
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+            self.assertEqual(session["status"], "CLOSED")
+            self.assertEqual(session["nextStep"], "done")
+
+    def test_evidence_template_out_with_change_dir_prefix_is_not_double_joined(self) -> None:
+        """F-3：--out 已含 change-dir 前缀时按 cwd 解析，不拼出嵌套幽灵目录。"""
+        import os
+        self.assertTrue(SCRIPT.is_file(), "harness_fixback.py must be implemented")
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change_dir = project / ".harness" / "changes" / "demo"
+            change_dir.mkdir(parents=True)
+            state_root = module._state_root(change_dir)
+            review_dir = state_root / "reports" / "review"
+            review_dir.mkdir(parents=True, exist_ok=True)
+            (review_dir / "review-findings.json").write_text(
+                json.dumps({"runId": "rev-1", "findings": []}),
+                encoding="utf-8",
+            )
+            old_cwd = os.getcwd()
+            os.chdir(project)
+            try:
+                result = module.evidence_template(
+                    change_dir,
+                    kind="review",
+                    out=".harness/changes/demo/evidence/review-1.json",
+                    evidence_id="review-1",
+                    product_identity="sha256:x",
+                )
+            finally:
+                os.chdir(old_cwd)
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(
+                (change_dir / "evidence" / "review-1.json").is_file(), result
+            )
+            self.assertFalse((change_dir / ".harness").exists())
+
     def test_related_issues_close_with_one_affected_and_review_receipt(self) -> None:
         self.assertTrue(SCRIPT.is_file(), "harness_fixback.py must be implemented")
         module = load_module()

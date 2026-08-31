@@ -1099,6 +1099,9 @@ def _spawn_detached_worker(
     env: dict[str, str],
     output: Any = subprocess.DEVNULL,
 ) -> subprocess.Popen[bytes]:
+    from harness_process import resolve_windows_executable
+
+    argv = resolve_windows_executable(argv)
     kwargs: dict[str, Any] = {
         "cwd": str(cwd),
         "env": env,
@@ -1171,6 +1174,40 @@ def start_run_session(
     working_directory = working_directory.expanduser().resolve()
     if not working_directory.is_dir():
         raise ValueError(f"RUN_SESSION_WORKDIR_MISSING: {working_directory}")
+    # F-2：fixback 会话缺 product-identity 时白跑一轮、register 才拒。批次开着
+    # 就从 baseProductIdentity 自动注入；没有 OPEN 批次则当场拒绝（2026-08-31
+    # demo-datasource 实测）。
+    if verification.startswith("fixback") and not (
+        product_identity and product_identity.strip()
+    ):
+        batches_dir = state_root / "fixback" / "batches"
+        open_identity: str | None = None
+        open_batch_id: str | None = None
+        if batches_dir.is_dir():
+            for batch_file in sorted(batches_dir.glob("*.json")):
+                try:
+                    batch = json.loads(batch_file.read_text(encoding="utf-8-sig"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if (
+                    isinstance(batch, dict)
+                    and batch.get("status") == "OPEN"
+                    and isinstance(batch.get("baseProductIdentity"), str)
+                    and batch["baseProductIdentity"].strip()
+                ):
+                    open_identity = str(batch["baseProductIdentity"]).strip()
+                    open_batch_id = str(batch.get("batchId") or "")
+                    break
+        if open_identity is None:
+            raise ValueError(
+                "FIXBACK_PRODUCT_IDENTITY_REQUIRED: fixback 会话必须有产品身份——"
+                "传 --product-identity，或先启动 fixback 批次（其 baseProductIdentity "
+                "会被自动注入）"
+            )
+        product_identity = open_identity
+        product_identity_source = f"fixback-batch:{open_batch_id}"
+    else:
+        product_identity_source = None
     session_id = session_id or f"run-{uuid.uuid4().hex}"
     run_id = run_id or session_id
     session_root = _run_session_root(state_root, session_id)
@@ -1215,6 +1252,11 @@ def start_run_session(
         "heartbeatSeconds": heartbeat_seconds,
         "expectedDurationSeconds": expected_duration_seconds,
         "productIdentity": product_identity,
+        **(
+            {"productIdentitySource": product_identity_source}
+            if product_identity_source is not None
+            else {}
+        ),
         "resourceLocks": normalized_resource_locks,
         "resourceLockTokens": {},
         "resourceWaitMs": 0,
@@ -1427,8 +1469,12 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
             "wb", buffering=0
         ) as stderr:
             try:
-                from harness_process import spawn_structured_argv
+                from harness_process import (
+                    resolve_windows_executable,
+                    spawn_structured_argv,
+                )
 
+                argv = resolve_windows_executable(argv)
                 spawned = spawn_structured_argv(
                     argv,
                     cwd=Path(str(receipt["workingDirectory"])),

@@ -1282,6 +1282,48 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(emitted[0]["derivedToPhase"], "review")
         self.assertEqual(handoff.call_args.kwargs["to_phase"], "review")
 
+    def test_fixback_close_derives_review_successor_not_review_again(self) -> None:
+        """F-4：fixback 回环的 execute 关门应派生 review 的后继（submit），
+        不是再来一轮 review。"""
+        self._write_checkpoints("approved")
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        emitted: list[dict] = []
+
+        def allowed(_project: object, _change: str, phase: str) -> list[str]:
+            return {
+                "execute": ["review", "execute"],
+                "review": ["submit", "execute"],
+            }[phase]
+
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.hctx, "context_view", return_value={
+                 "ok": True,
+                 "current": {"phase": "execute"},
+                 "transitions": [
+                     {"fromPhase": "execute", "toPhase": "review"},
+                     {"fromPhase": "review", "toPhase": "execute", "trigger": "review-fixback"},
+                 ],
+             }), \
+             mock.patch.object(gate.hctx, "allowed_next_phases", side_effect=allowed), \
+             mock.patch.object(gate.hctx, "close_transition", return_value={
+                 "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
+             }) as handoff, \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
+            code = gate.cmd_close(self._close_args())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(emitted[0]["derivedToPhase"], "submit")
+        self.assertEqual(handoff.call_args.kwargs["to_phase"], "submit")
+
     def test_close_without_to_phase_stays_plain_when_no_context_state(self) -> None:
         """上下文跟踪从未启用（无 current context）时不凭空创建交接状态。"""
         self._write_checkpoints("approved")

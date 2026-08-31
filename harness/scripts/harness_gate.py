@@ -3105,6 +3105,20 @@ def _resume_closed_phase(
             for candidate in hctx.allowed_next_phases(project, change_id, args.phase)
             if hp.resolve_phase_name(candidate) != args.phase
         ]
+        # F-4：续跑路径同样——fixback 回环的 execute 关门应回 review 的后继
+        if args.phase == "execute" and isinstance(transitions, list) and transitions:
+            latest_t = transitions[-1]
+            if (
+                isinstance(latest_t, dict)
+                and hp.resolve_phase_name(latest_t.get("fromPhase")) == "review"
+                and hp.resolve_phase_name(latest_t.get("toPhase")) == "execute"
+                and latest_t.get("trigger") == "review-fixback"
+            ):
+                candidates = [
+                    candidate
+                    for candidate in hctx.allowed_next_phases(project, change_id, "review")
+                    if hp.resolve_phase_name(candidate) != args.phase
+                ]
         if to_phase is None and len(candidates) == 1:
             # 计划后继唯一（排除 fixback 自环）：close 的意图没有歧义，直接补跑 handoff
             to_phase = candidates[0]
@@ -3691,10 +3705,25 @@ def cmd_close(args: argparse.Namespace) -> int:
             and context_view.get("ok")
             and isinstance(context_view.get("current"), dict)
         ):
+            # F-4：fixback 回环（最新交接是 review→execute 且 trigger=
+            # review-fixback）关门时，后继不是再来一轮 review，而是 review
+            # 当时的计划后继（submit）。不按此处理会把 transitions 链写成
+            # …→review→execute→review 的语义错乱（2026-08-31 实测）。
+            source_phase = args.phase
+            transitions = context_view.get("transitions") or []
+            if args.phase == "execute" and transitions:
+                latest = transitions[-1]
+                if (
+                    isinstance(latest, dict)
+                    and hp.resolve_phase_name(latest.get("fromPhase")) == "review"
+                    and hp.resolve_phase_name(latest.get("toPhase")) == "execute"
+                    and latest.get("trigger") == "review-fixback"
+                ):
+                    source_phase = "review"
             forward = [
                 candidate
                 for candidate in hctx.allowed_next_phases(
-                    project, str(resolved["changeId"]), args.phase
+                    project, str(resolved["changeId"]), source_phase
                 )
                 if hp.resolve_phase_name(candidate) != args.phase
             ]

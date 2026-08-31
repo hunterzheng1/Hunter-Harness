@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -944,6 +945,23 @@ def capture_owned_members(spawned: SpawnedProcess) -> dict[str, Any] | None:
         proof["members"] = members
         proof["membersComplete"] = True
     return proof
+
+
+def resolve_windows_executable(argv: Sequence[str]) -> list[str]:
+    """Windows 无扩展名命令解析为实际可执行文件（F-1）。
+
+    CreateProcess 不走 shell，`mvn`/`npm` 这类 .cmd 包装会报 WinError 2；
+    shutil.which 遵循 PATHEXT 能找到 mvn.cmd。POSIX 或未命中时原样返回。
+    """
+    if os.name != "nt" or not argv:
+        return list(argv)
+    head = argv[0]
+    if not isinstance(head, str) or not head or os.path.splitext(head)[1]:
+        return list(argv)
+    resolved = shutil.which(head)
+    if resolved is None:
+        return list(argv)
+    return [resolved, *argv[1:]]
 
 
 def spawn_structured_argv(
