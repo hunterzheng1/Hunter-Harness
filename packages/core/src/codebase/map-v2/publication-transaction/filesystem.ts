@@ -12,7 +12,7 @@ import {
   realpath,
   writeFile
 } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, basename, join, relative, resolve, sep } from "node:path";
 
 import { CODEBASE_MAP_PUBLICATION_TARGETS } from "../types.js";
 import { contentHash, stableHash, stableJson } from "../stable.js";
@@ -192,11 +192,23 @@ function equivalentPath(left: string, right: string): boolean {
   return process.platform === "win32" ? lhs.toLowerCase() === rhs.toLowerCase() : lhs === rhs;
 }
 
+/** realpath 等价检查：容忍**祖先**路径别名化（Windows CI 的 8.3 短名、
+ *  macOS /tmp→/private/tmp、CI TMPDIR 软链），只要求最终组件自身不被重定向——
+ *  最终组件的 symlink/junction 已由调用点的 lstat isSymbolicLink 拦截。
+ *  祖先别名两侧经同一 realpath 解析，写入物理位置一致，不削弱安全性。 */
+async function realpathEquivalent(path: string): Promise<boolean> {
+  const real = await realpath(path);
+  if (equivalentPath(real, path)) return true;
+  const resolved = resolve(path);
+  const parentReal = await realpath(resolve(resolved, ".."));
+  return equivalentPath(real, join(parentReal, basename(resolved)));
+}
+
 async function safeDirectory(path: string, create = false): Promise<void> {
   try {
     const stat = await lstat(path);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("MAP_PUBLICATION_FILESYSTEM_UNSAFE_ROOT");
-    if (!equivalentPath(await realpath(path), path)) throw new Error("MAP_PUBLICATION_FILESYSTEM_UNSAFE_ROOT");
+    if (!(await realpathEquivalent(path))) throw new Error("MAP_PUBLICATION_FILESYSTEM_UNSAFE_ROOT");
     return;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw error;
@@ -206,7 +218,7 @@ async function safeDirectory(path: string, create = false): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   const stat = await lstat(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || !equivalentPath(await realpath(path), path)) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !(await realpathEquivalent(path))) {
     throw new Error("MAP_PUBLICATION_FILESYSTEM_UNSAFE_ROOT");
   }
 }
@@ -230,7 +242,7 @@ async function safeFile(path: string): Promise<void> {
   try {
     const stat = await lstat(path);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe file");
-    if (!equivalentPath(await realpath(path), path)) throw new Error("unsafe file");
+    if (!(await realpathEquivalent(path))) throw new Error("unsafe file");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;

@@ -555,10 +555,12 @@ describe("hunter-harness initialization", () => {
     ]);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    for (const supportFile of ["SKILL.md", "protocols.md", "reference.md", "checklist.md"]) {
+    // harness-run/harness-test 已于 0.4.9 移除（harness-execute 是唯一执行 skill）；
+    // 断言 execute 的支撑文件而不是已删除的别名
+    for (const supportFile of ["SKILL.md", "protocols.md", "coding-reference.md", "coding-checklist.md"]) {
       expect(
-        await pathExists(join(root, ".agents", "skills", "harness-run", supportFile)),
-        `Codex harness-run must install ${supportFile}`
+        await pathExists(join(root, ".agents", "skills", "harness-execute", supportFile)),
+        `Codex harness-execute must install ${supportFile}`
       ).toBe(true);
     }
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);

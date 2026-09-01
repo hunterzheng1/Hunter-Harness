@@ -298,6 +298,26 @@ describe("Map publication filesystem adapter", () => {
     expect(await exists(join(outside, "codebase"))).toBe(false);
   });
 
+  it("tolerates ancestor path aliasing (CI 8.3 短名/TMPDIR 软链) while still publishing to the real root", async () => {
+    // realpath 等价检查只盯最终组件：祖先被 junction/软链别名化是环境常态
+    //（Windows CI 的 RUNNER~1 短名、macOS /tmp→/private/tmp），不是攻击面
+    const realBase = await mkdtemp(join(tmpdir(), "hunter-map-alias-real-"));
+    const projectDir = join(realBase, "proj");
+    await mkdir(projectDir, { recursive: true });
+    const aliasBase = join(tmpdir(), `hunter-map-alias-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+    try { await symlink(realBase, aliasBase, "junction"); }
+    catch { await rm(realBase, { recursive: true, force: true }); return; }
+    roots.push(realBase, aliasBase);
+    const port = createMapPublicationFilesystemTransactionPort({
+      project_root: join(aliasBase, "proj"),
+      project_identity: "filesystem-test"
+    });
+    const module = createMapPublicationTransaction(port);
+    const result = await module.commitPublication(requestWith({ operation_id: "map_operation:alias" }));
+    expect(result.outcome).toBe("committed");
+    expect(await exists(join(projectDir, ".harness", "codebase", "map-manifest.json"))).toBe(true);
+  });
+
   it("rejects a restart with a different project identity", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-map-fs-"));
     roots.push(root);
