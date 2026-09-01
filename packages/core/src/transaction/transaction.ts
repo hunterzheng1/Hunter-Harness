@@ -253,15 +253,12 @@ function inventoriesEqual(
 // 重放）或 rollback（before 快照还原），语义与逐操作写完全等价。
 const JOURNAL_CHECKPOINT_INTERVAL = 16;
 
-// 持久镜像（durable recovery store）的同步节奏。项目内 journal.json 是权威
-// 逐操作检查点（crash 后首先读它），durable 镜像只是第二副本：仅当项目事务目录
-// 丢失时才被读取（locateRecovery 优先 source=project）。镜像滞后若干操作是安全的——
-// resume 会从镜像记录的 applied_count 开始用 staged 重放（幂等），rollback 用
-// before 快照还原；staged 与 before 在 prepareDurableRecovery 已全量镜像。
-// 每次 sync 都是整份 journal 的原子重写（O(n) 序列化 + 三次落盘），逐操作同步
-// 使多操作事务（如 --agents all 一次 500+ 文件）退化为 O(n^2)。此处按批同步，
-// 在恢复语义不变的前提下把镜像开销降到 O(n^2 / BATCH)。
-const DURABLE_SYNC_INTERVAL = 16;
+// 持久镜像（durable recovery store）与权威 journal 共用同一检查点节奏
+// （JOURNAL_CHECKPOINT_INTERVAL）。项目内 journal.json 是权威逐操作检查点
+// （crash 后首先读它），durable 镜像只是第二副本：仅当项目事务目录丢失时才被
+// 读取（locateRecovery 优先 source=project）。镜像滞后若干操作是安全的——resume
+// 会从镜像记录的 applied_count 开始用 staged 重放（幂等），rollback 用 before
+// 快照还原；staged 与 before 在 prepareDurableRecovery 已全量镜像。
 
 export async function writeTransactionJournal(
   transactionRoot: string,
@@ -987,7 +984,7 @@ export async function runTransaction(
         if (checkpointDue) {
           await writeTransactionJournal(trustedTransactionRoot, journal);
         }
-        // durable 镜像与权威检查点同批同步（见 DURABLE_SYNC_INTERVAL 注释）：
+        // durable 镜像与权威检查点同批同步（见 JOURNAL_CHECKPOINT_INTERVAL 注释）：
         // 镜像仅项目事务目录丢失时读取，滞后由 resume/rollback 语义兜底。
         if (recoveryStore !== undefined && checkpointDue) {
           await syncDurableRecovery(projectRoot, journal, recoveryStore);

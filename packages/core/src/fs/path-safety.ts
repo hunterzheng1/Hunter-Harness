@@ -2,7 +2,6 @@ import { lstat } from "node:fs/promises";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const WINDOWS_ILLEGAL = /[<>:"|?*]/;
-const WINDOWS_CONTROL = /[\u0000-\u001F]/;
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
 const MAX_MANAGED_PATH = 240;
 
@@ -14,7 +13,13 @@ export class UnsafePathError extends Error {
 }
 
 function hasIllegalWindowsCharacter(segment: string): boolean {
-  return WINDOWS_ILLEGAL.test(segment) || WINDOWS_CONTROL.test(segment);
+  if (WINDOWS_ILLEGAL.test(segment)) return true;
+  // 控制字符（U+0000..U+001F）：逐码点扫描，避免 no-control-regex 违例的
+  // 正则字面量，同时零分配。
+  for (let index = 0; index < segment.length; index += 1) {
+    if (segment.charCodeAt(index) <= 31) return true;
+  }
+  return false;
 }
 
 export function normalizeManagedPath(input: string): string {
