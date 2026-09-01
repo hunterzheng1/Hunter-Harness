@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.16] — workflow-harness
+
+> harness 摩擦收口轮（CLI 无代码变更，不发 hunter-harness）：SKILL.md 文档坑
+> 修复（--change-dir 路径写法实现兼容）、归档快照缺失错误带 recovery 命令、
+> ledger NOT_RUN 错误信息直说 DEGRADED 要求、knowledge-ingest 描述对齐实现。
+> workflow-harness 0.4.15 → 0.4.16，bundle 0.2.75 → 0.2.76。
+
+### Fixed
+
+- **change_dir_for_id 兼容路径写法**：多个 SKILL.md 教 `--change-dir
+  ".harness/changes/<cn>"` 而实现只接受裸 id，按文档传参必报
+  CHANGE_NOT_FOUND（agent 照文档执行必卡，2026-09 dogfood 实测）。现在裸 id /
+  `.harness/changes/<cn>` / 反斜杠 / 尾斜杠均可解析。
+- **ARCHIVE_BOUNDARY_SNAPSHOT_MISSING 补 recovery 命令**：直接给出
+  `harness_state.py capture` 命令（含 --base 补录提示）。
+- **ledger NOT_RUN 错误信息直说**：`status=NOT_RUN requires evidence starting
+  with 'DEGRADED: <reason>'`——此前提示 `missing: [status=NOT_RUN]` 而条目
+  状态明明就是 NOT_RUN。
+- **knowledge-ingest SKILL.md 描述对齐**：客户端归档时生成
+  candidates/knowledge.json 候选清单（此前描述称"客户端不得生成候选条目"
+  与归档实现矛盾）。
+
 ## [0.4.15] — hunter-harness + workflow-harness
 
 > 知识链路与隔离位置修复轮：知识候选补 Goal 抽取（变更意图可被自然语言检索）、
