@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.4.14] — hunter-harness
+
+> 架构与测试优化轮：事务双检查点按批落盘、安装/刷新路径并行 I/O、5 份 stable/hash
+> 重复实现收敛。`npm test` vitest 墙钟 176.8s → 128.2s（-27.5%），2244 用例全绿，
+> 一个用例未删、断言未动；`--agents all` 五 Agent 安装 14.5s → ~5.2s。
+> CLI 0.4.13 → 0.4.14（patch，无破坏性变更、无新命令、无 harness bundle 变更，
+> workflow-harness 保持 0.4.14 / bundle 0.2.74 / minimumCliVersion 0.4.13）。
+
+### Performance — 事务检查点按批落盘 + 并行 I/O + 重复实现收敛
+
+- **事务双检查点从逐操作整份重写改为每 16 操作 + 收尾一次**：durable recovery 镜像与
+  权威 journal（journal.json + status.json）此前每个操作都做 O(n) 序列化 + 多次原子落盘，
+  大事务（`--agents all` 一次 500+ 文件、大 update 制品）退化为 O(n²)。恢复语义不变：
+  每次检查点仍是完整一致快照，crash 后 resume 从检查点用 staged 幂等重放、rollback 用
+  before 快照还原；中断注入/失败/提交路径仍写精确状态。
+- **Agent Bundle 加载与盘上哈希校验并行化**：refresh/initialize/context-index 的多
+  Agent 加载（每个 ~700 文件 + 逐文件 sha256 校验）与 per-file 验证循环改为 Promise.all
+  并行（纯读、顺序保持），磁盘时延不再逐文件叠加。
+- **5 份 stable/hash 重复实现收敛**到 `packages/core/src/fs/stable.ts`：
+  archive-engine / archive-package-builder / codebase/map-v2（canonical JSON 模式）、
+  instruction-governance（raw 字符串拼接，不过滤 undefined）、archive-outbox/local-authority
+  （strict，拒绝 undefined/非有限数）各自保留历史语义并转为兼容转发层；差分测试验证与旧
+  实现逐字节一致，消除同一对象在不同子系统得到不同持久化哈希的隐患。
+- **fs/path-safety 微优化**：正则等价替换逐字符 `Array.from` 与逐路径 `win32.isAbsolute`。
+- **实测**：`npm test` vitest 墙钟 176.8s → 128.2s（-27.5%），tests 合计 281s → 184s
+  （-34.5%），2244 用例全绿；五 Agent 全量安装 14.5s → ~5.2s；init.test.ts 32 用例
+  76.9s、refresh-cli.test.ts 25.9s（CI 全矩阵同受益）。maxWorkers 维持 2（4 无收益，
+  I/O 绑定）。
+
 ## [0.4.13] — hunter-harness + workflow-harness
 
 > Plan 阶段编排收口与诊断修复：实测一次 plan 从 bootstrap 到 close 53 分钟中约 23 分钟
@@ -2252,52 +2281,3 @@ efresh --force-managed 无 --yes/--confirmed 时 fail-closed（FORCE_MANAGED_REQ
 - 项目级 Harness 安装支持 Claude Code、Codex、Cursor 与 CodeBuddy 的任意组合，并提供 `--agents` 与 `--codebuddy-surface` 参数。
 - 离线资源改为 2 profile × 4 Agent Bundle 矩阵；刷新支持安全 Agent 集合切换、v3 installed state 与 legacy Claude-only 迁移。
 - Push/update 文件策略覆盖四种 Agent 的 working copy、规则与 CodeBuddy managed block。
-
-## [Unreleased]
-
-### Breaking Changes
-
-- **移除 canonical Skill IR 数据模型与编译链**：删除 `SkillIr` schema 与 `compileSkill`/`findSkillIr`/`mergeSkillIr`/`normalizeSkillIr`/adapters 等编译链。skill 源文件（`sourceFiles`，含 `SKILL.md` entry）成为唯一源；安装 = 上传的原生文件夹（"上传什么 → 存什么 → 装什么"）。
-  - `packages/contracts`：删 `skill-ir.ts`；`registrySkillSummarySchema`/`DetailSchema`/`VersionSchema` 去 `ir`（保留 `ir?: unknown` legacy 容忍）；新增 `skillFrontmatterSchema`（`.passthrough()` 容忍额外字段，避免合法 SKILL.md 被拒）；summary 新增 `kind` 字段（从 frontmatter 反范式化）。
-  - `packages/core`：删 `skill-ir/{compiler,adapters/*,overlay,normalize,extract,bundle}.ts`；新增 `skill/{frontmatter,meta,errors,checker,fixer}.ts`；`initializeProject` 改复制 `resources/skills/<name>/` + 写 `source_hash`（取代 `source_ir_hash`）。
-  - `apps/server`：`store.ts` 18 处 IR 调用重写为 sourceFiles 驱动；`buildArtifactFor` zip 全部 sourceFiles + manifest `source_sha256`（取代 `source_ir_sha256`）+ `target_path` 文件夹根；dashboard `kind` 从 frontmatter 反范式化。
-  - `apps/web`：catalog/mock-api/组件去 ir，改 sourceFiles 模型；fix degraded UX 展示（buildFixPatch 返回 degraded 项时明确提示"建议手动改"）。
-  - `packages/cli`：`init` 复制 `resources/skills/`（仅 claude-code adapter，cursor/codex 暂抛错）；managed block `source_ir_hash` → `source_hash`。
-  - `packages/skill-cli`：install 解 folder zip 保留目录结构（修复多文件 skill 安装丢失 references/scripts 痛点）；manifest 兼容 `source_sha256`（新）与 `source_ir_sha256`（旧 zip）。
-  - `resources`：12 个 `bootstrap-ir/skills/*.yaml` → `resources/skills/<name>/SKILL.md` 文件夹模型；删 `resources/bootstrap-ir/`。
-
-### Behavior Changes
-
-- **cli init 仅支持 claude-code adapter**：source-file 模型下，cursor/codex 等 adapter 的 `.mdc` 编译能力随 `compileSkill` 移除，init 抛 "adapter not yet supported"（仅 claude-code 复制 SKILL.md）。
-- **dashboard skill 分类分布**：`kind` 从 SKILL.md frontmatter 反范式化到 detail（取代旧 `ir.kind`），新 skill 分类按真实 `kind`。
-- **上传 SKILL.md-only 文件夹不再 422**：修复原痛点（旧 `findSkillIr` 只认 skill.yaml，SKILL.md 被拒）。
-
-### Fixed
-
-- 上传普通 Claude Code Skill 文件夹（仅 SKILL.md）被 422 拒绝（`SKILL_VALIDATION_FAILED / no canonical Skill IR file found`）。
-- 多文件 skill（references/scripts）安装丢失：旧 `buildArtifactFor` zip 只含 2 文件（编译 SKILL.md + manifest），references/scripts 不进制品。
-
-### Performance — 事务检查点按批落盘 + 并行 I/O + 重复实现收敛
-
-- **事务双检查点从逐操作整份重写改为每 16 操作 + 收尾一次**：durable recovery 镜像与
-  权威 journal（journal.json + status.json）此前每个操作都做 O(n) 序列化 + 多次原子落盘，
-  大事务（`--agents all` 一次 500+ 文件、大 update 制品）退化为 O(n²)。恢复语义不变：
-  每次检查点仍是完整一致快照，crash 后 resume 从检查点用 staged 幂等重放、rollback 用
-  before 快照还原；中断注入/失败/提交路径仍写精确状态。
-- **Agent Bundle 加载与盘上哈希校验并行化**：refresh/initialize/context-index 的多
-  Agent 加载（每个 ~700 文件 + 逐文件 sha256 校验）与 per-file 验证循环改为 Promise.all
-  并行（纯读、顺序保持），磁盘时延不再逐文件叠加。
-- **5 份 stable/hash 重复实现收敛**到 `packages/core/src/fs/stable.ts`：
-  archive-engine / archive-package-builder / codebase/map-v2（canonical JSON 模式）、
-  instruction-governance（raw 字符串拼接，不过滤 undefined）、archive-outbox/local-authority
-  （strict，拒绝 undefined/非有限数）各自保留历史语义并转为兼容转发层；差分测试验证与旧
-  实现逐字节一致，消除同一对象在不同子系统得到不同持久化哈希的隐患。
-- **fs/path-safety 微优化**：正则等价替换逐字符 `Array.from` 与逐路径 `win32.isAbsolute`。
-- **实测**：`npm test` vitest 墙钟 176.8s → 132.5s（-25%），tests 合计 281s → 194s
-  （-31%），2244 用例全绿；五 Agent 全量安装 14.5s → ~5.2s；init.test.ts 32 用例
-  76.9s、refresh-cli.test.ts 25.9s（CI 全矩阵同受益）。maxWorkers 维持 2（4 无收益，
-  I/O 绑定）。
-
-### Known Issues
-
-- 🟡 `harness-skill-optimizer` skill 文案仍提及 "Skill IR"（按原 YAML 逐字迁移，保证 INT-002b 语义完整性）；IR 已移除，skill 内容待后续更新为 source-file 模型语义。
