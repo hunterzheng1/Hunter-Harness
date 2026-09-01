@@ -64,15 +64,23 @@
 
 （随迭代更新）
 
+- 2026-09-01 本轮已落地（分支 autoresearch/optimize-arch-tests-2026-09-01）：
+  1. **事务双检查点按批落盘**（最大头）：durable 镜像（syncDurableRecovery）与
+     权威 journal（writeTransactionJournal）都从逐操作整份重写（O(n^2)）改为每
+     16 操作 + 收尾/中断/失败/提交路径写精确状态。恢复语义不变（resume 幂等重放 / rollback 快照还原）。
+     `--agents all` 五 Agent 安装 14.5s → ~5.2s；init.test.ts 32 用例 76.9s；
+     refresh-cli 25.9s。
+  2. **Agent Bundle 并行加载**：refresh/initialize/context-index 的 per-agent
+     加载与盘上校验 Promise.all 化（模块级 bundle 缓存复用，顺序保持）。
+  3. **fs/path-safety 微优化**：正则等价替换 Array.from 逐字符 + win32.isAbsolute。
+  4. **5 份 stable/hash 重复实现收敛**到 packages/core/src/fs/stable.ts
+     （canonical / raw / strict 三模式 + 兼容转发层，差分测试验证逐字节一致）。
+  5. **per-file 盘上哈希校验并行化**（refresh/initialize）；update.test.ts
+     seedBaseline 并行写入（测试侧）。
+  实测：vitest Duration 176.8s → ~129-130s（tests_sum 281 → ~189s），2244 用例全绿。
 - 2026-08 历史：recovery store 堆积导致 init/refresh 测试极慢（已修，readIndex
   有界化 + 测试隔离）；CI_ONLY 两文件本地跳过；CLI 种子初始化（一次部署+目录拷贝）；
-  mini bundle 改造。全量 TS 从 36 分钟 → ~6 分钟 → 当前 vitest 176s。
-- 当前基线（2026-09-01, commit 前）：165 文件 / 2244 用例全绿，vitest Duration
-  176.07s（transform 7.84s, import 48.57s, tests 281.40s, maxWorkers=2）。
-- 已确认：core barrel 冷 import 1.4s / bin.ts 1.75s，profile 显示 90% 为
-  磁盘 I/O 读模块（vitest module runner 逐文件 transform），非 CPU。
-- 已确认：seeded-init 的目录拷贝 700 文件/10MB × 12 次 ≈ 5s；push.test.ts
-  单用例 `--agents all` 独占 14.4s；migration/rules-review/update 各 15-23s。
-- 已确认：core/src 有 5 份 stable 工具（archive-engine、archive-package-builder、
-  codebase/map-v2、instruction-governance、archive-outbox/local-authority），
-  undefined 键过滤与 NaN 处理语义各不相同。
+  mini bundle 改造。全量 TS 从 36 分钟 → 当前 ~2.2 分钟。
+- 已确认并保留：maxWorkers=4 无收益（I/O 绑定，140s 与 2 workers 相当），维持 2。
+- 已知安全边界：事务协议（逐操作权威检查点 / completed_target_states / staged 幂等
+  重放）不可再压缩；installStaged 的 copy 必须保留（staged 是 pending 操作的恢复源）。
