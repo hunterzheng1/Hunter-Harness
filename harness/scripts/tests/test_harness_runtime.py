@@ -738,7 +738,7 @@ class QuarantineReachabilityTests(unittest.TestCase):
     `python -c` + sys.path hack，因为这个必经步骤没有子命令。
     """
 
-    def test_default_private_root_lands_on_the_source_drive(self) -> None:
+    def test_private_root_defaults_to_home_and_honors_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "proj" / ".harness" / "changes" / "demo" / "x.txt"
             source.parent.mkdir(parents=True)
@@ -746,21 +746,43 @@ class QuarantineReachabilityTests(unittest.TestCase):
 
             root = runtime.private_evidence_root_for(source)
 
-            # 跨盘 os.replace 会失败，默认根必须与源同盘
-            self.assertEqual(root.drive.lower(), Path(tmp).resolve().drive.lower())
-
-    @unittest.skipUnless(os.name == "nt", "跨盘概念仅 Windows 适用")
-    def test_other_drive_preference_falls_back_to_the_source_drive(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "x.txt"
-            source.write_text("token=blocked", encoding="utf-8")
-            other_drive = "Z:" if Path(tmp).resolve().drive.upper() != "Z:" else "Y:"
-
-            root = runtime.private_evidence_root_for(
-                source, Path(f"{other_drive}/nowhere/private-evidence")
+            # 默认根恒为 ~/.harness/private-evidence：跨卷由 _transfer_evidence
+            # copy+unlink 处理，不再退到源驱动器根（2026-09 起盘根回退已移除）。
+            self.assertEqual(
+                root,
+                (Path.home() / ".harness" / "private-evidence").resolve(),
             )
 
-            self.assertEqual(root.drive.lower(), Path(tmp).resolve().drive.lower())
+            explicit = runtime.private_evidence_root_for(
+                source, Path(tmp) / "elsewhere" / "private-evidence"
+            )
+            self.assertEqual(explicit, (Path(tmp) / "elsewhere" / "private-evidence").resolve())
+
+    @unittest.skipUnless(os.name == "nt", "跨盘概念仅 Windows 适用")
+    def test_cross_drive_quarantine_transfers_via_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # 模拟源在其它盘：把默认根固定到 tmp（与源同盘），再显式传一个
+            # 跨盘私有根，验证 _transfer_evidence 走 copy+unlink 而非 os.replace。
+            project = Path(tmp) / "proj"
+            change_root = project / ".harness" / "changes" / "demo"
+            source = change_root / "meta" / "journal.json"
+            source.parent.mkdir(parents=True)
+            source.write_text("token=blocked", encoding="utf-8")
+
+            other_drive = "Z:" if Path(tmp).resolve().drive.upper() != "Z:" else "Y:"
+            private = Path(other_drive) / "hunter-quarantine-test" / "private-evidence"
+            result = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=change_root,
+                private_root=private,
+                project_root=project,
+            )
+            # 本机不一定有 Z: 盘，跨盘 copy 会失败——失败必须 fail-closed（源保留）。
+            if not result["ok"]:
+                self.assertTrue(source.is_file(), "fail-closed: source must remain")
+                return
+            self.assertFalse(source.exists())
+            self.assertTrue(Path(result["privatePath"]).is_file())
 
     def test_private_root_inside_project_root_is_rejected_up_front(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

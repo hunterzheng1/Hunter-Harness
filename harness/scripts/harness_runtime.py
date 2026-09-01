@@ -178,19 +178,35 @@ def _private_evidence_root(explicit: Path | None = None) -> Path:
 
 
 def private_evidence_root_for(source: Path, explicit: Path | None = None) -> Path:
-    """私有隔离根：必须与源同一驱动器。
+    """私有隔离根：显式/配置根优先，缺省落 `~/.harness/private-evidence`。
 
-    `os.replace` 跨驱动器会直接失败（Windows 上是 WinError 17）。默认根
-    `~/.harness/private-evidence` 在 Windows 落 C 盘，项目在别的盘时隔离必然失败
-    ——而隔离是归档的硬前置，等于整条归档路被堵死。同盘时沿用配置/默认值；不同盘
-    时退到源所在驱动器根下的 `.harness-private-evidence`（天然在任何项目根之外）。
-    POSIX 上 drive 恒为空串，行为不变。
+    历史上要求与源同盘（os.replace 跨卷在 Windows 报 WinError 17），跨盘时退到
+    源所在驱动器根下的 `.harness-private-evidence`——但盘根在 Windows 是坏位置：
+    污染盘根、可能权限受限、且不"私密"（裸眼可见，2026-09 实测 E:\ 根下出现
+    `.harness-private-evidence` 目录）。`_transfer_evidence` 已支持跨卷（copy+
+    unlink），同盘约束不再成立，这里统一返回配置/默认根，不再回退盘根。
     """
-    source = source.expanduser().resolve()
-    preferred = _private_evidence_root(explicit)
-    if preferred.drive.lower() == source.drive.lower():
-        return preferred
-    return (Path(source.anchor) / ".harness-private-evidence").resolve()
+    return _private_evidence_root(explicit)
+
+
+def _transfer_evidence(source: Path, target: Path) -> None:
+    """同卷原子移动；跨卷时 copy+unlink（os.replace 跨卷在 Windows 抛 WinError 17）。
+
+    copy 后立即校验目标哈希，失败路径会把目标删掉（源在 copy 模式未被移除，
+    或在同卷模式已移走——恢复统一由 `_restore_evidence` 处理）。
+    """
+    if source.drive.lower() == target.drive.lower():
+        os.replace(source, target)
+    else:
+        shutil.copy2(source, target)
+        os.unlink(source)
+
+
+def _restore_evidence(source: Path, target: Path) -> None:
+    """把隔离文件放回原处（同卷 os.replace 或跨卷 copy），并清理目标。"""
+    if target.exists():
+        shutil.copy2(target, source)
+        target.unlink()
 
 
 def _infer_project_root(change_root: Path) -> Path | None:
@@ -473,13 +489,13 @@ def quarantine_sensitive_evidence(
         quarantine_dir.mkdir(parents=True, exist_ok=False)
         acl_dir = _secure_private_path(quarantine_dir, directory=True)
         target = quarantine_dir / "payload.bin"
-        os.replace(source, target)
+        _transfer_evidence(source, target)
         acl_file = _secure_private_path(target, directory=False)
         if os.name == "nt" and (
             acl_dir != "WINDOWS_CURRENT_USER_ONLY"
             or acl_file != "WINDOWS_CURRENT_USER_ONLY"
         ):
-            os.replace(target, source)
+            _restore_evidence(source, target)
             shutil.rmtree(quarantine_dir, ignore_errors=True)
             return {
                 "ok": False,
@@ -488,7 +504,7 @@ def quarantine_sensitive_evidence(
             }
         moved_digest = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
         if moved_digest != raw_digest:
-            os.replace(target, source)
+            _restore_evidence(source, target)
             shutil.rmtree(quarantine_dir, ignore_errors=True)
             return {
                 "ok": False,
@@ -526,7 +542,7 @@ def quarantine_sensitive_evidence(
             )
         except BaseException as exc:
             try:
-                os.replace(target, source)
+                _restore_evidence(source, target)
             except OSError:
                 pass
             shutil.rmtree(quarantine_dir, ignore_errors=True)
@@ -544,8 +560,8 @@ def quarantine_sensitive_evidence(
             "receipt": receipt,
         }
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        # No copy is retained on failure.  If os.replace crossed filesystems it
-        # fails before removing the source, which is the required fail-closed path.
+        # No copy is retained on failure.  `_transfer_evidence` 跨卷时先 copy 后
+        # unlink；copy 失败不会动源文件（fail-closed），unlink 失败由上层恢复路径兜底。
         return {
             "ok": False,
             "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
