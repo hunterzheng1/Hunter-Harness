@@ -34,6 +34,12 @@
   `findings[]`（按 finding_id 去重，含 `message_zh`/`suggested_location`）+ 逐层 status，
   `stage` 定位 layer2/layer3；`code` 保持 `PLAN_FINALIZATION_QUALITY_INVALID` 兼容。
 
+### Fixed — `--change-dir` 的 projectRoot 解析（POSIX）
+
+- 显式 `--change-dir` 时 projectRoot 此前由 split+join 推导，POSIX 上前导斜杠被 filter 掉，
+  `"/tmp/..."` 变成相对路径 `"tmp/..."`，发布物落到进程 cwd 下——改用三层 `dirname`，
+  Windows/POSIX 都保持绝对性（同时修复 CI Linux 上 HP-10 与 publish e2e 的假 ENOENT）。
+
 ### Fixed — approval goal/user_visible_outcome 与 intent 归一（HP-16）
 
 - `approval.content.goal/user_visible_outcome` 可整项省略、从 intent 继承（warnings 标

@@ -1,5 +1,5 @@
 import { readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 
 import {
@@ -97,7 +97,9 @@ export async function runPlanFinalize(
           message: "--change-dir 必须解析为 <projectRoot>/.harness/changes/<change_key> 且与输入 change_key 一致"
         }));
       }
-      projectRoot = parts.slice(0, keyIndex - 2).join("/");
+      // POSIX 修复：split+join 会丢前导斜杠（"" 段被 filter 掉后 "tmp/..." 变成相对路径，
+      // 发布物落到进程 cwd 下——Linux CI 的 HP-10/publish 假 ENOENT 根因）。用 dirname 保持绝对性。
+      projectRoot = dirname(dirname(dirname(resolved)));
       changeDir = resolved;
     }
     const context = {
