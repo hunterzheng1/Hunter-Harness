@@ -502,7 +502,23 @@ function errorFromResponse(value: unknown, fallback: string): RemoteSyncError {
       // REMOTE_UNAVAILABLE. The fallback code drives retry/exit semantics; the
       // serverCode is diagnostic only.
       if (typeof code === "string" && code.length > 0) {
-        return new RemoteSyncError(fallback as never, false, code);
+        // 附上服务端 details（如 PROJECT_KEY_SCOPE 的 required_scope），让用户
+        // 知道该补哪个权限，而不是只看到裸错误码（2026-09 真实环境自测：connect
+        // 后 pull 报 PROJECT_KEY_SCOPE，但没说缺 files:read/files:write，只能试错）。
+        const details = (error as { details?: unknown }).details;
+        const detailText = details !== null && typeof details === "object" &&
+          !Array.isArray(details)
+          ? Object.entries(details as Record<string, unknown>)
+              .filter(([, value]) => value !== undefined)
+              .map(([key, value]) =>
+                `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+              .join(",")
+          : "";
+        return new RemoteSyncError(
+          fallback as never,
+          false,
+          detailText.length > 0 ? `${code} (${detailText})` : code
+        );
       }
     }
   }
