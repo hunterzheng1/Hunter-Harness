@@ -117,3 +117,4 @@ docs/*
 
 # local exact-tarball lock dirs
 release-lock-*/
+.release-artifacts-*/
