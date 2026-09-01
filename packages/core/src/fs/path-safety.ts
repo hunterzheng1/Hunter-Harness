@@ -1,8 +1,9 @@
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
-
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const WINDOWS_ILLEGAL = /[<>:"|?*]/;
+const WINDOWS_CONTROL = /[\u0000-\u001F]/;
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
 const MAX_MANAGED_PATH = 240;
 
 export class UnsafePathError extends Error {
@@ -13,15 +14,18 @@ export class UnsafePathError extends Error {
 }
 
 function hasIllegalWindowsCharacter(segment: string): boolean {
-  return WINDOWS_ILLEGAL.test(segment) ||
-    Array.from(segment).some((character) => character.charCodeAt(0) <= 31);
+  return WINDOWS_ILLEGAL.test(segment) || WINDOWS_CONTROL.test(segment);
 }
 
 export function normalizeManagedPath(input: string): string {
   if (input.length === 0 || input.length > MAX_MANAGED_PATH) {
     throw new UnsafePathError("path is empty or exceeds the managed path limit");
   }
-  if (input.includes("\\") || isAbsolute(input) || win32.isAbsolute(input)) {
+  // isAbsolute() 只认识 POSIX 根；Windows 盘符绝对路径（C:/…）在 win32 下
+  // isAbsolute() 也为 true，但同一输入在其它平台会漏检，故这里补正则等价判断。
+  // win32.isAbsolute 内部做完整 win32 解析，逐路径调用开销大，且其返回值与
+  // 此正则在该输入域内完全一致。
+  if (input.includes("\\") || isAbsolute(input) || WINDOWS_ABSOLUTE.test(input)) {
     throw new UnsafePathError("absolute paths and backslashes are not allowed");
   }
 

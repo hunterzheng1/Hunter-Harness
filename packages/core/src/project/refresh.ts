@@ -565,10 +565,16 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const codebuddySurface = options.codebuddySurface ?? "both";
   const owned: OwnedTarget[] = [];
   const manifests: InstalledBundleStateV4["manifests"] = [];
-  for (const agent of agents) {
+  // 并行加载各 Agent Bundle：同一 Bundle 在进程内由模块级缓存复用，
+  // 多 Agent 的磁盘读（每个 ~718 文件 + 逐文件 sha256 校验）互不依赖，
+  // 串行会放大 Windows 上的 I/O 时延（实测 --agents all 加载占大头）。
+  const loadedAgents = await Promise.all(agents.map(async (agent) => {
     const agentProfile = profiles.get(agent) ?? profile;
     profiles.set(agent, agentProfile);
     const bundle = await loadAgentBundle(options.resourcesRoot, agentProfile, agent);
+    return { agent, agentProfile, bundle };
+  }));
+  for (const { agent, agentProfile, bundle } of loadedAgents) {
     manifests.push({
       adapter: agent,
       profile: agentProfile,

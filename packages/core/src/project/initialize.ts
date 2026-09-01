@@ -278,11 +278,16 @@ export async function initializeProject(
   let primaryBundleHash = "";
   let primaryRegistryVersion = "";
 
-  for (const agent of enabledAgents) {
+  // 并行加载各 Agent Bundle（同一 Bundle 由模块级缓存复用，磁盘读互不依赖）；
+  // 串行加载在多 Agent 下会叠加 Windows I/O 时延。
+  const loadedAgents = await Promise.all(enabledAgents.map(async (agent) => {
     const bundle = await loadAgentBundle(options.resourcesRoot, profile, agent);
     const adapter = getAdapter(agent);
     const targets = managedTargetsFor(adapter, bundle, adapterContext);
     const bundleHash = sha256Bytes(canonicalJson(bundle.manifest.files));
+    return { agent, bundle, adapter, targets, bundleHash };
+  }));
+  for (const { agent, bundle, adapter, targets, bundleHash } of loadedAgents) {
     if (primaryBundleHash === "") {
       primaryBundleHash = bundleHash;
       primaryRegistryVersion = bundle.manifest.bundle_version;
@@ -479,14 +484,16 @@ async function enrichContextIndexWithVerification(
     return;
   }
   const bundles = (parsed.skill_bundles as Record<string, Record<string, unknown>>) ?? {};
-  for (const agent of agents) {
+  // 各 Agent 的盘上文件校验互不依赖，串行叠加多 Agent 的 fileHex（每目标一次
+  // sha256）会放大 I/O 时延；并行执行并在之后统一落盘一份 context-index。
+  await Promise.all(agents.map(async (agent) => {
     const entry = bundles[agent];
-    if (!entry) continue;
+    if (!entry) return;
     let loadedBundle: LoadedAgentBundle;
     try {
       loadedBundle = await loadAgentBundle(resourcesRoot, profile, agent);
     } catch {
-      continue;
+      return;
     }
     const targets = managedTargetsFor(getAdapter(agent), loadedBundle, adapterContext);
     const mismatches: Array<{ relpath: string; expected: string; actual: string }> = [];
@@ -512,6 +519,6 @@ async function enrichContextIndexWithVerification(
     }
     entry.verificationStatus = newStatus;
     entry.mismatchDetails = mismatches;
-  }
+  }));
   await writeFile(contextPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
 }
