@@ -1118,14 +1118,19 @@ export async function collectFreshness(
     // provide; it feeds installedContentHash/verificationStatus/mismatchDetails.
     const mismatchDetails: Array<{ relpath: string; expected: string; actual: string }> = [];
     const contentEntries: Array<{ relpath: string; sha256: string }> = [];
-    for (const target of targets) {
+    // 盘上文件哈希校验相互独立：逐目标串行 sha256（每个 = stat + 整文件读）会
+    // 叠加磁盘时延（多 Agent / 大 Bundle 时是 refresh 的主要等待项），并行读取。
+    const verifications = await Promise.all(targets.map(async (target) => {
       const rel = target.target_path.replace(/\\/g, "/");
       const actual = await fileHex(join(root, target.target_path));
+      return { rel, actual, expected: target.sha256 };
+    }));
+    for (const { rel, actual, expected } of verifications) {
       contentEntries.push({ relpath: rel, sha256: actual ?? "" });
       if (actual === null) {
-        mismatchDetails.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });
-      } else if (actual !== target.sha256) {
-        mismatchDetails.push({ relpath: rel, expected: target.sha256, actual });
+        mismatchDetails.push({ relpath: rel, expected, actual: "<missing>" });
+      } else if (actual !== expected) {
+        mismatchDetails.push({ relpath: rel, expected, actual });
       }
     }
     identity.installedContentHash = aggregateInstalledContentHash(contentEntries);

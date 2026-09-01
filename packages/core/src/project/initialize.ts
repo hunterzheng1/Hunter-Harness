@@ -498,14 +498,19 @@ async function enrichContextIndexWithVerification(
     const targets = managedTargetsFor(getAdapter(agent), loadedBundle, adapterContext);
     const mismatches: Array<{ relpath: string; expected: string; actual: string }> = [];
     const entries: Array<{ relpath: string; sha256: string }> = [];
-    for (const target of targets) {
+    // 各目标盘上哈希互不依赖：串行 fileHex（stat + 整文件读）在多 Agent 下叠加
+    // 磁盘时延，并行读取后再统一汇总。
+    const verifications = await Promise.all(targets.map(async (target) => {
       const rel = target.target_path.replace(/\\/g, "/");
       const actual = await fileHex(join(root, target.target_path));
+      return { rel, actual, expected: target.sha256 };
+    }));
+    for (const { rel, actual, expected } of verifications) {
       entries.push({ relpath: rel, sha256: actual ?? "" });
       if (actual === null) {
-        mismatches.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });
-      } else if (actual !== target.sha256) {
-        mismatches.push({ relpath: rel, expected: target.sha256, actual });
+        mismatches.push({ relpath: rel, expected, actual: "<missing>" });
+      } else if (actual !== expected) {
+        mismatches.push({ relpath: rel, expected, actual });
       }
     }
     entry.installedContentHash = aggregateInstalledContentHash(entries);
