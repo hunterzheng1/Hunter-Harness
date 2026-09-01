@@ -40,6 +40,14 @@
   `"/tmp/..."` 变成相对路径 `"tmp/..."`，发布物落到进程 cwd 下——改用三层 `dirname`，
   Windows/POSIX 都保持绝对性（同时修复 CI Linux 上 HP-10 与 publish e2e 的假 ENOENT）。
 
+### Fixed — CI 两处 pre-existing 失败
+
+- init 测试：harness-run/harness-test 别名 skill 已于 0.4.9 移除，断言同步改为
+  harness-execute 的支撑文件，消除「Codex harness-run must install SKILL.md」假失败。
+- codebase map 发布：realpath 等价检查容忍祖先路径别名化（Windows CI 8.3 短名、
+  macOS /tmp→/private/tmp、CI TMPDIR 软链），只要求最终组件自身不被重定向
+  （symlink/junction 仍由 lstat 拦截），消除 MAP_PUBLICATION_FILESYSTEM_UNSAFE_ROOT 假阳性。
+
 ### Fixed — approval goal/user_visible_outcome 与 intent 归一（HP-16）
 
 - `approval.content.goal/user_visible_outcome` 可整项省略、从 intent 继承（warnings 标
