@@ -531,6 +531,46 @@ def _plan_candidate(
     }
 
 
+def _goal_from_design(
+    design_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> dict[str, Any] | None:
+    """Extract ``## Goal`` + ``## User-visible outcome`` as a requirement candidate.
+
+    变更的意图（目标/用户可见结果）是自然语言检索最重要的知识：场景、风险与
+    不变量来自验收与评审，但「这个变更做了什么、解决什么」只写在 Goal。若不
+    沉淀，用户按变更意图检索（如「问候语模块」）会查不到——2026-09 自测
+    greeting-module 实测复现。
+    """
+    sections = _markdown_sections(design_text)
+    goal_lines = [line.strip() for line in sections.get("Goal", []) if line.strip()]
+    if not goal_lines:
+        return None
+    summary = " ".join(goal_lines)
+    outcome_lines = [
+        line.strip() for line in sections.get("User-visible outcome", []) if line.strip()
+    ]
+    body = f"目标：{summary}"
+    if outcome_lines:
+        body += "\n用户可见结果：" + " ".join(outcome_lines)
+    return _plan_candidate(
+        change_key=change_key,
+        archive_id=archive_id,
+        producer_version=producer_version,
+        created_at=created_at,
+        kind="requirement",
+        entry_type="requirement",
+        summary=summary,
+        body=body,
+        keywords=_keywords("目标", "goal", "requirement"),
+        source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+    )
+
+
 def _requirements_from_design(
     design_text: str,
     *,
@@ -789,6 +829,15 @@ def build_plan_candidates(
             producer_version=producer_version,
             created_at=created_at,
         ))
+        goal = _goal_from_design(
+            design_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        )
+        if goal is not None:
+            collect([goal])
         collect(_risks_from_design(
             design_text,
             change_key=change_key,
