@@ -11,11 +11,13 @@ T1=$(date +%s%N)
 REAL_TOTAL=$(awk "BEGIN{printf \"%.1f\", ($T1-$T0)/1e9}")
 
 # Vitest summary lines: " Duration  176.07s (transform 7.84s, setup 0ms, import 48.57s, tests 281.40s, environment 12ms)"
-DUR=$(grep -aoE "Duration\s+[0-9.]+s" .auto/measure.out | head -1 | grep -oE "[0-9.]+" || echo 0)
-IMPORT=$(grep -aoE "import [0-9.]+s" .auto/measure.out | head -1 | grep -oE "[0-9.]+" || echo 0)
-TESTS_SUM=$(grep -aoE "tests [0-9.]+s" .auto/measure.out | head -1 | grep -oE "[0-9.]+" || echo 0)
-TRANSFORM=$(grep -aoE "transform [0-9.]+s" .auto/measure.out | head -1 | grep -oE "[0-9.]+" || echo 0)
-COUNT=$(grep -aoE "Tests\s+[0-9]+ passed" .auto/measure.out | head -1 | grep -oE "[0-9]+" || echo 0)
+# Strip ANSI escapes first: vitest colors the summary even when piped.
+PLAIN=$(sed 's/\x1b\[[0-9;]*m//g' .auto/measure.out)
+DUR=$(printf '%s' "$PLAIN" | grep -aoE "Duration[[:space:]]+[0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
+IMPORT=$(printf '%s' "$PLAIN" | grep -aoE "import [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
+TESTS_SUM=$(printf '%s' "$PLAIN" | grep -aoE "tests [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
+TRANSFORM=$(printf '%s' "$PLAIN" | grep -aoE "transform [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
+COUNT=$(printf '%s' "$PLAIN" | grep -aoE "Tests[[:space:]]+[0-9]+ passed" | head -1 | grep -oE "[0-9]+" || echo 0)
 
 echo "METRIC test_wall_seconds=$DUR"
 echo "METRIC test_count=$COUNT"
