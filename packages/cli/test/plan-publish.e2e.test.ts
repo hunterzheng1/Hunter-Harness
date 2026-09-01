@@ -110,11 +110,15 @@ function naturalInput(options?: { assurance?: boolean; goal?: string }) {
 
 describe("HP-18：plan publish 编排收口（P3）", () => {
   let root: string;
+  let realRoot: string;
   let inputPath: string;
 
   beforeEach(async () => {
     root = await fs.mkdtemp(join(tmpdir(), "harness-plan-publish-"));
     await fs.mkdir(join(root, ".harness", "changes", CHANGE_KEY), { recursive: true });
+    // finalize 按 realpath 解析发布位置；断言统一走 realpath，避免 CI 上 tmpdir
+    // 被别名化（8.3 短名/软链）时拿到词法路径的假 ENOENT
+    realRoot = await fs.realpath(root);
     inputPath = join(root, "plan-evidence-input.json");
   });
 
@@ -149,7 +153,7 @@ describe("HP-18：plan publish 编排收口（P3）", () => {
     expect(result.steps.evidence_pack.code).toBe("PLAN_EVIDENCE_PACK_BUILT");
     expect(result.steps.finalize.code).toBe("PLAN_FINALIZED");
     for (const path of planDurablePublicationTargetPaths(CHANGE_KEY)) {
-      await fs.access(join(root, ".harness", "changes", CHANGE_KEY, path));
+      await fs.access(join(realRoot, ".harness", "changes", CHANGE_KEY, path));
     }
   });
 

@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
@@ -153,8 +153,16 @@ export async function runPlanPublish(
         message: "输入缺少 change_key（顶层字段）"
       }));
     }
-    const changeDir = options.changeDir ??
+    // changeDir 统一走 realpath：finalize 内部按 realpath 解析 projectRoot 并发布到解析后
+    // 位置；publish 的基线派生（journal 扫描）必须读同一个位置，否则在 tmpdir 被别名化的
+    // 环境（CI 的 8.3 短名/软链）里读到空目录、把重发布误当首发
+    let changeDir = options.changeDir ??
       join(dependencies.cwd, ".harness", "changes", changeKey);
+    try {
+      changeDir = await realpath(changeDir);
+    } catch {
+      // 目录尚不存在（首发布前未 prepare）时用字面路径，finalize 会再校验
+    }
     const packPath = options.output ?? join(dirname(inputPath), "plan-evidence.json");
     const steps: Record<string, unknown> = {};
 
