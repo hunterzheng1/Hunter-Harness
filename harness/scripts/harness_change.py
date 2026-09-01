@@ -353,8 +353,18 @@ def cleanup_changes(project_root: Path, *, apply: bool = False) -> dict[str, Any
 
 
 def change_dir_for_id(project_root: Path, change_id: str) -> Path | None:
-    candidate = changes_dir(project_root) / change_id
-    if candidate.is_dir():
+    """按 change id 或其路径写法解析 change 目录。
+
+    2026-09 dogfood: 多个 SKILL.md 教 --change-dir ".harness/changes/<cn>",
+    而这里此前只接受裸 id, 按文档路径传参会拼成
+    .harness/changes/.harness/changes/<cn> 报 CHANGE_NOT_FOUND (agent 照文档
+    执行必卡)。兼容两种写法: 裸 id 或 .harness/changes/<cn> 前缀, 取末段解析。
+    """
+    normalized = (change_id or "").strip().replace("\\", "/").strip("/")
+    if normalized.startswith(".harness/changes/"):
+        normalized = normalized[len(".harness/changes/"):]
+    candidate = changes_dir(project_root) / normalized
+    if normalized and candidate.is_dir():
         return candidate.resolve()
     return None
 

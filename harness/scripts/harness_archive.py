@@ -3243,7 +3243,12 @@ def archive_auto_gate(
             "autoArchiveAllowed": False,
             "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_MISSING",
             "status": status,
-            "nextAction": "Capture the archive-boundary state snapshot before auto-archiving.",
+            "nextAction": (
+                "Capture the archive-boundary state snapshot before auto-archiving. "
+                "recovery: python <skills-root>/scripts/harness_state.py capture "
+                f"--project <project> --change-dir \"{change_dir.as_posix() if isinstance(change_dir, Path) else change_dir}\" "
+                "--json（首次补录真实计划起点时加 --base <计划起始提交>）"
+            ),
         }
 
     git_state = snapshot.get("git")

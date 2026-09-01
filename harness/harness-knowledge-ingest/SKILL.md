@@ -11,12 +11,13 @@ disallowed-tools:
 
 # harness-knowledge-ingest
 
-知识 ingest 完全由 Hunter Platform 负责。归档完成时，客户端生成一个确定性 ZIP；
-服务端收到后保存原包、安全解包、发布核心文件，并根据其中的 Markdown 与摘要重建
-项目语义索引。
+知识 ingest 由 Hunter Platform 负责：归档完成时，客户端生成一个确定性 ZIP
+（含 `candidates/knowledge.json` 候选清单——由本包 `harness_knowledge_candidates.py`
+从 design/plan/test-scenarios 与归档 summary 派生）；服务端收到后保存原包、
+安全解包、发布核心文件，按候选抽取知识条目并重建项目语义索引。
 
-客户端不得生成 `.harness/knowledge`、SQLite 索引、候选条目、视图、报告或本地裁决。
-本地知识处理脚本已从分发包移除；历史版本数据只由升级兼容逻辑识别，不再执行。
+客户端不得生成 `.harness/knowledge`、SQLite 索引、视图、报告或本地裁决。
+历史版本数据只由升级兼容逻辑识别，不再执行。
 
 ## 归档包边界
 

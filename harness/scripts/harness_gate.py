@@ -709,7 +709,16 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
                 missing.append("inputsFiles(non-empty)")
         elif field == "status":
             if value != "OK" and not degraded:
-                missing.append(f"status={value}")
+                if str(value).upper() == "NOT_RUN":
+                    # 2026-09 dogfood: 此前提示 "missing: [status=NOT_RUN]"，
+                    # 而条目状态明明就是 NOT_RUN——真实缺口是 evidence 缺
+                    # DEGRADED: 前缀。直说，别让调用方对着状态值猜。
+                    missing.append(
+                        "status=NOT_RUN requires evidence starting with "
+                        "'DEGRADED: <reason>' (is_degraded_ledger_entry)"
+                    )
+                else:
+                    missing.append(f"status={value}")
         elif not (isinstance(value, str) and value.strip()):
             missing.append(field)
         elif field == "coverage" and str(value).strip() not in hl.COVERAGE_RANK:
@@ -891,9 +900,14 @@ def validate_ledger_for_phase_close(
             if phase_status.upper() in {"FAIL", "WARN"}:
                 fail_status.append(verification)
             else:
+                hint = (
+                    ["status=NOT_RUN requires evidence starting with "
+                     "'DEGRADED: <reason>'"]
+                    if entry_status == "NOT_RUN" else [f"status={entry_status}"]
+                )
                 problems.append({
                     "verification": verification,
-                    "missing": [f"status={entry_status}"],
+                    "missing": hint,
                     "code": "VALIDATION_NOT_OK",
                 })
 
