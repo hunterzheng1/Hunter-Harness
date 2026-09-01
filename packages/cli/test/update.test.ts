@@ -129,9 +129,14 @@ describe("hunter-harness update", () => {
 
   async function seedBaseline(contents: Record<string, string>): Promise<BaselineManifest> {
     const baseline = await readBaseline(root);
-    for (const [path, content] of Object.entries(contents)) {
+    // 各种子文件相互独立：串行写数百个文件叠加 Windows 磁盘时延（API-001/002
+    // 各 580 个），并行写入后再汇总 baseline（sha256 计算为纯内存）。
+    const entries = Object.entries(contents);
+    await Promise.all(entries.map(async ([path, content]) => {
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content);
+    }));
+    for (const [path, content] of entries) {
       baseline.files[path] = {
         baseline_hash: sha256Bytes(content),
         local_hash_at_apply: sha256Bytes(content),
