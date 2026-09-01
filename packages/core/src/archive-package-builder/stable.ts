@@ -1,43 +1,15 @@
-import { createHash } from "node:crypto";
-
 import type { Sha256 } from "../archive-engine/index.js";
 
-export function compareCodepoint(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
+import { canonicalStableHash, canonicalStableJson } from "../fs/stable.js";
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value !== null && typeof value === "object" && !ArrayBuffer.isView(value)) {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined)
-      .sort(([left], [right]) => compareCodepoint(left, right))
-      .map(([key, child]) => [key, canonicalize(child)]));
-  }
-  return value;
-}
+// 兼容转发层：实现收敛到 ../fs/stable.js（canonical JSON 模式）。
+// 历史行为：过滤 undefined 键、跳过 ArrayBuffer 视图、键按码点排序。
+export { compareCodepoint, deepFreeze, equalBytes, sha256Bytes } from "../fs/stable.js";
 
 export function stableJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-export function sha256Bytes(bytes: Uint8Array): Sha256 {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  return canonicalStableJson(value);
 }
 
 export function stableHash(value: unknown): Sha256 {
-  return sha256Bytes(new TextEncoder().encode(stableJson(value)));
+  return canonicalStableHash(value);
 }
-
-export function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !ArrayBuffer.isView(value) && !Object.isFrozen(value)) {
-    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
-
-export function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
-}
-

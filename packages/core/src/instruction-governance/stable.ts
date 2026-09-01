@@ -1,29 +1,14 @@
-import { createHash } from "node:crypto";
+import { rawStableHash, rawStableJson } from "../fs/stable.js";
 
-export function compareCodepoint(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
+// 兼容转发层：实现收敛到 ../fs/stable.js（raw 字符串拼接模式）。
+// 历史行为：**不过滤** undefined 值、键按码点排序、无空白拼接——与
+// canonical 模式输出不同，保持原样以免既有持久化哈希漂移。
+export { compareCodepoint, deepFreeze } from "../fs/stable.js";
 
 export function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJson(item)).join(",")}]`;
-  }
-  const record = value as Readonly<Record<string, unknown>>;
-  const keys = Object.keys(record).sort(compareCodepoint);
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  return rawStableJson(value);
 }
 
 export function stableHash(value: unknown): string {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
-}
-
-export function deepFreeze<T>(value: T): Readonly<T> {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const nested of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(nested);
-    }
-    Object.freeze(value);
-  }
-  return value;
+  return rawStableHash(value);
 }

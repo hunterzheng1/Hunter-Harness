@@ -246,6 +246,13 @@ function inventoriesEqual(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+// 权威 journal 检查点（项目内 journal.json + status.json）的落盘节奏：逐操作写是
+// O(n) 整份序列化 × n 次 = O(n^2)，对 500+ 操作的大事务（--agents all、大更新）
+// 退化明显。改按批落盘：每次 checkpoint 内容仍是完整一致快照（applied_count 与
+// completed_target_states 自洽），crash 时恢复从最近检查点 resume（staged 幂等
+// 重放）或 rollback（before 快照还原），语义与逐操作写完全等价。
+const JOURNAL_CHECKPOINT_INTERVAL = 16;
+
 // 持久镜像（durable recovery store）的同步节奏。项目内 journal.json 是权威
 // 逐操作检查点（crash 后首先读它），durable 镜像只是第二副本：仅当项目事务目录
 // 丢失时才被读取（locateRecovery 优先 source=project）。镜像滞后若干操作是安全的——
@@ -969,14 +976,20 @@ export async function runTransaction(
             index
           )
         ];
-        // The canonical checkpoint must reach disk before another operation
-        // can begin. Recovery never guesses between status and journal.
-        await writeTransactionJournal(trustedTransactionRoot, journal);
-        // durable 镜像按批同步（见 DURABLE_SYNC_INTERVAL 注释）：权威检查点仍是
-        // 逐操作的项目 journal，镜像滞后由 resume/rollback 语义兜底。
-        if (recoveryStore !== undefined &&
-            (journal.applied_count % DURABLE_SYNC_INTERVAL === 0 ||
-              index === operations.length - 1)) {
+        // 权威检查点（项目内 journal.json + status.json）按批落盘：每次都是整份
+        // journal 的 O(n) 原子重写，逐操作写让大事务退化为 O(n^2)。恢复语义不变——
+        // crash 时 journal 停在最近检查点，resume 从该点用 staged 幂等重放，
+        // rollback 用 before 快照还原；staged 与 before 在循环前已全量就绪。
+        // 中断注入/失败路径（下方分支）与提交路径仍写精确状态。
+        const checkpointDue =
+          journal.applied_count % JOURNAL_CHECKPOINT_INTERVAL === 0 ||
+          index === operations.length - 1;
+        if (checkpointDue) {
+          await writeTransactionJournal(trustedTransactionRoot, journal);
+        }
+        // durable 镜像与权威检查点同批同步（见 DURABLE_SYNC_INTERVAL 注释）：
+        // 镜像仅项目事务目录丢失时读取，滞后由 resume/rollback 语义兜底。
+        if (recoveryStore !== undefined && checkpointDue) {
           await syncDurableRecovery(projectRoot, journal, recoveryStore);
         }
         if (options.interruptAfterApply === journal.applied_count) {

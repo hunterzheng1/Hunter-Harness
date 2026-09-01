@@ -1,0 +1,302 @@
+
+ RUN  v4.1.9 E:/MyProject/AI Related/Hunter-Harness
+
+ ✓ |fast| packages/core/test/durable-publication.test.ts (10 tests) 2425ms
+     ✓ accepts realistic-size payloads (bytes arrays beyond the old 4096 snapshot cap)  1098ms
+     ✓ still rejects payloads beyond the 2MB publication bound (fail closed)  1303ms
+ ✓ |fast| packages/core/test/gitignore.test.ts (7 tests) 1565ms
+     ✓ does not expand installed projections when their Agent directory is ignored  316ms
+     ✓ reports tracked projections while retaining the top-level Agent rule  361ms
+ ✓ |fast| packages/core/test/plan-quality-module.test.ts (27 tests) 907ms
+ ✓ |fast| packages/core/test/planning-context-filesystem-authority.test.ts (9 tests) 790ms
+     ✓ serializes concurrent CAS, replays commands, and durably closes delivery acknowledgement  313ms
+ ✓ |fast| packages/core/test/recovery.test.ts (10 tests) 616ms
+ ✓ |fast| packages/core/test/map-publication-filesystem.test.ts (21 tests) 9135ms
+     ✓ publishes, replays, reads back and rolls back exact owned targets  647ms
+     ✓ publishes an immutable generation pointer and fences readers from mixed projections  467ms
+     ✓ reclaims a stale immutable lock record without a successor chain  435ms
+     ✓ recovers a dead reclaimer marker after a crash without weakening the lock  457ms
+     ✓ recovers a dead successor whose predecessor reclaim marker survived acquisition  463ms
+     ✓ fails closed when the generation pointer or immutable payload is tampered  601ms
+     ✓ tolerates ancestor path aliasing (CI 8.3 短名/TMPDIR 软链) while still publishing to the real root  682ms
+     ✓ rejects a restart with a different project identity  547ms
+     ✓ rejects the same idempotency key on a different operation  663ms
+     ✓ recovers a complete live target set before applying the stale baseline check  737ms
+     ✓ refuses rollback when any owned live payload changed  612ms
+     ✓ resumes a rollback after projection completed but pointer switch was interrupted  718ms
+     ✓ refuses rollback when backup metadata is not exactly nine validated entries  586ms
+     ✓ serializes concurrent publication calls at the project root  711ms
+     ✓ fences two processes while reclaiming one stale lock generation  690ms
+ ✓ |fast| packages/core/test/cleanup.test.ts (8 tests) 440ms
+ ✓ |fast| packages/core/test/transaction.test.ts (10 tests) 359ms
+ ✓ |fast| packages/core/test/instruction-sync-provider.test.ts (35 tests) 270ms
+ ✓ |fast| packages/skill-cli/test/skill-cli.test.ts (28 tests) 251ms
+ ✓ |fast| packages/contracts/test/schemas.test.ts (110 tests) 265ms
+ ✓ |fast| packages/contracts/test/platform-information-export-contracts.test.ts (15 tests) 255ms
+ ✓ |fast| packages/core/test/plan-artifact-publication.test.ts (9 tests) 244ms
+ ✓ |fast| packages/core/test/managed-execution.test.ts (3 tests) 244ms
+ ✓ |fast| packages/core/test/archive-remote-adapter-module.test.ts (36 tests) 238ms
+ ✓ |fast| packages/core/test/plan-artifacts-module.test.ts (19 tests) 223ms
+ ✓ |fast| packages/core/test/instruction-proposal-module.test.ts (28 tests) 116ms
+ ✓ |fast| packages/core/test/plan-finalization-transaction.test.ts (15 tests) 162ms
+ ✓ |fast| packages/core/test/project-rules.test.ts (10 tests) 110ms
+ ✓ |fast| packages/core/test/plan-decision-module.test.ts (22 tests) 87ms
+ ✓ |fast| packages/core/test/sync-maintenance-module.test.ts (17 tests) 79ms
+ ✓ |fast| packages/core/test/codebase-map-sync-provider.test.ts (43 tests) 88ms
+ ✓ |fast| packages/core/test/archive-package-builder-module.test.ts (27 tests) 80ms
+ ✓ |fast| packages/core/test/profile-bundle.test.ts (13 tests) 66ms
+ ✓ |fast| packages/core/test/instruction-graph.test.ts (11 tests) 67ms
+ ✓ |fast| packages/core/test/archive-outbox-v2.test.ts (11 tests) 63ms
+ ✓ |fast| packages/contracts/test/content-sync-contracts.test.ts (270 tests) 66ms
+ ✓ |fast| packages/core/test/archive-outbox-module.test.ts (18 tests) 61ms
+ ✓ |fast| packages/core/test/remote-sync-module.test.ts (49 tests) 59ms
+ ✓ |fast| packages/core/test/archive-outbox-local-authority.test.ts (22 tests) 52ms
+ ✓ |fast| packages/core/test/map-publication-transaction.test.ts (15 tests) 54ms
+ ✓ |fast| packages/contracts/test/platform-information-contracts.test.ts (16 tests) 56ms
+ ✓ |fast| packages/core/test/archive-engine-module.test.ts (51 tests) 54ms
+ ✓ |fast| packages/core/test/instruction-governance-module.test.ts (18 tests) 44ms
+ ✓ |fast| tests/adapt-agent-bundle.test.ts (7 tests) 37ms
+ ✓ |fast| packages/core/test/codebase-map-v2.test.ts (145 tests) 48ms
+ ✓ |fast| packages/core/test/remote-sync-v1-contract.test.ts (24 tests) 44ms
+ ✓ |fast| packages/core/test/rule-candidates.test.ts (4 tests) 36ms
+ ✓ |fast| packages/core/test/planning-context-state-port.test.ts (10 tests) 40ms
+ ✓ |fast| packages/contracts/test/remote-sync-archive-http-contracts.test.ts (7 tests) 37ms
+ ✓ |fast| packages/core/test/push-credentials.test.ts (13 tests) 25ms
+ ✓ |fast| packages/core/test/push-pull-orchestration-module.test.ts (20 tests) 38ms
+ ✓ |fast| packages/core/test/adapter-freshness-sync-provider.test.ts (36 tests) 33ms
+ ✓ |fast| packages/contracts/test/remote-content-upload-http-contracts.test.ts (11 tests) 26ms
+ ✓ |fast| packages/core/test/remote-archive-v2.test.ts (15 tests) 29ms
+ ✓ |fast| packages/core/test/codebase-map.test.ts (4 tests) 28ms
+ ✓ |fast| packages/core/test/plan-classification-module.test.ts (34 tests) 25ms
+ ✓ |fast| packages/contracts/test/remote-sync-http-contracts.test.ts (10 tests) 22ms
+ ✓ |fast| packages/core/test/planning-context-module.test.ts (7 tests) 26ms
+ ✓ |fast| packages/core/test/rule-review.test.ts (3 tests) 21ms
+ ✓ |fast| packages/contracts/test/plan-event-contracts.test.ts (8 tests) 23ms
+ ✓ |fast| packages/contracts/test/knowledge-query-http.test.ts (7 tests) 21ms
+ ✓ |fast| packages/contracts/test/execution.test.ts (4 tests) 17ms
+ ✓ |fast| packages/core/test/api-client.test.ts (4 tests) 19ms
+ ✓ |fast| packages/contracts/test/bundle-manifest.test.ts (8 tests) 16ms
+ ✓ |fast| packages/core/test/frontmatter.test.ts (13 tests) 14ms
+ ✓ |fast| packages/core/test/plan-classification-state-port.test.ts (6 tests) 14ms
+ ✓ |fast| packages/core/test/instruction-proposal-state-port.test.ts (7 tests) 15ms
+ ✓ |fast| packages/core/test/fixer.test.ts (5 tests) 13ms
+ ✓ |fast| packages/core/test/checker.test.ts (12 tests) 12ms
+ ✓ |fast| packages/core/test/remote-content-upload.test.ts (7 tests) 13ms
+ ✓ |fast| packages/core/test/proposal-diff.test.ts (4 tests) 13ms
+ ✓ |fast| packages/contracts/test/remote-sync-v1-contracts.test.ts (6 tests) 11ms
+ ✓ |fast| packages/contracts/test/knowledge-ingest.test.ts (2 tests) 11ms
+ ✓ |fast| packages/core/test/artifact-rebase.test.ts (17 tests) 11ms
+ ✓ |fast| packages/core/test/registry-governance.test.ts (3 tests) 10ms
+ ✓ |fast| packages/core/test/planning-context-remote-query.test.ts (14 tests) 11ms
+ ✓ |fast| packages/core/test/durable-state-primitives.test.ts (6 tests) 10ms
+ ✓ |fast| packages/core/test/map-publication-filesystem-contract.test.ts (7 tests) 11ms
+ ✓ |fast| packages/contracts/test/platform-information-http.test.ts (3 tests) 9ms
+ ✓ |fast| packages/core/test/security-scanner.test.ts (10 tests) 10ms
+ ✓ |fast| packages/core/test/ai.test.ts (10 tests) 8ms
+ ✓ |fast| packages/core/test/meta.test.ts (3 tests) 9ms
+ ✓ |fast| packages/core/test/file-policy.test.ts (62 tests) 8ms
+ ✓ |fast| packages/core/test/managed-block.test.ts (24 tests) 8ms
+ ✓ |fast| packages/core/test/path-safety.test.ts (13 tests) 7ms
+ ✓ |fast| packages/core/test/push-pull-output-diagnostics.test.ts (6 tests) 8ms
+ ✓ |fast| packages/contracts/test/skill-package.test.ts (3 tests) 7ms
+ ✓ |fast| tests/dependency-security.test.ts (1 test) 6ms
+ ✓ |fast| packages/core/test/trusted-async-result.test.ts (5 tests) 5ms
+ ✓ |fast| packages/core/test/skill-install-plan.test.ts (4 tests) 6ms
+ ✓ |fast| tests/release-pipeline.test.ts (4 tests) 6ms
+ ✓ |fast| packages/core/test/ai-prompt-parser.test.ts (12 tests) 5ms
+ ✓ |fast| tests/changed-test-selection.test.ts (9 tests) 4ms
+ ✓ |fast| packages/skill-cli/test/package-contract.test.ts (1 test) 4ms
+ ✓ |fast| packages/core/test/external-convergence.test.ts (5 tests) 3ms
+ ✓ |fast| packages/core/test/capability-verification-graph.test.ts (4 tests) 4ms
+ ✓ |fast| packages/core/test/environment-doctor.test.ts (2 tests) 3ms
+ ✓ |fast| packages/core/test/plan-phase-vocabulary.test.ts (1 test) 4ms
+ ✓ |fast| packages/core/test/context-index.test.ts (1 test) 3ms
+ ✓ |fast| packages/core/test/diff.test.ts (4 tests) 3ms
+ ✓ |fast| packages/contracts/test/plan-phase-aliases.test.ts (1 test) 2ms
+ ✓ |fast| packages/core/test/skill-agents.test.ts (2 tests) 3ms
+ ✓ |fast| tests/smoke/workspace.test.ts (1 test) 3ms
+ ✓ |integration| packages/cli/test/push.test.ts (13 tests) 19703ms
+     ✓ offers an in-command conflict choice and defaults to keeping local  2639ms
+     ✓ excludes adapter bundle copies and does not invent proposal-owned instruction files  10737ms
+     ✓ API-007 advances baseline after Direct Publish and allows an immediate second push  699ms
+     ✓ passes sensitive_scan_skip to finalize when --skip-sensitive-scan --yes  799ms
+     ✓ INT-002: interactively confirms sensitive scan skip and sends reason to finalize  762ms
+     ✓ INT-003: merges interactive token entry with existing credentials.local server_url  900ms
+     ✓ prompts once for both missing credentials, hides the token, and confirms once  732ms
+     ✓ resumes a persisted upload session after interruption  1252ms
+ ✓ |integration| packages/cli/test/update.test.ts (15 tests) 22423ms
+     ✓ applies mixed add, modify, delete, and rename in one transaction  3475ms
+     ✓ skips dirty files, applies eligible files, and leaves complete version unchanged  369ms
+     ✓ acknowledges remote deletes for managed rule projections and refreshes them locally  380ms
+     ✓ preserves and reports locally modified managed rule projections  384ms
+     ✓ never downloads or applies a rename across a policy-never boundary  386ms
+     ✓ UT-015 recovers files and baseline byte-for-byte after transaction interruption  371ms
+     ✓ applies a marker-free AGENTS.md as an exact full document  329ms
+     ✓ applies multi-adapter artifacts to their target paths in one transaction (INT-004)  347ms
+     ✓ repeated full-document updates remain marker-free (INT-005)  486ms
+     ✓ applies sequential full documents using the previous remote hash (INT-006)  528ms
+     ✓ API-001 handles 146 applied plus 433 policy-never entries and advances baseline  7441ms
+     ✓ API-002 applies 146, acknowledges 400, and reports only 33 real conflicts  7348ms
+ ✓ |integration| packages/core/test/recovery-v3.test.ts (29 tests) 12800ms
+     ✓ keeps a transaction lock usable across 100 sequential lifecycles  4690ms
+     ✓ registers 100 durable recoveries without exhausting a global lock  5953ms
+     ✓ converges the compatibility projection after concurrent registrations  622ms
+ ✓ |integration| packages/core/test/migration.test.ts (8 tests) 15829ms
+     ✓ real 0.1.1 general fixture refreshes to schema v2 and removes duplicate skills agents  1573ms
+     ✓ real 0.1.1 java fixture refreshes and removes clean duplicate skills agents  2755ms
+     ✓ preserves a modified duplicate skills agent as unmanaged conflict (exit 5)  2638ms
+     ✓ unknown legacy Bundle hash never authorizes deletion of duplicate files  1291ms
+     ✓ general to java adds Java-only files  3056ms
+     ✓ java to general removes clean Java-only files  3113ms
+     ✓ modified Java-only file survives transition and produces exit code 5  1396ms
+ ✓ |integration| packages/cli/test/rules-review.test.ts (1 test) 8518ms
+     ✓ exports pending candidates and applies a preconditioned user decision  8516ms
+ ✓ |integration| packages/core/test/plan-durable-publication-filesystem-contract.test.ts (9 tests) 10862ms
+     ✓ accepts a near-limit repeated-byte payload and rejects one byte over the limit  1568ms
+     ✓ rejects a plan whose payload bytes exceed the aggregate bound  9264ms
+ ✓ |integration| packages/cli/test/guarded-default-cli.test.ts (6 tests) 9182ms
+     ✓ initializes through preview/apply and returns a recovery receipt  1173ms
+     ✓ supports explicit init only for an absent project  1150ms
+     ✓ keeps an already-current bare command byte-stable with no transaction  2848ms
+     ✓ routes update --guarded locally without calling the server  803ms
+     ✓ does not turn --yes into permission to overwrite a local modification  886ms
+     ✓ keeps project and recovery identities safe in Chinese paths with spaces  2319ms
+ ✓ |integration| packages/core/test/initialize.test.ts (10 tests) 7753ms
+     ✓ installs all four agents with marker-free Chinese docs, context v2, state v4  6128ms
+     ✓ is idempotent across two installs except installed_at  679ms
+ ✓ |integration| packages/core/test/bundle-content-projection.test.ts (4 tests) 6714ms
+     ✓ freshness identity exposes installedContentHash and verificationStatus=verified on a clean install  1280ms
+     ✓ freshness identity reports verificationStatus=degraded and mismatchDetails when an installed trusted-root script drifts  1181ms
+     ✓ context-index skill_bundles entry projects installedContentHash/verifiedAt/verificationStatus  1967ms
+     ✓ context-index reflects verificationStatus=degraded after a file drifts  2284ms
+ ✓ |integration| packages/cli/test/archive-upload.test.ts (4 tests) 7025ms
+     ✓ resolves the project and sends the package through the dedicated endpoint  1296ms
+     ✓ keeps the server's refusal code instead of a generic upload failure  1201ms
+     ✓ validates a package read-only through the dedicated validate endpoint  2364ms
+     ✓ surfaces field-level issues from a 422 refusal  2162ms
+ ✓ |integration| packages/core/test/push-stale.test.ts (16 tests) 5490ms
+     ✓ resolves a stale conflict in the same push before proposal confirmation  1387ms
+     ✓ 扫描停用后 locked 内容变化不再触发敏感确认（confirmSensitiveScanSkip 不被调用）  696ms
+     ✓ UT-004 maps session PROJECT_VERSION_CONFLICT to friendly update guidance  301ms
+     ✓ UT-005 maps finalize STALE_PUSH to friendly update guidance  338ms
+     ✓ UT-007 unbound project skips version precheck  431ms
+ ✓ |integration| packages/cli/test/default-and-recovery-commands.test.ts (3 tests) 5223ms
+     ✓ bare command initializes an absent project and guarded-refreshes a valid project  1633ms
+     ✓ status reports pending recovery without mutating the project  1417ms
+     ✓ recover inspect and resume expose stable non-interactive recovery actions  2171ms
+ ✓ |integration| packages/core/test/guarded-project-plan.test.ts (4 tests) 4552ms
+     ✓ binds initialize apply to the exact dry-run plan hash  1138ms
+     ✓ does not create a transaction for an idempotent refresh  1169ms
+     ✓ rejects refresh apply when managed state changed after preview  2223ms
+ ✓ |integration| packages/cli/test/sync-command.test.ts (3 tests) 5330ms
+     ✓ keeps dry-run read-only and returns no persistent report path  1479ms
+     ✓ runs one bounded entrypoint without writing sync logs or monitoring state  1540ms
+     ✓ validates only instruction entrypoints owned by enabled Agents  2309ms
+ ✓ |integration| packages/cli/test/instructions.test.ts (3 tests) 4584ms
+     ✓ keeps audit read-only, then applies the reviewed proposal transactionally  1368ms
+     ✓ refuses to overwrite a document changed after audit  1146ms
+     ✓ rejects a traversal proposal id without overwriting project files  2068ms
+ ✓ |integration| packages/cli/test/plan-finalize-command.e2e.test.ts (9 tests) 4247ms
+     ✓ finalize 成功后把 ownership 派生进 change-context.json（A-1）  715ms
+     ✓ runs the full v2 chain: gates → finalize → FS publication → event outbox  349ms
+     ✓ v2 发布之后 Python 门禁仍然开得了门  735ms
+     ✓ 发布不覆盖 Python 写的 meta/gate-policy.json  333ms
+     ✓ 发布的 implementation-checkpoints 不让 foundation-gate 失效  672ms
+     ✓ 发布的 scenario-manifest 能被 Python 门禁解包消费  647ms
+     ✓ HP-10：--change-dir 真实参与路径解析  550ms
+ ✓ |integration| packages/cli/test/default-recovery-contract.test.ts (13 tests) 3301ms
+     ✓ status reports an interrupted transaction without mutating project files  1357ms
+     ✓ does not advertise resume when staged Bundle metadata differs from local resources  323ms
+ ✓ |integration| packages/cli/test/refresh-freshness-cli.test.ts (2 tests) 3729ms
+     ✓ emits per-agent identity and freshness status while keeping legacy fields  1655ms
+     ✓ reports LOCALLY_MODIFIED for a drifted managed file in JSON  2072ms
+ ✓ |integration| packages/cli/test/recovery-menu.test.ts (5 tests) 2777ms
+     ✓ detects and resumes an interrupted update  1452ms
+     ✓ skips phantom durable index entries whose transaction directory is gone  582ms
+ ✓ |integration| packages/cli/test/knowledge-query.test.ts (8 tests) 2698ms
+     ✓ queries only the bounded remote knowledge endpoint and leaves no local index  1327ms
+     ✓ fails closed when the remote service is unavailable  418ms
+     ✓ maps network failure transport failures without leaking the raw error  406ms
+ ✓ |integration| packages/core/test/managed-block-refresh.test.ts (7 tests) 2512ms
+     ✓ preserves a malformed AGENTS.md without blocking other managed targets  1309ms
+     ✓ --force-managed leaves root instruction documents byte-identical  1199ms
+ ✓ |integration| packages/cli/test/push-pull-commands.test.ts (23 tests) 2812ms
+     ✓ registers the canonical command names and Pull compatibility alias  1160ms
+     ✓ derives the production source identity from bound project state and Git  1554ms
+ ✓ |integration| packages/core/test/refresh.test.ts (23 tests) 2262ms
+     ✓ applies a profile transition across every enabled agent  404ms
+ ✓ |integration| packages/cli/test/plan-publish.e2e.test.ts (5 tests) 2131ms
+     ✓ 首发：一条命令完成 evidence-pack → finalize，八 target 落盘  449ms
+     ✓ 重发布：baseline 从 journal 自动派生（generation 递增）、attempt 自动递增  703ms
+     ✓ 高风险变更：记录收据后发布；内容修订 + --renew-review 自动续签再发布（P2+P3 闭环）  905ms
+ ✓ |integration| packages/core/test/push-scan.test.ts (6 tests) 1980ms
+     ✓ 上传时不做敏感检查：密钥内容不阻断 push（扫描已停用）  1267ms
+ ✓ |integration| packages/cli/test/plan-review-record.e2e.test.ts (14 tests) 1830ms
+     ✓ 草稿只给 reviewer_identity/findings，CLI 代算两个哈希并写回，finalize 一次通过  417ms
+     ✓ --renew 续签过期收据：findings 沿用、input_hash 重绑，finalize 一次通过（HP-17）  449ms
+ ✓ |integration| packages/core/test/update-auth.test.ts (6 tests) 1742ms
+     ✓ prefers env token over credentials.local (UT-101)  1291ms
+ ✓ |integration| packages/cli/test/remote-http.test.ts (35 tests) 1680ms
+     ✓ bounds directory iteration without materializing an unbounded entry array  761ms
+ ✓ |integration| packages/cli/test/plan-evidence-pack.e2e.test.ts (16 tests) 1608ms
+     ✓ builds an evidence pack from natural inputs that finalizes cleanly  449ms
+     ✓ attempt=2 finalization bundle 通过质量验证（HP-02）  360ms
+     ✓ HP-05：文本顺序≠ref 哈希顺序的多 scope/多同 kind requirement/多 ownership 隐式路径全通  393ms
+ ✓ |integration| packages/cli/test/rules-sync.test.ts (1 test) 1230ms
+     ✓ generates a remote Chinese proposal without changing project documents  1229ms
+ ✓ |integration| packages/core/test/push-archive-summary.test.ts (1 test) 1193ms
+     ✓ keeps every archive path out of generic push proposals  1192ms
+ ✓ |integration| packages/cli/test/plan-finalize-review.e2e.test.ts (5 tests) 1166ms
+     ✓ 匹配的 inline 收据 → Layer 3 通过并 finalize 成功  425ms
+     ✓ 静态评审收据不绑定墙钟：不带 completedAt 也能 finalize（时间戳不进 input_hash）  411ms
+ ✓ |integration| packages/core/test/freshness.test.ts (10 tests) 834ms
+     ✓ COM-003: all five agents from one publication are CURRENT with their own projections  312ms
+ ✓ |integration| packages/cli/test/sync-process.test.ts (10 tests) 713ms
+     ✓ SYNC-005 distinguishes stall timeout from wall timeout  580ms
+ ✓ |integration| packages/cli/test/entrypoint.test.ts (3 tests) 633ms
+     ✓ runs --help when invoked through node_modules junction  627ms
+ ✓ |integration| packages/cli/test/plan-finalization-fs-port.test.ts (4 tests) 405ms
+ ✓ |integration| packages/cli/test/git-delta.test.ts (2 tests) 373ms
+     ✓ ignores legacy sync receipts because sync no longer persists a baseline  364ms
+ ✓ |integration| packages/cli/test/workflow-data-resolve.test.ts (9 tests) 396ms
+     ✓ resolves monorepo workflow data package when cwd has no sibling workflow package  372ms
+ ✓ |integration| packages/cli/test/archive-full-chain.e2e.test.ts (1 test) 327ms
+     ✓ completes the durable publish chain with real receipts  326ms
+ ✓ |integration| packages/cli/test/plan-evidence-pack-template.test.ts (18 tests) 291ms
+ ✓ |integration| packages/cli/test/harness-bundle.test.ts (19 tests) 263ms
+ ✓ |integration| packages/cli/test/archive-outbox-fs-port.test.ts (11 tests) 165ms
+ ✓ |integration| packages/cli/test/connect.test.ts (9 tests) 218ms
+ ✓ |integration| packages/cli/test/managed-execution.test.ts (3 tests) 129ms
+ ✓ |integration| packages/cli/test/project-menu-connect.test.ts (4 tests) 134ms
+ ✓ |integration| packages/cli/test/archive-cas-resolver.test.ts (8 tests) 120ms
+ ✓ |integration| packages/cli/test/archive-production-ports.test.ts (4 tests) 71ms
+ ✓ |integration| packages/cli/test/events-sync.test.ts (2 tests) 84ms
+ ✓ |integration| packages/core/test/agent-adapters.test.ts (11 tests) 56ms
+ ✓ |integration| packages/cli/test/codegraph-status.test.ts (8 tests) 45ms
+ ✓ |integration| packages/cli/test/project-detection.test.ts (4 tests) 28ms
+ ✓ |integration| packages/cli/test/push-pull-adapter.test.ts (18 tests) 41ms
+ ✓ |integration| packages/cli/test/plan-finalization-outbox-verifier.test.ts (4 tests) 23ms
+ ✓ |integration| packages/cli/test/doctor.test.ts (3 tests) 27ms
+ ✓ |integration| packages/cli/test/codebuddy-setup.test.ts (4 tests) 26ms
+ ✓ |integration| packages/cli/test/config-origins.test.ts (1 test) 15ms
+ ✓ |integration| packages/cli/test/capabilities.test.ts (3 tests) 25ms
+ ✓ |integration| packages/cli/test/init-config.test.ts (19 tests) 20ms
+ ✓ |integration| packages/cli/test/last-server.test.ts (4 tests) 13ms
+ ✓ |integration| packages/cli/test/sync-harness.test.ts (4 tests) 15ms
+ ✓ |integration| packages/cli/test/plan-interaction-presentation.test.ts (9 tests) 16ms
+ ✓ |integration| packages/cli/test/sync-harness-closure.test.ts (4 tests) 15ms
+ ✓ |integration| packages/cli/test/skill-command-contract.test.ts (2 tests) 10ms
+ ✓ |integration| packages/cli/test/push-pull-skill-contract.test.ts (1 test) 5ms
+ ✓ |integration| packages/cli/test/risk-signal-inference.test.ts (8 tests) 4ms
+ ✓ |integration| packages/cli/test/archive-compose.test.ts (1 test) 6ms
+ ✓ |integration| packages/cli/test/sync-guidance.test.ts (2 tests) 4ms
+ ✓ |integration| packages/cli/test/python-runtime.test.ts (2 tests) 4ms
+ ✓ |integration| packages/cli/test/bundle-workspace-sources.test.ts (2 tests) 3ms
+ ✓ |integration| packages/cli/test/git-probe.test.ts (5 tests) 4ms
+ ✓ |integration| packages/cli/test/sync-push-plan.test.ts (7 tests) 3ms
+
+ Test Files  165 passed (165)
+      Tests  2244 passed (2244)
+   Start at  11:33:36
+   Duration  140.09s (transform 7.56s, setup 0ms, import 47.32s, tests 210.96s, environment 12ms)
+
