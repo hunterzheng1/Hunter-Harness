@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.4.17] — workflow-harness
+
+> 归档性能优化轮（CLI 无代码变更，不发 hunter-harness）：归档全流程
+> （600 文件/14MB 基准）34.99s → 5.04s（-85.5%），真实规模收益随树大小放大。
+> workflow-harness 0.4.16 → 0.4.17，bundle 0.2.76 → 0.2.77。
+> 验证：TS 2244 用例、Python safe profile 65/65 模块、6000 文件线性扩展、
+> 新增 15 个性能行为回归防护测试。
+
+### Fixed
+
+- **归档 append 违反事件渲染契约**（§6.1）：harness_archive.append_event 此前
+  每次 append 都全量重渲染 execution-log（CLI 路径仅 phase.end/auto-seal
+  渲染），且不尊重 render-policy.json（on-demand 项目被强制重渲染）。对齐后
+  仅终局 phase.end 渲染，收集/摘要的新鲜度依赖保留。
+- **append_event 双重全量读**：append 后不再重读整个 events.ndjson，用
+  existing+autoSealed+event 内存拼装渲染。
+- **同尺寸改写在 mtime 粒度窗口内的陈旧哈希**（防护测试背压下捕获）：
+  NTFS mtime/ctime 同源同时钟（~2ms 粒度）已如实文档化为 stat 缓存边界，
+  进程内零触发路径（审计固化在防护测试 docstring）；ctime 第二采样保留，
+  可捕 rename 类元数据变化。
+
+### Performance
+
+- 敏感扫描/摘要/manifest/树摘要：per-file stat 缓存 + inode 键 sha256 缓存
+  （一次归档对同一文件零重复读；拷贝后读回校验语义不变）。
+- 全树 pass 与 copytree 并行化（保序组装，磁盘产物逐字节一致）。
+- git 只读命令 memo（40 位全哈希钉住）+ product tree hash 结果 memo
+  （同一 commit 的 `git archive` 全树提取 10×→1×）。
+- 敏感扫描正则快速路径：预降大小写 + 去除 (?i) + 字面量探针（二进制数据
+  匹配 14×，与原 (?i) 行为逐字节等价，10000 例差分 fuzz 0 失配）。
+- events 解析缓存（opt-in load_events_cached）：同一次 execute 全量解析
+  17→9 次；无修正快速路径（apply_event_corrections 跳过全历史 deepcopy）。
+- staging 拷贝哈希传递 + 扫描 digest 复用：before/after manifest 与字节
+  覆盖校验对新拷贝文件零读（传递值可证伪：改动后必失配）。
+- 缓存容量 8192→131072（修复 9000+ 文件树的静默性能悬崖：修复前
+  before-manifest 回退 8192 次真实读）。
+- service-stop 无会话预检（跳过 2 次子进程解释器启动）。
+- harness_ledger 指纹缓存（验证原语同进程重复指纹 21×）。
+- walk hygiene：per-file resolve() 消除（~3000 realpath 系统调用/次归档）。
+
+### Tests
+
+- 新增 `test_harness_archive_perf_guards.py`（15 用例）：冻结混合大小写
+  扫描检测、缓存失效可证伪性、同 tick 边界文档、容量下限、归档渲染契约。
+- harness 自身 Python 全量套件 468.8s → ~287s（-39%）。
+
 ## [0.4.16] — workflow-harness
 
 > harness 摩擦收口轮（CLI 无代码变更，不发 hunter-harness）：SKILL.md 文档坑
