@@ -216,3 +216,11 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   大目录每文件税，环境项）。6000 文件分解：durable 26.9s（内核拷贝 16.4 +
   协议读回 11.0）+ 首扫 12.1s——全部线性协议 I/O，零平方级成分。
   会话最后一个未验证假设（"优化在真实规模下成立"）就此关闭。
+
+- 迭代 23（防忽悠加固）：**缓存指纹加 ctime_ns 第二信号**：e23 的防护测试在
+  背压负载下抓到真实弱点——同尺寸改写可落入 mtime 粒度窗口（scan→mutate
+  背靠背时）导致 scanned_file_digest 返回陈旧值。修复：_file_hash_cache
+  指纹 (size,mtime)→(size,mtime,ctime)（NTFS ctime 独立更新于任何写入/
+  重命名/元数据变化），三个读取点 + 两个写入点同步。差分验证：同尺寸 XOR
+  改写被拒、publishable digest 跨缓存状态稳定、传递表 0 失配；266 测试
+  背压（原失败场景）绿。另清理 .auto 临时产物。
