@@ -145,3 +145,16 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
 - 前一会话（测试提速，test_wall_seconds 176.8→128.2s）见 git log / log.jsonl
   早期条目，目标已切换。
+
+
+## 会话结束状态（2026-09-02，17 轮实验后用户决定停止）
+
+- **最终：archive_seconds 中位 5.22s（基线 34.99，-85.1%）**；置信度 19.6×。
+- 真实世界收益：1.3MB 事件流 -11%/轮（e16）+ 17→9 解析（e13）+ git archive
+  10×→1×（e10）+ 正则 14×（e12）——随仓库规模放大。
+- 副产品：harness 自身 Python 全量套件 468.8s → 282.7s（-40%）。
+- 正确性：safe profile 64/64 ×2、typecheck、93 events + 229 archive 测试、
+  每轮 benchmark integrity 断言全绿。
+- bundle content_sha256 已同步提交；下次发版会把优化带给消费项目。
+- 残余：Defender 环境税（用户侧排除目录可消，见 ideas.md）；协议必要 I/O 地板
+  （首扫/durable 读回/staging 拷贝）。剩余候选已评估并书面否决（ideas.md）。
