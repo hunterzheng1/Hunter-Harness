@@ -134,6 +134,12 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   durable 内核拷贝 + 协议读回、启动 ~0.25s。剩余候选均已评估并书面否决
   （见 ideas.md：源读统一跨模块耦合 ~0.2s / execution-log 渲染延迟契约风险 /
   collect×3 去重削弱验证独立性）。
+- 迭代 15（-84.7%→ 5.37）：**apply_event_corrections 无修正快速路径**：
+  原实现无论有无 correction 都 deepcopy 全部事件历史；它在每次 append 的
+  render 循环（~11 次/execute）+ collect×3 + preflight 中被调用——大日志下
+  O(n²) 深拷贝 churn。快速路径：单遍检测无 correction → 原样返回输入列表
+  （无可修正时投影=输入）；有 correction 时完整独立拷贝投影照旧。
+  调用方全部审计只读（与 e13 同契约）。1.3MB 日志 A/B：2.47→2.19s（-11%）。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
