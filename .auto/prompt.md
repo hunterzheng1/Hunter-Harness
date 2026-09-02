@@ -224,3 +224,12 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   重命名/元数据变化），三个读取点 + 两个写入点同步。差分验证：同尺寸 XOR
   改写被拒、publishable digest 跨缓存状态稳定、传递表 0 失配；266 测试
   背压（原失败场景）绿。另清理 .auto 临时产物。
+
+- 迭代 24（纠错）：**e29 的修复建立在错误假设上**——200 次系统试验证明
+  NTFS mtime/ctime 是不同字段但来自同一时钟、同一 ~2ms 粒度（ctime 是
+  同一时钟的第二次采样，非独立信号）；同 tick 内同尺寸改写对两者都隐形
+  （53/200 陈旧命中）。正确处置：同 tick 窗口归类为 stat 缓存的文件系统级
+  边界（与 e14 copy/read 竞态同类，生产暴露可忽略——finalize 不会 2ms 内
+  原地重写拷贝文件，durable 读回不受影响）；防护测试改为确定性 utime
+  tick-bump（10/10 稳定）；误导性注释修正；ctime 校验保留（免费第二采样，
+  可捕 rename 类元数据变化）。
