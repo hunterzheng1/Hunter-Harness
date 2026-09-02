@@ -21,6 +21,7 @@ ad-hoc differential diagnostics during the optimization session):
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -32,6 +33,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_archive as ha  # noqa: E402
+import harness_ledger as hl  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_runtime as hruntime  # noqa: E402
 
@@ -228,8 +230,19 @@ class ScannedFileDigestTests(unittest.TestCase):
             hruntime.scanned_file_digest(file_path, "key.txt"),
             hashlib.sha256(b"payload" * 50).hexdigest(),
         )
-        # Same size, different bytes: the mtime fingerprint must break.
+        # Same size, different bytes: the stat fingerprint must break.
+        # Deterministic mtime bump: NTFS timestamps share one clock with ~2ms
+        # granularity, so a back-to-back write can land in the same tick as
+        # the scan's stat (observed 53/200 under load) and leave BOTH mtime
+        # and ctime unchanged. That same-tick window is a documented boundary
+        # of stat-keyed caches (same class as the copy/read race); the bump
+        # here models a mutation that has actually landed.
         file_path.write_bytes(b"PAYLOAD" * 50)
+        stat = file_path.stat()
+        os.utime(
+            file_path,
+            ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000),
+        )
         self.assertIsNone(
             hruntime.scanned_file_digest(file_path, "key.txt")
         )
@@ -248,6 +261,54 @@ class CacheCapacityTests(unittest.TestCase):
     def test_file_cache_caps_cover_large_change_trees(self) -> None:
         self.assertGreaterEqual(hruntime._FILE_CACHE_MAX, 131_072)
         self.assertGreaterEqual(ha._SHA256_CACHE_MAX, 131_072)
+
+
+class DoubleSignalFingerprintTests(unittest.TestCase):
+    """e29/e30: every stat-keyed cache must refuse same-size rewrites.
+
+    A single mtime signal has a real granularity window (a write can land
+    inside it under load — the e29 guard test caught exactly that in the
+    backpressure run). Every cache now verifies (size, mtime_ns, ctime_ns):
+    ctime moves on any write independently of mtime, so a stale hit needs
+    both clocks to stay still across a content change.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="guard-2sig-"))
+        _clear_caches()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_all_caches_refuse_same_size_rewrite(self) -> None:
+        import hashlib
+
+        source = self.tmp / "src"
+        (source / "d").mkdir(parents=True)
+        file_path = source / "d" / "f.bin"
+        file_path.write_bytes(b"A" * 4096)
+
+        # harness_archive inode cache
+        ha.sha256_file(file_path)
+        # harness_runtime scan digest cache
+        hruntime.sensitive_evidence_candidates(source)
+        # harness_ledger fingerprint cache
+        hl.compute_inputs_hash([str(file_path)])
+
+        file_path.write_bytes(b"B" * 4096)  # same size, new bytes
+        stat = file_path.stat()
+        os.utime(file_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000))
+        self.assertEqual(
+            ha.sha256_file(file_path),
+            hashlib.sha256(b"B" * 4096).hexdigest(),
+        )
+        self.assertIsNone(
+            hruntime.scanned_file_digest(file_path, "d/f.bin")
+        )
+        self.assertEqual(
+            hl.sha256_file(file_path),
+            hashlib.sha256(b"B" * 4096).hexdigest(),
+        )
 
 
 class AppendRenderContractTests(unittest.TestCase):

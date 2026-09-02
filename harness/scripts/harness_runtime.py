@@ -205,11 +205,13 @@ def scanned_file_digest(path: Path, relative: str) -> str | None:
         stat = path.stat()
     except OSError:
         return None
-    # Both mtime and ctime must match. mtime alone has a real granularity
-    # window (a scan followed by a same-size rewrite can land inside it under
-    # load); ctime (NTFS change time) updates on any write/rename/metadata
-    # change and is independent of mtime, so a stale hit requires BOTH clocks
-    # to stay still across a content change - effectively impossible.
+    # (size, mtime_ns, ctime_ns) must all match. NOTE: on NTFS mtime and
+    # ctime are separate fields but share ONE clock with ~2ms granularity, so
+    # ctime is a second sample of the same clock, not an independent signal -
+    # a same-size rewrite inside the same tick can still slip through both.
+    # That same-tick window is the documented boundary of stat-keyed caches
+    # (same class as the copy/read race); anything stricter needs content
+    # hashing, which these caches exist to avoid.
     if (
         cached[0] != stat.st_size
         or cached[1] != stat.st_mtime_ns

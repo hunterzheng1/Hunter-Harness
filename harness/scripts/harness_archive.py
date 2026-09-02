@@ -194,15 +194,17 @@ def sha256_file(path: Path) -> str:
             transferred is not None
             and transferred[0] == stat.st_size
             and transferred[1] == stat.st_mtime_ns
+            and transferred[2] == stat.st_ctime_ns
         ):
-            return transferred[2]
+            return transferred[3]
         cached = _sha256_cache.get(_sha256_cache_key(path, stat))
         if (
             cached is not None
             and cached[0] == stat.st_size
             and cached[1] == stat.st_mtime_ns
+            and cached[2] == stat.st_ctime_ns
         ):
-            return cached[2]
+            return cached[3]
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -216,9 +218,14 @@ def sha256_file(path: Path) -> str:
         return result
     if len(_sha256_cache) >= _SHA256_CACHE_MAX:
         _sha256_cache.clear()
+    # (size, mtime_ns, ctime_ns): mtime + ctime are separate fields but share
+    # one clock (~2ms granularity on NTFS) - a second sample, not an
+    # independent signal. Same-tick rewrites remain a documented cache
+    # boundary; see harness_runtime.scanned_file_digest.
     _sha256_cache[_sha256_cache_key(path, stat)] = (
         stat.st_size,
         stat.st_mtime_ns,
+        stat.st_ctime_ns,
         result,
     )
     return result
@@ -8028,6 +8035,7 @@ def _parallel_copytree(
         if (
             s_stat.st_size == d_stat.st_size
             and s_stat.st_mtime_ns == d_stat.st_mtime_ns
+            and s_stat.st_ctime_ns == d_stat.st_ctime_ns
         ):
             # The source tree was hashed by the sensitive-evidence scan earlier
             # in this process; reuse that digest instead of re-reading the
@@ -8046,6 +8054,7 @@ def _parallel_copytree(
             _copy_hash_transfers[str(dst_file)] = (
                 d_stat.st_size,
                 d_stat.st_mtime_ns,
+                d_stat.st_ctime_ns,
                 digest_hex,
             )
 

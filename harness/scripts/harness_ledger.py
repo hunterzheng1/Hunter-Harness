@@ -584,8 +584,9 @@ def sha256_file(path: Path) -> str:
             cached is not None
             and cached[0] == stat.st_size
             and cached[1] == stat.st_mtime_ns
+            and cached[2] == stat.st_ctime_ns
         ):
-            return cached[2]
+            return cached[3]
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while True:
@@ -602,9 +603,13 @@ def sha256_file(path: Path) -> str:
         return result
     if len(_ledger_sha256_cache) >= _LEDGER_SHA256_CACHE_MAX:
         _ledger_sha256_cache.clear()
+    # (size, mtime_ns, ctime_ns): mtime + ctime share one clock (~2ms NTFS
+    # granularity) - a second sample, not an independent signal; same-tick
+    # rewrites remain a documented cache boundary.
     _ledger_sha256_cache[_ledger_sha256_cache_key(path, stat)] = (
         stat.st_size,
         stat.st_mtime_ns,
+        stat.st_ctime_ns,
         result,
     )
     return result
