@@ -455,8 +455,48 @@ def current_issues(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def load_events(path: Path) -> list[dict[str, Any]]:
+    return _load_events_impl(path, cached=False)
+
+
+# Per-process cache for read-only event loads, keyed by (path, size, mtime_ns).
+# Opt-in via load_events_cached(): the returned list is SHARED and callers must
+# not mutate it (audited read-only call sites only). Appends always grow the
+# NDJSON file, so a (size, mtime) fingerprint hit proves the bytes are
+# unchanged since the cached parse. A double-stat guards torn reads.
+_EVENTS_CACHE_MAX = 8
+_events_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
+
+
+def load_events_cached(path: Path) -> list[dict[str, Any]]:
+    """Read-only variant of load_events backed by a stat-keyed cache.
+
+    Archive finalize loads the same unchanged events file repeatedly between
+    appends (status gate, artifact preflight, collect, freeze, consistency
+    checks); on large real change logs each full JSON parse costs tens of
+    milliseconds. The cache is safe because: (1) any append grows the file so
+    the fingerprint always misses, (2) the fingerprint is taken before and
+    verified after the read, and (3) callers of this variant are audited to
+    never mutate the returned event dicts (the shared list IS the cache).
+    """
+    return _load_events_impl(path, cached=True)
+
+
+def _load_events_impl(path: Path, *, cached: bool) -> list[dict[str, Any]]:
     if not path.exists():
         return []
+    if cached:
+        try:
+            first_stat = path.stat()
+        except OSError:
+            first_stat = None
+        if first_stat is not None:
+            hit = _events_cache.get(str(path))
+            if (
+                hit is not None
+                and hit[0] == first_stat.st_size
+                and hit[1] == first_stat.st_mtime_ns
+            ):
+                return hit[2]
     events: list[dict[str, Any]] = []
     text = path.read_text(encoding="utf-8-sig")
     for line_no, line in enumerate(text.splitlines(), start=1):
@@ -470,6 +510,23 @@ def load_events(path: Path) -> list[dict[str, Any]]:
         if not isinstance(obj, dict):
             raise ValueError(f"event at {path} line {line_no} is not an object")
         events.append(normalize_event(obj))
+    if cached and first_stat is not None:
+        try:
+            second_stat = path.stat()
+        except OSError:
+            second_stat = None
+        if (
+            second_stat is not None
+            and second_stat.st_size == first_stat.st_size
+            and second_stat.st_mtime_ns == first_stat.st_mtime_ns
+        ):
+            if len(_events_cache) >= _EVENTS_CACHE_MAX:
+                _events_cache.clear()
+            _events_cache[str(path)] = (
+                second_stat.st_size,
+                second_stat.st_mtime_ns,
+                events,
+            )
     return events
 
 

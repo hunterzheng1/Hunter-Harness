@@ -105,6 +105,13 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   把 change_dir.resolve() 提出循环（~600 冗余 realpath；per-entry containment
   resolve 保留不动）。A/B：10.40→7.05。测量期遭 Defender 持续风暴（单 run 最高
   56s，两腿均出现），以 A/B 与快态为准。
+- 迭代 11（-83.3%→ 5.86）：**敏感扫描正则快速路径**：根因不是 I/O 而是
+  `(?i)`——Python re 在 IGNORECASE 下无法用字面前缀快速路径，回退逐位置交替
+  匹配（二进制数据上慢 14×；同数据 sha256 只要 0.008s）。改为 `bytes.lower()`
+  预降主体（ASCII-only、保长度、C 速度）+ 去掉模式 `(?i)`（全小写字面量，与
+  bytes 模式 (?i) 逐字节等价）+ 纯字面量关键字探针两段式。差分 fuzz 10000 例
+  0 失配；warm 树扫描 1.15s→0.24s；A/B +0.13s（扫描已 8 线程并行所以墙钟
+  收益小于原语收益）。注意 Defender 冷读税（最高 8.5ms/文件）是环境项非代码项。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。

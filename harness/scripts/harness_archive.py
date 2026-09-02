@@ -283,7 +283,7 @@ def append_event(
 ) -> dict[str, Any]:
     """Append one event via harness_events primitives and re-render execution-log."""
     path = he.events_path(change_dir)
-    existing = he.load_events(path) if path.exists() else []
+    existing = he.load_events_cached(path) if path.exists() else []
     event: dict[str, Any] = {
         "schema_version": he.SCHEMA_VERSION,
         "id": he.new_event_id(existing),
@@ -2248,7 +2248,7 @@ def review_evidence_present(
     if find_review_reports(change_dir):
         return True
     if events is None:
-        events = he.load_events(change_dir / "events.ndjson")
+        events = he.load_events_cached(change_dir / "events.ndjson")
     return review_phase_completed(events)
 
 
@@ -3049,7 +3049,7 @@ def check_status(
     # --- test / review reports ---
     test_reports = find_test_reports(change_dir)
     review_reports = find_review_reports(change_dir)
-    events = he.load_events(events_path) if events_path.is_file() else []
+    events = he.load_events_cached(events_path) if events_path.is_file() else []
     review_ran = review_evidence_present(change_dir, events)
 
     checks["test_reports"] = [str(p.relative_to(change_dir)) for p in test_reports]
@@ -3407,7 +3407,7 @@ def archive_auto_gate(
         }
 
     events_path = state_root / "events.ndjson"
-    events = he.load_events(events_path) if events_path.is_file() else []
+    events = he.load_events_cached(events_path) if events_path.is_file() else []
     policy = load_gate_policy(change_dir) or {}
     raw_planned = policy.get("plannedPhases")
     if not isinstance(raw_planned, list) or not raw_planned:
@@ -5508,7 +5508,7 @@ def collect_summary_data(
     has_events = events_file.is_file() and events_file.stat().st_size > 0
     if has_events:
         try:
-            events = he.load_events(events_file)
+            events = he.load_events_cached(events_file)
             sources.append("events.ndjson")
         except ValueError:
             events = []
@@ -6171,7 +6171,7 @@ def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
     the cutoff hash lets any later reader prove that (INT-006/RET-19).
     """
     events_file = he.events_path(work_dir)
-    events = he.load_events(events_file) if events_file.is_file() else []
+    events = he.load_events_cached(events_file) if events_file.is_file() else []
     if events_file.is_file():
         # Windows fsync requires a writable handle; O_RDONLY raises EBADF.
         fd = os.open(str(events_file), os.O_RDWR | os.O_BINARY)
@@ -6249,7 +6249,7 @@ def validate_source_consistency(
         except (OSError, json.JSONDecodeError):
             actual_count = None
     if actual_count is None and events_file.is_file():
-        actual_count = len(he.load_events(events_file))
+        actual_count = len(he.load_events_cached(events_file))
     summary_count = (summary.get("reportPipeline") or {}).get("event_count")
     if actual_count is not None and summary_count is not None:
         if int(summary_count) != int(actual_count):
@@ -7477,7 +7477,7 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
         return {"ok": True, "items": [], "blocking": []}
     change_id = change_dir.name
     project_root = find_project_root(change_dir)
-    events = he.apply_event_corrections(he.load_events(events_p))
+    events = he.apply_event_corrections(he.load_events_cached(events_p))
     for event in events:
         if event.get("type") != "artifact":
             continue
