@@ -48,6 +48,7 @@ fi
   harness.scripts.tests.test_harness_archive_preflight \
   harness.scripts.tests.test_harness_archive_remote \
   harness.scripts.tests.test_harness_runtime \
+  harness.scripts.tests.test_harness_archive_perf_guards \
   > .auto/archive-tests.out 2>&1
 TESTS_RC=$?
 if [ "$TESTS_RC" -ne 0 ]; then
