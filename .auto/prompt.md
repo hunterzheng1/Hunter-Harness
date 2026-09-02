@@ -129,6 +129,11 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   durable staged 读回与 restore 校验保持 record_hashes=False 真实读。
   注意：v1 用 Python 流式拷贝边写边哈希反而吃掉收益（copy2 走内核
   CopyFile2 快路径），v2 改回 copy2+源侧哈希。
+- 迭代 14（收口，-84.5%→ 5.42）：全量 safe profile 64/64 模块绿（覆盖 6-13 轮
+  共享代码改动）+ 最终测量。地板定性（callee 级 profile）：首扫 600 冷读 1.12s、
+  durable 内核拷贝 + 协议读回、启动 ~0.25s。剩余候选均已评估并书面否决
+  （见 ideas.md：源读统一跨模块耦合 ~0.2s / execution-log 渲染延迟契约风险 /
+  collect×3 去重削弱验证独立性）。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。

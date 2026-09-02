@@ -375,7 +375,20 @@ def apply_event_corrections(events: list[dict[str, Any]]) -> list[dict[str, Any]
     Corrections may target only earlier events and use an old-value hash as an
     optimistic-concurrency guard. The correction records remain in the raw
     stream; projections return only the corrected domain events.
+
+    Fast path: when the stream contains no correction events the projection
+    IS the input, so the list is returned as-is instead of deep-copied. All
+    callers are read-only consumers (iteration, grouping, rendering); when
+    corrections exist the full independent-copy projection below still applies.
+    This matters because render/projection loops re-apply corrections after
+    every append — deep-copying the whole history each time was O(n²) churn on
+    large change logs.
     """
+    for event in events:
+        if event.get("type") == "correction":
+            break
+    else:
+        return events
     projected: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     for raw in events:
