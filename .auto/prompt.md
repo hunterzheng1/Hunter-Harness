@@ -184,3 +184,9 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
 - 副产品：harness 自身全量套件 468.8s → ~285-290s（-38%）。
 - 后续交还用户：发版流程（把优化带给消费项目）、可选 Defender 排除目录
   （ideas.md 有现成命令）。
+
+- 迭代 18（收尾加固）：**回归防护测试**（test_harness_archive_perf_guards.py，
+  13 用例）：e12 混合大小写检测/占位符跳过/内部键豁免、e13 缓存在 append 后
+  必失效、e14 传递表可证伪（改后=新哈希）+ 无扫描回退、e18 stat 失配拒绝、
+  e19 渲染契约 + render-policy。审计发现这 5 项优化此前只有一次性诊断验证、
+  零持久化覆盖。已入 measure.sh 门禁。
