@@ -15,10 +15,8 @@
 
 ## 待试（均为小收益，基准地板已达，谨慎评估）
 
-- **源侧三次读统一**：源文件在一次 execute 中被读 3 次（hr 扫描 / record-hash
-  sha256_file / copy2 内核拷贝）。把 hr 扫描的 per-file digest 以 inode 键暴露给
-  archive.sha256_file 可省 600 次 warm 读（~0.1-0.3s，Defender 活跃时更高），
-  但引入跨模块缓存耦合。仅当真实规模验证收益 >0.3s 才做。
+- ~~源侧三次读统一~~ e18：scanned_file_digest 公共访问器（扫描 digest 复用，
+  门槛 0.3s 先测后做，实测 0.406s 达标落地）。
 - **execution-log 渲染延迟**：finalize 内 7 次 append 每次全量重渲染
   execution-log.md（O(n²) 写）。800 事件下每次渲染 10-30ms → 共 ~0.2s。
   风险：append 语义变化（日志新鲜度契约）；需确认无读者在 finalize 中途读它。

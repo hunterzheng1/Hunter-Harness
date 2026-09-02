@@ -140,6 +140,12 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   O(n²) 深拷贝 churn。快速路径：单遍检测无 correction → 原样返回输入列表
   （无可修正时投影=输入）；有 correction 时完整独立拷贝投影照旧。
   调用方全部审计只读（与 e13 同契约）。1.3MB 日志 A/B：2.47→2.19s（-11%）。
+- 迭代 16（-85.6%→ 5.04）：**源读统一（scanned_file_digest）**：staging 拷贝
+  的源侧哈希复用敏感扫描已算过的 digest（hruntime._file_hash_cache，相对路径
+  +size/mtime 校验的公共访问器；任何疑虑返回 None 回退真读）。预设门槛
+  （>0.3s）先测后做：warm sha256×600 实测 0.406s 达标。三路径差分验证
+  （有扫描/无扫描回退/扫描后改动不返回陈旧值）。候选 B（渲染 4ms×7）测得
+  negligible 已关闭。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
