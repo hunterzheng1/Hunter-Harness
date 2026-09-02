@@ -99,6 +99,12 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   （键=project+解析后全哈希+limit；它直接 subprocess 调 `git archive` 绕过了
   文本版 git_run memo，同一 product commit 每次归档被全树 tar 提取 10 次 → 1 次；
   真实仓库收益随体积放大）。
+- 迭代 10（-77.2%→ 7.97 快态 ~6.9）：**walk hygiene**：
+  `_publishable_tree_digest` 的收据排除从 per-file resolve() 改为相对路径比较
+  （扫描侧早已如此并带注释；~2440 realpath/次归档）；`validate_source_consistency`
+  把 change_dir.resolve() 提出循环（~600 冗余 realpath；per-entry containment
+  resolve 保留不动）。A/B：10.40→7.05。测量期遭 Defender 持续风暴（单 run 最高
+  56s，两腿均出现），以 A/B 与快态为准。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。

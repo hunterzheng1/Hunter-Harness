@@ -43,12 +43,24 @@ SECRET_SCAN_RECEIPT_REL = Path("meta") / "secret-scan-receipt.json"
 # meta/change-context.json。runtime/ 是各阶段的草稿（review 的 diff、临时校验
 # 脚本、命令输出重定向），从不入包——拿它挡发布，挡的是永远不会离开本机的字节。
 PUBLICATION_EXCLUDED_DIRS: tuple[str, ...] = ("runtime",)
+# These patterns deliberately have NO (?i) flag: the scan pre-lowers the
+# subject bytes (bytes.lower(), ASCII-only, length-preserving) and matches
+# case-sensitively, which is byte-for-byte equivalent to (?i) matching on
+# ASCII-literal patterns but far faster (re cannot use its literal fast path
+# under (?i) and falls back to per-position alternation).
+# The probe below is a pure literal alternation of every keyword the two full
+# patterns can match, so "probe miss" proves "no full match"; probe hit runs
+# the full patterns. On binary/plan-file content this skips the expensive
+# per-position matching entirely.
+_SENSITIVE_KEYWORD_PROBE = re.compile(
+    rb"(?:password|passwd|token|secret|cookie|database[_-]?url|authorization)"
+)
 _SENSITIVE_ASSIGNMENT = re.compile(
-    rb"(?i)[\"']?(?:password|passwd|token|secret|cookie|database[_-]?url)"
+    rb"[\"']?(?:password|passwd|token|secret|cookie|database[_-]?url)"
     rb"[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"']{4,})"
 )
 _AUTHORIZATION_ASSIGNMENT = re.compile(
-    rb"(?i)[\"']?authorization[\"']?\s*[:=]\s*[\"']?"
+    rb"[\"']?authorization[\"']?\s*[:=]\s*[\"']?"
     rb"(?:(?:bearer|basic)\s+)?(?P<value>[^\s\"']{4,})"
 )
 _ADAPTERS = {
@@ -433,16 +445,30 @@ def _sensitive_candidates(
         except OSError:
             return _unreadable
         raw_digest = hashlib.sha256(raw).digest()
-        finding = next(
-            (
-                match
-                for pattern in (_SENSITIVE_ASSIGNMENT, _AUTHORIZATION_ASSIGNMENT)
-                for match in pattern.finditer(raw)
-                if not _is_sensitive_placeholder(match.group("value"))
-                and not _is_harness_internal_key(raw, match)
-            ),
-            None,
-        )
+        # (?i) over bytes forces re into per-position alternation matching
+        # (no literal-prefix fast path), which is an order of magnitude slower
+        # on binary data. bytes.lower() is ASCII-only and length-preserving,
+        # and the patterns below contain only lowercase ASCII literals, so
+        # matching the lowered buffer with the patterns as-is (case-SENSITIVE)
+        # yields exactly the same match set and byte offsets as the previous
+        # (?i) behavior — at C speed for the lowering and fast-path scanning
+        # for the regex. Digests still hash the original bytes.
+        lowered = raw.lower()
+        finding = None
+        if _SENSITIVE_KEYWORD_PROBE.search(lowered) is not None:
+            finding = next(
+                (
+                    match
+                    for pattern in (
+                        _SENSITIVE_ASSIGNMENT,
+                        _AUTHORIZATION_ASSIGNMENT,
+                    )
+                    for match in pattern.finditer(lowered)
+                    if not _is_sensitive_placeholder(match.group("value"))
+                    and not _is_harness_internal_key(lowered, match)
+                ),
+                None,
+            )
         entry: dict[str, Any] | None = None
         if finding is not None:
             entry = {
