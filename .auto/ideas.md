@@ -1,23 +1,46 @@
 # 归档优化：待试想法
 
-- ~~git 子进程去重~~：已完成（e6 git_run 哈希钉住 memo + e10
-  compute_product_tree_hash_for_commit 结果 memo，git archive 10x→1x）。
-- **scan+manifest 融合**：第一次敏感扫描（change_dir）与 staging 拷贝后的 manifest
-  （work_dir）是不同文件集，无法直接融合；但 staging 拷贝读源文件时可以顺带填充
-  sha256 缓存（读的是源字节，不写 manifest，不削弱拷贝后校验）→ manifest-before
-  只需 stat。注意：**不能**用"写入流哈希"代替"读回哈希"（会让 manifest/coverage
-  变成自证）。
-- **harness_archive 导入瘦身**：11k 行模块 import ~1s；按子命令懒加载 hruntime/heff
-  等依赖。
-- **events append 批处理**：finalize 内 6+ 次 append_event 每次全量读写 events.ndjson；
-  已有 batch-append 机制但 finalize 未用（注意 phase.end 仍需单次 append 的语义）。
-- **Defender 排除目录**（非代码）：把 .harness/archive-operations、durable root、
-  %TEMP%\harness-* 加入 Defender 排除可消除慢态；属用户侧配置，不在本仓库范围。
+## 已完成（e1-e14，见 prompt.md / log.jsonl）
 
-## 已否决
+- ~~per-file stat 缓存（敏感扫描 + publishable digest）~~ e1
+- ~~inode 键 sha256 缓存（manifest/coverage/durable payload hash 共享）~~ e2
+- ~~全树 pass 并行 I/O（扫描/digest/manifest/树摘要）~~ e3
+- ~~并行 copytree（符号链接回退）~~ e4
+- ~~git_run 只读命令 memo + compute_product_tree_hash_for_commit 结果 memo~~ e6/e10
+- ~~append_event 去二次全量读 + load_events_cached opt-in 事件缓存~~ e7/e13
+- ~~service-stop 无会话预检~~ e8
+- ~~walk hygiene（resolve() per-file 消除）~~ e11
+- ~~敏感扫描正则快速路径（lower + 去 (?i) + 字面量探针）~~ e12
+- ~~staging 拷贝哈希传递（before-manifest 零读新文件）~~ e14
 
-- hash-while-copy 写入流哈希替代读回校验：削弱 manifest/coverage/durable 校验语义
-  （自证），明确不做。
-- durable readback 缓存：readback 的目的就是读回磁盘字节检测腐化；inode 缓存已让
-  verified_hash 命中 staged_hash（rename 同 inode），staged_hash 保持真实读。
-- maxWorkers 提高到 >8：I/O 延迟已充分重叠，收益递减且放大 Defender 抖动。
+## 待试（均为小收益，基准地板已达，谨慎评估）
+
+- **源侧三次读统一**：源文件在一次 execute 中被读 3 次（hr 扫描 / record-hash
+  sha256_file / copy2 内核拷贝）。把 hr 扫描的 per-file digest 以 inode 键暴露给
+  archive.sha256_file 可省 600 次 warm 读（~0.1-0.3s，Defender 活跃时更高），
+  但引入跨模块缓存耦合。仅当真实规模验证收益 >0.3s 才做。
+- **execution-log 渲染延迟**：finalize 内 7 次 append 每次全量重渲染
+  execution-log.md（O(n²) 写）。800 事件下每次渲染 10-30ms → 共 ~0.2s。
+  风险：append 语义变化（日志新鲜度契约）；需确认无读者在 finalize 中途读它。
+- **events batch-append 用于 finalize 内的机械事件**：CONTEXT.md 已有机制但
+  finalize 未用；phase.end 必须单次 append 的语义限制哪些能合并不明确。
+
+## 环境项（非代码，用户侧）
+
+- **Defender 排除目录**：`.harness/archive-operations`、durable root、
+  `%TEMP%\harness-*`。可消除慢态（单 run 最高 56s）与首读/首写税；预期把快态
+  再压 ~0.5-1s。PowerShell（管理员）：
+  `Add-MpPreference -ExclusionPath <path>`。
+
+## 已否决（勿重试）
+
+- hash-while-copy 写入流哈希替代读回校验（自证）/ durable staged readback 缓存：
+  削弱腐化检测语义，prompt.md 明令禁止。
+- Python 流式拷贝边写边哈希：copy2 走内核 CopyFile2，Python 读写循环反而更慢
+  （e14 v1 实测吃掉全部收益）。
+- collect_summary_data ×3 去重：三次调用分别是 pre-freeze 预检 / canonical
+  写入 / 验证层独立重建（后者刻意验证 projection 纪律，输入含已写 summary），
+  线程化结果会削弱验证语义。
+- maxWorkers >8：收益递减且放大 Defender 抖动。
+- 工作树产品哈希（compute_product_tree_hash_detail）memo：仅 legacy 迁移路径
+  使用，非每次 execute 成本；且工作树可变，memo 不安全。

@@ -119,6 +119,16 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   已逐一审计只读；apply_event_corrections 先 deepcopy）。17→9 次解析（9 次
   均为语义必要）。基准中性（fixture 事件小），真实 1.3MB 流 A/B：2.37→2.15s，
   重解析 22.1MB→11.7MB，线性放大。保持规则：同等性能+删冗余=keep。
+- 迭代 13（→ 5.55，窗口快态 5.26-5.55）：**staging 拷贝哈希传递**：
+  before-manifest 原来要把 600 个新拷贝文件从盘读回（Defender 首读税）。
+  `_parallel_copytree(record_hashes=True)`（仅 finalize staging 启用）在拷贝时
+  记录 (dst路径, size, mtime, 源侧sha256)——copy2 保留 size+mtime 所以 dest
+  指纹=src 指纹，源哈希在拷贝中顺带算（warm）。sha256_file 先查传递表。
+  腐化检测等价性已证明：拷贝期间损坏今日本就不被发现（before 读到坏字节
+  →缓存→after 命中→相等）；manifest 之后的损坏 stat 变化→传递失效→真读。
+  durable staged 读回与 restore 校验保持 record_hashes=False 真实读。
+  注意：v1 用 Python 流式拷贝边写边哈希反而吃掉收益（copy2 走内核
+  CopyFile2 快路径），v2 改回 copy2+源侧哈希。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
