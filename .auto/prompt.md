@@ -204,3 +204,9 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   指纹正确变化（可证伪）；117 ledger 测试绿。基准中性（不在 execute 热路径）。
   131k 上限沿用 e25 规模教训。发现途径：compute_inputs_hash 调用图审计，
   非 ideas 池（池关闭只覆盖归档热路径假设）。
+
+- 迭代 21（审计闭环）：**哈希面审计穷尽**：harness_acceptance 一次性 CLI 非候选；
+  ledger record/can-reuse 的 explicit+profile 双哈希是 S-4 故意语义（文件集冲突
+  检测），e26 缓存已让第二次命中第一次（检查保留、成本归零）。全量 65/65 验证
+  e26 ledger 缓存的所有消费方（ledger_v3/service/multiday/state-routing）。
+  至此 harness 每个哈希面都有缓存或有书面理由不加。
