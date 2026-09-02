@@ -264,13 +264,21 @@ class CacheCapacityTests(unittest.TestCase):
 
 
 class DoubleSignalFingerprintTests(unittest.TestCase):
-    """e29/e30: every stat-keyed cache must refuse same-size rewrites.
+    """e29/e30: every stat-keyed cache must refuse landed same-size rewrites.
 
     A single mtime signal has a real granularity window (a write can land
     inside it under load — the e29 guard test caught exactly that in the
-    backpressure run). Every cache now verifies (size, mtime_ns, ctime_ns):
-    ctime moves on any write independently of mtime, so a stale hit needs
-    both clocks to stay still across a content change.
+    backpressure run). Every cache now verifies (size, mtime_ns, ctime_ns).
+    NOTE (e30 finding): NTFS mtime and ctime share ONE clock (~2ms grain),
+    so ctime is a second sample, not an independent signal — a rewrite
+    landing in the same tick as the cached stat can still slip through.
+    That same-tick window is a documented filesystem boundary of stat-keyed
+    caches. In-process exposure audit (e31): finalize has NO write->hash->
+    rewrite->rehash cycle for any manifest-covered file (summary-data.json
+    is written before the after-manifest covers it; events/execution-log
+    are manifest-excluded; durable staging has no in-process writer between
+    the staged and verified digests). Exposure is limited to external
+    interference within one ~2ms tick.
     """
 
     def setUp(self) -> None:
