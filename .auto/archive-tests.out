@@ -58,15 +58,9 @@ warning: in the working copy of '.harness/changes/anc-change/plans/demo-plan.md'
 warning: in the working copy of '.harness/changes/anc-change/reports/review/review-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of '.harness/changes/anc-change/tests/test-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/events.ndjson', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/meta/worktree.json', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/events.ndjson', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/anc-change/meta/worktree.json', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
-....................................................................................................
+....................................................................................................ok
 ok
 ok
 ok
@@ -854,8 +848,8 @@ ok
 ok
 ok
 ok
-ok
+
 ----------------------------------------------------------------------
-Ran 252 tests in 153.236s
+Ran 252 tests in 94.248s
 
 OK

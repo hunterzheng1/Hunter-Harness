@@ -112,6 +112,13 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   bytes 模式 (?i) 逐字节等价）+ 纯字面量关键字探针两段式。差分 fuzz 10000 例
   0 失配；warm 树扫描 1.15s→0.24s；A/B +0.13s（扫描已 8 线程并行所以墙钟
   收益小于原语收益）。注意 Defender 冷读税（最高 8.5ms/文件）是环境项非代码项。
+- 迭代 12（-85.1%→ 5.22 快态）：**opt-in 事件缓存（load_events_cached）**：
+  execute 期间同一 events.ndjson 被完整解析 17 次（gate/preflight×4/collect×3/
+  freeze/一致性/append×7）。按 (path,size,mtime_ns) 缓存 + 双 stat 防撕裂；
+  NDJSON append 必然增大文件→指纹永不命中陈旧字节；返回共享列表（8 个调用点
+  已逐一审计只读；apply_event_corrections 先 deepcopy）。17→9 次解析（9 次
+  均为语义必要）。基准中性（fixture 事件小），真实 1.3MB 流 A/B：2.37→2.15s，
+  重解析 22.1MB→11.7MB，线性放大。保持规则：同等性能+删冗余=keep。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。

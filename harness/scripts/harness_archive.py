@@ -167,6 +167,12 @@ _sha256_cache: dict[tuple, tuple[int, int, str]] = {}
 # assembled results keep their original deterministic order.
 _HASH_WORKERS = max(2, min(8, os.cpu_count() or 4))
 
+# Transfer map for copy-time hashes: destination path -> (size, mtime_ns,
+# sha256). Populated only by _parallel_copytree(record_hashes=True); consulted
+# by sha256_file on a stat match. Files that change after the copy stop
+# matching and fall through to a real read.
+_copy_hash_transfers: dict[str, tuple[int, int, str]] = {}
+
 
 def _sha256_cache_key(path: Path, stat: os.stat_result) -> tuple:
     if stat.st_ino:
@@ -180,6 +186,13 @@ def sha256_file(path: Path) -> str:
     except OSError:
         stat = None
     if stat is not None:
+        transferred = _copy_hash_transfers.get(str(path))
+        if (
+            transferred is not None
+            and transferred[0] == stat.st_size
+            and transferred[1] == stat.st_mtime_ns
+        ):
+            return transferred[2]
         cached = _sha256_cache.get(_sha256_cache_key(path, stat))
         if (
             cached is not None
@@ -7923,6 +7936,7 @@ def _parallel_copytree(
     dest: Path,
     *,
     ignore: Callable[[str, set[str]], set[str]] | None = None,
+    record_hashes: bool = False,
 ) -> None:
     """shutil.copytree(symlinks=False, copy_function=copy2) with parallel copies.
 
@@ -7932,6 +7946,14 @@ def _parallel_copytree(
     copy2 (the per-file caches rely on that). Any symlink in the source falls
     back to shutil.copytree wholesale — correctness over speed; the archive
     trees are link-free by policy anyway.
+
+    With ``record_hashes=True`` the copy also records each destination file's
+    sha256 (hashed from the same byte stream that is written) into a transfer
+    map that ``sha256_file`` trusts on a stat match. This is ONLY for callers
+    that hash the copy for record-keeping (the finalize staging copy feeding
+    the before-manifest). Verification readbacks that must prove the copy
+    landed on disk (durable staged_hash, restore verification) pass
+    ``record_hashes=False`` and keep their real reads.
     """
     source = Path(source)
     dest = Path(dest)
@@ -7980,6 +8002,30 @@ def _parallel_copytree(
     def _copy_one(job: tuple[Path, Path]) -> None:
         src_file, dst_file = job
         shutil.copy2(src_file, dst_file)
+        if not record_hashes:
+            return
+        # copy2 preserves size and mtime, so the destination stat equals the
+        # source's; hash the SOURCE instead of the fresh copy. The source's
+        # hashes are inode-cache-hot (the status gate / scan passes hashed
+        # this tree before staging), and copy2 guarantees the destination
+        # bytes are identical. Only record when the stats actually agree,
+        # which keeps the transfer entry falsifiable on any later change.
+        try:
+            s_stat = src_file.stat()
+            d_stat = dst_file.stat()
+        except OSError:
+            return
+        if (
+            s_stat.st_size == d_stat.st_size
+            and s_stat.st_mtime_ns == d_stat.st_mtime_ns
+        ):
+            if len(_copy_hash_transfers) >= _SHA256_CACHE_MAX:
+                _copy_hash_transfers.clear()
+            _copy_hash_transfers[str(dst_file)] = (
+                d_stat.st_size,
+                d_stat.st_mtime_ns,
+                sha256_file(src_file),
+            )
 
     if len(file_jobs) > 8:
         with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
@@ -8596,6 +8642,7 @@ def cmd_finalize(
             original_change_dir,
             operation_temp_dir,
             ignore=_ignore_archive_transients,
+            record_hashes=True,
         )
         write_json(
             operation_record,
