@@ -170,3 +170,17 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
 - bundle content_sha256 已同步提交；下次发版会把优化带给消费项目。
 - 残余：Defender 环境税（用户侧排除目录可消，见 ideas.md）；协议必要 I/O 地板
   （首扫/durable 读回/staging 拷贝）。剩余候选已评估并书面否决（ideas.md）。
+
+
+## 会话最终关闭（2026-09-02，20 轮实验）
+
+- **最终指标：archive_seconds 干净态中位 5.04s（基线 34.99，-85.6%）**。
+  最后一次测量与全量套件并发执行（runs 5.04/5.23 自由，5.81/6.87/6.99 被套件
+  I/O 负载拖慢，非回退）；干净态窗口 4.95-5.09s 与 e18/e19 一致。
+- e18/e19（scanned_file_digest / append 渲染契约对齐）由最终全量 safe profile
+  64/64（290.5s）覆盖验证。工作树干净、bundle sync OK、typecheck 绿。
+- 会话期间另修复两个真实 bug：e19（归档 append 违反 events §6.1 渲染契约，
+  不尊重 render-policy）、以及 append_event 双重全量读（e7）。
+- 副产品：harness 自身全量套件 468.8s → ~285-290s（-38%）。
+- 后续交还用户：发版流程（把优化带给消费项目）、可选 Defender 排除目录
+  （ideas.md 有现成命令）。
