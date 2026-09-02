@@ -297,7 +297,14 @@ def append_event(
             event[key] = value
     result = he.append_with_auto_seal(path, event, existing_events=existing)
     event = result["event"]
-    all_events = he.load_events(path)
+    if result.get("phaseAlreadyClosed"):
+        all_events = existing
+    else:
+        # The events file at this point is exactly: existing + auto-sealed
+        # events (if any) + this event — append_with_auto_seal appended them
+        # under the lock. Re-reading the whole file just to re-render the
+        # execution log doubles the parse cost per append on large changes.
+        all_events = existing + list(result.get("autoSealed") or []) + [event]
     he.write_execution_log(change_dir, he.render_execution_log(all_events))
     return event
 
