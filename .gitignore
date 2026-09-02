@@ -118,3 +118,6 @@ docs/*
 # local exact-tarball lock dirs
 release-lock-*/
 .release-artifacts-*/
+
+# ===== autoresearch 本地工作目录（不进版本库） =====
+.auto/
