@@ -149,12 +149,57 @@ def write_json(path: Path, data: Any) -> None:
         raise
 
 
+# Per-process sha256 cache. Archive finalize hashes the same files several
+# times (manifest before/after, byte-coverage verification, durable payload
+# hash), and the archive directory is RENAMED between passes, so the cache is
+# keyed by file identity (st_dev, st_ino) — which survives renames on the same
+# volume — plus a (size, mtime_ns) fingerprint. Any write updates mtime, so a
+# stat match proves the bytes are unchanged since the cached hash. Freshly
+# copied files (staging/durable) have new inodes and are always read for real,
+# preserving readback verification semantics; the fallback path key is used on
+# filesystems without usable inodes.
+_SHA256_CACHE_MAX = 8192
+_sha256_cache: dict[tuple, tuple[int, int, str]] = {}
+
+
+def _sha256_cache_key(path: Path, stat: os.stat_result) -> tuple:
+    if stat.st_ino:
+        return (stat.st_dev, stat.st_ino)
+    return ("path", str(path))
+
+
 def sha256_file(path: Path) -> str:
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    if stat is not None:
+        cached = _sha256_cache.get(_sha256_cache_key(path, stat))
+        if (
+            cached is not None
+            and cached[0] == stat.st_size
+            and cached[1] == stat.st_mtime_ns
+        ):
+            return cached[2]
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
-    return h.hexdigest()
+    result = h.hexdigest()
+    try:
+        # Stat after the read so the cached fingerprint matches the bytes that
+        # were actually hashed.
+        stat = path.stat()
+    except OSError:
+        return result
+    if len(_sha256_cache) >= _SHA256_CACHE_MAX:
+        _sha256_cache.clear()
+    _sha256_cache[_sha256_cache_key(path, stat)] = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        result,
+    )
+    return result
 
 
 def find_project_root(change_or_archive_dir: Path) -> Path:
@@ -7782,21 +7827,18 @@ def _archive_tree_digest(root: Path) -> str:
             if child.is_symlink():
                 raise OSError(f"durable archive refuses file link: {child}")
             relative = child.relative_to(root).as_posix()
-            file_hash = hashlib.sha256()
-            size = 0
-            with child.open("rb") as handle:
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    file_hash.update(chunk)
+            # sha256_file caches per (path, size, mtime): the source payload
+            # pass reuses hashes already computed by the manifest/coverage
+            # passes, while staged and readback passes (fresh paths) still
+            # read their own bytes and keep the corruption-detection semantics.
+            file_digest = sha256_file(child)
+            size = child.stat().st_size
             digest.update(b"F\0")
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
             digest.update(str(size).encode("ascii"))
             digest.update(b"\0")
-            digest.update(file_hash.digest())
+            digest.update(bytes.fromhex(file_digest))
             digest.update(b"\0")
     return "sha256:" + digest.hexdigest()
 

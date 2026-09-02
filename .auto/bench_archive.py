@@ -383,7 +383,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--files", type=int, default=600)
     parser.add_argument("--file-kb", type=int, default=24)
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--keep", action="store_true", help="keep fixture for debugging")
     args = parser.parse_args()
 
@@ -398,6 +398,13 @@ def main() -> int:
             break
     elapsed_values.sort()
     median = elapsed_values[len(elapsed_values) // 2]
+    (REPO / ".auto" / "last_bench.json").write_text(
+        json.dumps(
+            {"median": median, "runs": elapsed_values, "failures": all_failures},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"METRIC archive_seconds={median:.2f}")
     print(f"METRIC integrity_failures={len(all_failures)}")
     print(f"METRIC tree_files={args.files}")
