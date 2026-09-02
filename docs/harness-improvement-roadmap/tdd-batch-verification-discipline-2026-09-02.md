@@ -3,7 +3,7 @@
 > 日期：2026-09-02
 > 来源：sales-insight-agent `agentscope-channel` execute 阶段复盘（76 分钟，其中 ~32 分钟为可避免的修复循环）
 > 严重度：P1（效率问题，不影响正确性；同类问题在多个 change 的 execute 阶段反复出现）
-> 状态：OPEN
+> 状态：RESOLVED（2026-09-02：三条纪律已固化进 harness-execute/coding-reference.md「批量构建验证策略」章节，随 bundle 发布）
 
 ## 背景
 
