@@ -1502,6 +1502,12 @@ def compute_product_tree_hash(
     return str(compute_product_tree_hash_detail(project, file_limit=file_limit)["hash"])
 
 
+# Per-process memo for git-commit product tree hashes. Keyed by resolved
+# (project, full commit hash, file limit); a Git object's tree is immutable so
+# the same key always yields the same deterministic result.
+_product_tree_hash_for_commit_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
+
+
 def compute_product_tree_hash_for_commit(
     project: Path,
     product_commit: str,
@@ -1520,6 +1526,18 @@ def compute_product_tree_hash_for_commit(
         raise ValueError(
             f"product commit not found: {commit} ({error or 'git rev-parse failed'})"
         )
+    # The resolved commit is a content-addressed, immutable Git object, so the
+    # tree hash for (project, commit, limit) is deterministic. One archive run
+    # resolves the same product commit repeatedly (status gate + identity
+    # validation + release eligibility each call); each call used to extract
+    # and re-hash the full product tree via `git archive`. Memoize the result
+    # instead — the cache key uses the RESOLVED hash, so mutable inputs like
+    # HEAD that resolve differently never collide.
+    limit = max(1, int(file_limit))
+    cache_key = (str(project), resolved_commit, limit)
+    cached = _product_tree_hash_for_commit_cache.get(cache_key)
+    if cached is not None:
+        return dict(cached)
     try:
         archive = subprocess.run(
             [
@@ -1542,7 +1560,6 @@ def compute_product_tree_hash_for_commit(
             f"could not read product commit tree {resolved_commit}: {detail}"
         )
 
-    limit = max(1, int(file_limit))
     lines: list[str] = []
     truncated = False
     with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as stream:
@@ -1567,7 +1584,7 @@ def compute_product_tree_hash_for_commit(
                 truncated = True
                 break
     digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-    return {
+    result = {
         "hash": digest,
         "truncated": truncated,
         "fileCount": len(lines),
@@ -1576,6 +1593,10 @@ def compute_product_tree_hash_for_commit(
         "algorithm": "sha256-path-content-v1",
         "productCommit": resolved_commit,
     }
+    if len(_product_tree_hash_for_commit_cache) >= _SHA256_CACHE_MAX:
+        _product_tree_hash_for_commit_cache.clear()
+    _product_tree_hash_for_commit_cache[cache_key] = dict(result)
+    return result
 
 
 def resolve_product_archive_identity(
