@@ -8019,12 +8019,24 @@ def _parallel_copytree(
             s_stat.st_size == d_stat.st_size
             and s_stat.st_mtime_ns == d_stat.st_mtime_ns
         ):
+            # The source tree was hashed by the sensitive-evidence scan earlier
+            # in this process; reuse that digest instead of re-reading the
+            # source. scanned_file_digest verifies (size, mtime) and returns
+            # None on any doubt (unscanned tree, scan policy off, evicted
+            # cache, file changed since the scan) — then fall back to a real
+            # read. Relative keying is sound here because src_file lives under
+            # `source`, the tree the scan walked.
+            src_relative = src_file.relative_to(source).as_posix()
+            digest_hex = (
+                hruntime.scanned_file_digest(src_file, src_relative)
+                or sha256_file(src_file)
+            )
             if len(_copy_hash_transfers) >= _SHA256_CACHE_MAX:
                 _copy_hash_transfers.clear()
             _copy_hash_transfers[str(dst_file)] = (
                 d_stat.st_size,
                 d_stat.st_mtime_ns,
-                sha256_file(src_file),
+                digest_hex,
             )
 
     if len(file_jobs) > 8:

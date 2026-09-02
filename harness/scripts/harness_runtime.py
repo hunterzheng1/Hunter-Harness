@@ -181,6 +181,31 @@ _file_hash_cache: dict[str, tuple[int, int, bytes]] = {}
 _IO_WORKERS = max(2, min(8, os.cpu_count() or 4))
 
 
+def scanned_file_digest(path: Path, relative: str) -> str | None:
+    """Hex sha256 of a file the sensitive-evidence scan already read, if intact.
+
+    The scan records each file's digest keyed by its path relative to the
+    scanned root, verified against (size, mtime_ns). A caller hashing a file
+    from a tree that was scanned earlier in this process (or a copy2-made
+    copy of it — identical bytes, preserved stats) may reuse the digest
+    instead of re-reading the bytes. Returns None whenever the file was not
+    scanned, its stat no longer matches, or the recording cache was evicted,
+    so callers always have a safe real-read fallback. Relative-path keying is
+    only sound within one tree lineage; callers must pass the relative path
+    under the root that was scanned (or its copy).
+    """
+    cached = _file_hash_cache.get(relative)
+    if cached is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if cached[0] != stat.st_size or cached[1] != stat.st_mtime_ns:
+        return None
+    return cached[2].hex()
+
+
 def _cached_file_hash(path: Path, relative: str) -> tuple[int, bytes] | None:
     """(length, sha256) of file bytes, cached per-process on a stat match."""
     try:
