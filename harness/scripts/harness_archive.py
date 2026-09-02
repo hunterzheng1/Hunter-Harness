@@ -318,7 +318,14 @@ def append_event(
         # under the lock. Re-reading the whole file just to re-render the
         # execution log doubles the parse cost per append on large changes.
         all_events = existing + list(result.get("autoSealed") or []) + [event]
-    he.write_execution_log(change_dir, he.render_execution_log(all_events))
+    # §6.1 契约（与 harness_events CLI append 一致）：只有 phase.end 或产生
+    # auto-seal 时才全量重渲染 execution-log；普通 append 是 O(1)。且尊重
+    # render-policy（on-demand 项目不自动渲染，显式 render 子命令可随时重建）。
+    # 归档路径的 phase.end 是终局事件，其后的 collect/summary 依赖最新日志。
+    if (
+        type_ == "phase.end" or result.get("autoSealed")
+    ) and he.execution_log_render_enabled(change_dir):
+        he.write_execution_log(change_dir, he.render_execution_log(all_events))
     return event
 
 
