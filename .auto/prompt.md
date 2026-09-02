@@ -233,3 +233,10 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   原地重写拷贝文件，durable 读回不受影响）；防护测试改为确定性 utime
   tick-bump（10/10 稳定）；误导性注释修正；ctime 校验保留（免费第二采样，
   可捕 rename 类元数据变化）。
+
+- 迭代 25（暴露面闭环）：**同 tick 窗口进程内暴露审计**：finalize 流
+  summary-data.json 是"写入→被 after-manifest 覆盖"（无 hash→rewrite→rehash
+  循环）；events/execution-log 被 manifest 排除；durable 的 staged/verified
+  摘要之间无进程内写入者。**零进程内触发路径**，暴露仅限外部干扰落入单个
+  ~2ms tick（与缓存引入前就存在的 e14 copy/read 竞态同类）。审计结论固化
+  进 DoubleSignalFingerprintTests docstring。防护 15/15、背压绿。
