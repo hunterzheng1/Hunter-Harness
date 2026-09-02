@@ -376,6 +376,38 @@ TestA RED → TestA GREEN → TestB RED → TestB GREEN → TestC RED → TestC 
 TestA+TestB+TestC RED → 实现相关代码 → TestA+TestB+TestC GREEN → 最终 compile
 ```
 
+### 冒烟编译前置（多类变更强制顺序）
+
+新增多个类（含 Shim/测试辅助类）时的强制顺序：
+
+1. **全部类写完 → 先跑冒烟编译**（如 Java `mvn -f backend test-compile`，
+   <10s），一次暴露**全部**编译错误（签名不匹配、import 缺失、类型转换错）
+2. 修完所有编译错——每轮只看编译输出，不跑测试（快迭代，每轮秒级）
+3. **编译全绿后 → 合并跑一次测试**（如 `mvn -f backend test -Dtest=TestA,TestB,TestC`）
+
+**禁止**：
+- 每写一个类就跑完整 `test`（冷启动 30~60s/次，且一次只暴露一个错——
+  等完整 mvn 周期才能看到下一个编译错）
+- 跳过冒烟编译直接跑 test
+
+> 实测代价（2026-09 sales-insight-agent 复盘）：逐类验证 + 跳过冒烟编译的
+> 修复循环耗时 ~32 分钟；冒烟编译前置本可把其中大部分压缩到 2~3 轮秒级迭代。
+
+### Mock 设计约束（流不可回读）
+
+- **不可回读的流**（Java 的 `HttpRequest.BodyPublisher`、`InputStream`、
+  已消费的 request body）**不得作为 mock 断言来源**——运行时才发现
+  “读不回来”，每轮都付完整测试周期
+- 正确模式：把请求体**构造提为静态方法**（如 `buildBody`）单独单测；
+  HTTP 层 mock 只断言 URL（含 query）、header、状态码
+- 响应 mock 用**薄 Shim 类**（不要子类化 `java.net.http.HttpResponse` 等
+  final/不可控类型）
+
+### 断言修改自检（字符串替换后强制）
+
+修改测试断言字符串后，**grep 确认旧断言已删除**（字符串替换的转义不匹配
+会导致旧断言残留，靠测试报错行号逐轮排查平均多耗 2~3 轮完整测试周期）。
+
 ## 构建证据规则
 
 如果使用静默模式（如 Maven `-q`）：
