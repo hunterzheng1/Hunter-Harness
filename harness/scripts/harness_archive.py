@@ -30,7 +30,7 @@ import tempfile
 import time
 import uuid
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -7814,6 +7814,86 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+class _FallbackCopytree(Exception):
+    """Raised internally when the source tree needs shutil.copytree semantics."""
+
+
+def _parallel_copytree(
+    source: Path,
+    dest: Path,
+    *,
+    ignore: Callable[[str, set[str]], set[str]] | None = None,
+) -> None:
+    """shutil.copytree(symlinks=False, copy_function=copy2) with parallel copies.
+
+    File copies dominate the archive wall clock on Windows (per-file open
+    latency), so they run on the bounded thread pool; directories are created
+    and stat-copied exactly like copytree, and file mtimes are preserved via
+    copy2 (the per-file caches rely on that). Any symlink in the source falls
+    back to shutil.copytree wholesale — correctness over speed; the archive
+    trees are link-free by policy anyway.
+    """
+    source = Path(source)
+    dest = Path(dest)
+    if dest.exists():
+        raise FileExistsError(f"destination already exists: {dest}")
+
+    dir_jobs: list[tuple[Path, Path]] = []
+    file_jobs: list[tuple[Path, Path]] = []
+
+    def _plan(src_dir: Path, dst_dir: Path) -> None:
+        with os.scandir(src_dir) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
+        ignored = (
+            ignore(str(src_dir), {entry.name for entry in entries})
+            if ignore is not None
+            else set()
+        )
+        dir_jobs.append((src_dir, dst_dir))
+        for entry in entries:
+            if entry.name in ignored:
+                continue
+            src_child = src_dir / entry.name
+            dst_child = dst_dir / entry.name
+            if entry.is_symlink():
+                raise _FallbackCopytree(src_child)
+            if entry.is_dir(follow_symlinks=False):
+                _plan(src_child, dst_child)
+            else:
+                file_jobs.append((src_child, dst_child))
+
+    try:
+        _plan(source, dest)
+    except _FallbackCopytree:
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(
+            source,
+            dest,
+            copy_function=shutil.copy2,
+            ignore=ignore,
+        )
+        return
+
+    for _src_dir, dst_dir in dir_jobs:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+    def _copy_one(job: tuple[Path, Path]) -> None:
+        src_file, dst_file = job
+        shutil.copy2(src_file, dst_file)
+
+    if len(file_jobs) > 8:
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            # pool.map re-raises the first failure in original order.
+            list(pool.map(_copy_one, file_jobs))
+    else:
+        for job in file_jobs:
+            _copy_one(job)
+
+    # Match copytree: directory metadata is applied after its contents exist.
+    for src_dir, dst_dir in dir_jobs:
+        shutil.copystat(src_dir, dst_dir)
+
+
 def _archive_tree_digest(root: Path) -> str:
     """Hash a complete archive tree without following links.
 
@@ -7940,7 +8020,7 @@ def write_durable_archive(
             object_reused = True
         else:
             staging_root.mkdir(parents=True, exist_ok=False)
-            shutil.copytree(source, staged_payload, copy_function=shutil.copy2)
+            _parallel_copytree(source, staged_payload)
             staged_hash = _archive_tree_digest(staged_payload)
             if staged_hash != payload_hash:
                 raise OSError(
@@ -8058,7 +8138,7 @@ def restore_durable_archive(receipt_path: Path, target_root: Path) -> dict[str, 
     restore_root.mkdir(parents=True, exist_ok=True)
     staging = restore_root / f".restore-{uuid.uuid4().hex}"
     try:
-        shutil.copytree(expected_payload, staging, copy_function=shutil.copy2)
+        _parallel_copytree(expected_payload, staging)
         restored_hash = _archive_tree_digest(staging)
         if restored_hash != payload_hash:
             raise OSError(
@@ -8412,10 +8492,9 @@ def cmd_finalize(
 
     try:
         operation_temp_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
+        _parallel_copytree(
             original_change_dir,
             operation_temp_dir,
-            copy_function=shutil.copy2,
             ignore=_ignore_archive_transients,
         )
         write_json(
