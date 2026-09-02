@@ -1,27 +1,58 @@
 #!/bin/bash
-# Autoresearch measure: run the full local TS test suite exactly like `npm test`
-# (pretest included), capture vitest Duration and per-worker sums, emit METRIC lines.
-set -euo pipefail
+# Autoresearch measure: archive execute benchmark + correctness backpressure.
+#
+# NOTE: run_experiment on this machine executes scripts through WSL bash
+# (System32\bash.exe). Two environment quirks are handled here:
+#   - .auto/checks.sh cannot be launched by the tool (it passes a Windows-style
+#     path that WSL bash cannot open), so correctness backpressure is embedded
+#     in this script: benchmark first, then the archive unittest modules.
+#   - The WSLInterop binfmt registration is periodically cleared by systemd on
+#     this machine; self-heal it (same flags as WSL's own generator) before
+#     delegating to the Windows toolchain. python.exe is the same interpreter
+#     as the dev shell, so the benchmark measures the real Windows environment.
+set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# Pretest is part of what developers run: sync:harness (no-op when current) + esbuild bundle.
-T0=$(date +%s%N)
-npm test > .auto/measure.out 2>&1
-T1=$(date +%s%N)
-REAL_TOTAL=$(awk "BEGIN{printf \"%.1f\", ($T1-$T0)/1e9}")
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  PY=python.exe
+  if ! "$PY" -c "pass" >/dev/null 2>&1; then
+    sudo -n sh -c \
+      'echo ":WSLInterop:M::MZ::/init:P" > /proc/sys/fs/binfmt_misc/register' \
+      2>/dev/null || true
+  fi
+  if ! "$PY" -c "pass" >/dev/null 2>&1; then
+    echo "FATAL: WSL interop unavailable; cannot run Windows python.exe" >&2
+    exit 126
+  fi
+else
+  PY=python
+fi
+# test_harness_archive_c imports its sibling test_harness_archive directly.
+# WSL -> Win32 env vars must be whitelisted via WSLENV to reach python.exe.
+export PYTHONPATH="harness/scripts/tests${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+export WSLENV="PYTHONPATH/w:PYTHONUTF8/w:PYTHONIOENCODING/w${WSLENV:+:$WSLENV}"
 
-# Vitest summary lines: " Duration  176.07s (transform 7.84s, setup 0ms, import 48.57s, tests 281.40s, environment 12ms)"
-# Strip ANSI escapes first: vitest colors the summary even when piped.
-PLAIN=$(sed 's/\x1b\[[0-9;]*m//g' .auto/measure.out)
-DUR=$(printf '%s' "$PLAIN" | grep -aoE "Duration[[:space:]]+[0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
-IMPORT=$(printf '%s' "$PLAIN" | grep -aoE "import [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
-TESTS_SUM=$(printf '%s' "$PLAIN" | grep -aoE "tests [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
-TRANSFORM=$(printf '%s' "$PLAIN" | grep -aoE "transform [0-9.]+s" | head -1 | grep -oE "[0-9.]+" || echo 0)
-COUNT=$(printf '%s' "$PLAIN" | grep -aoE "Tests[[:space:]]+[0-9]+ passed" | head -1 | grep -oE "[0-9]+" || echo 0)
+# --- 1) benchmark -----------------------------------------------------------
+"$PY" .auto/bench_archive.py | tr -d '\r'
+BENCH_RC=${PIPESTATUS[0]}
+if [ "$BENCH_RC" -ne 0 ]; then
+  echo "BENCHMARK INTEGRITY FAILED (rc=$BENCH_RC)"
+  exit "$BENCH_RC"
+fi
 
-echo "METRIC test_wall_seconds=$DUR"
-echo "METRIC test_count=$COUNT"
-echo "METRIC import_seconds=$IMPORT"
-echo "METRIC tests_sum_seconds=$TESTS_SUM"
-echo "METRIC transform_seconds=$TRANSFORM"
-echo "METRIC real_total_seconds=$REAL_TOTAL"
+# --- 2) correctness backpressure (archive behavior contract) -----------------
+"$PY" -m unittest \
+  harness.scripts.tests.test_harness_archive \
+  harness.scripts.tests.test_harness_archive_c \
+  harness.scripts.tests.test_harness_archive_preflight \
+  harness.scripts.tests.test_harness_archive_remote \
+  harness.scripts.tests.test_harness_runtime \
+  > .auto/archive-tests.out 2>&1
+TESTS_RC=$?
+if [ "$TESTS_RC" -ne 0 ]; then
+  echo "ARCHIVE PYTHON TESTS FAILED:"
+  tail -80 .auto/archive-tests.out | tr -d '\r'
+  exit 1
+fi
+echo "ARCHIVE TESTS OK"

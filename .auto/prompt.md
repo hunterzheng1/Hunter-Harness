@@ -1,86 +1,76 @@
-# Autoresearch: Hunter-Harness 架构优化 + 测试提速
+# Autoresearch: Hunter-Harness 归档阶段优化（中间产物简化 / 解耦 / 提速）
 
 ## Objective
 
-对 Hunter-Harness monorepo（TS 五包 + Python harness）做一轮架构清理与效率优化：
+归档（`harness_archive.py execute`：预检 → gate → finalize → durable → 收尾）目前
+对 600 文件 / 14MB 的真实规模树耗时 ~50s，且中间产物在流程内被反复重算导致
+漂移面大：候选收据（敏感扫描 receipt / candidate CI / knowledge candidates）、
+身份解析（baseCommit/finalCommit/diffStat）、归档成功但 JSON 输出丢失。
+目标：
 
-1. **删除冗余**：core 包内 5 份语义微差的 `stableJson/stableHash/deepFreeze` 拷贝、
-   重复的 compareCodepoint/canonicalize、死代码、重复 helper。
-2. **解耦**：把重复工具收敛到单一权威模块，各子系统只依赖权威实现；
-   消除 barrel 级联导致的测试 import 成本（当前 core barrel 冷 import ≈1.4s、
-   bin.ts ≈1.75s，90% 是磁盘 I/O 读模块）。
-3. **修真实使用问题**：hash 语义不一致 = 持久化哈希漂移隐患；CLI 启动/部署路径的
-   冗余 I/O；测试里反复拷贝 14MB bundle 的浪费。
-4. **测试提速**（用户明确痛点）：当前 `npm test` 墙钟 ~176s（vitest Duration
-   import 48.6s + tests 281s/2 workers）。顶部慢文件：
-   push.test.ts 24s（其中 1 个用例独占 14.4s）、update.test.ts 23s、
-   migration.test.ts 20s、rules-review.test.ts 15s、initialize.test.ts 13s、
-   guarded-default-cli.test.ts 12s、recovery-v3.test.ts 12s、
-   map-publication-filesystem.test.ts 9s。
+1. **消除同一进程内的重复全树扫描/哈希**：敏感扫描跑 5 遍（18.8s）、
+   publishable digest 4 遍、archive tree digest 3 遍（6.9s）、manifest 2 遍。
+2. **中间产物收据化复用**：同一内容状态的计算结果在流水线内传递/缓存，
+   不重复重算；stat 指纹一致即复用（写入必然更新 mtime/ctime）。
+3. **不得改变对外行为契约**：磁盘产物 schema（summary-data.json 2.3、
+   manifest、receipt、durable store）与 CLI JSON 输出保持不变。
 
 ## Metrics
 
-- **Primary**: `test_wall_seconds`（vitest Duration 秒，lower is better）
-  —— `npm test` 中 vitest 主体墙钟，代表开发者等待时间。
+- **Primary**: `archive_seconds`（基准全流程墙钟，lower is better）
+  —— `.auto/bench_archive.py`：真实 git 项目 + 600 文件/14MB 树 +
+  state snapshot capture + `execute --intent record-only --skip-ingest
+  --durable-root`。
 - **Secondary**:
-  - `test_count` — 通过的用例数（≥2244，必须不降 = 不删用例、不减断言）
-  - `import_seconds` — vitest 报告的 import 阶段耗时
-  - `tests_sum_seconds` — 各 worker 测试耗时合计（2 台 worker 的理论下限）
-  - `real_total_seconds` — `npm test` 整条命令 real 时间（含 pretest）
+  - `integrity_failures` — 必须 0（stdout JSON 完整、summary/manifests/
+    execute-result/durable 收据齐全、身份字段与 git 事实一致）
+  - `tree_files` / `tree_mb` — 基准规模锚点（600 / 14.1）
 
 ## How to Run
 
-`./.auto/measure.sh` — 输出 `METRIC name=value` 行。
+`./.auto/measure.sh` — 输出 `METRIC name=value` 行；基准通过后再跑归档
+Python 测试模块（正确性背压内嵌在 measure.sh 里，因为
+run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径不可
+打开而必然失败；故 checks.sh 已移除，门禁语义等价内嵌）。
+`BENCH_PROFILE=1 python .auto/bench_archive.py` — 额外产出
+`.auto/last_archive.prof`（cProfile）。
 
 ## Files in Scope
 
-- `packages/core/src/**` — 冗余工具收敛、死代码删除、import 图瘦身
-- `packages/cli/src/**` — 命令层（如 `--agents all` 安装路径）
-- `packages/cli/test/**`、`packages/core/test/**`、`tests/**` — 测试基建
-  （seeded-init 拷贝策略、fixture 复用、临时目录布局）
-- `vitest.config.ts` — worker/超时/项目划分（不得用删测试换速度）
-- `scripts/sync-harness.mjs`、`scripts/bundle-cli.mjs` — pretest 环节
-- `.auto/` 之外一律不许动
+- `harness/scripts/harness_archive.py`、`harness/scripts/harness_runtime.py`
+  等归档链路 Python 源
+- `harness/scripts/tests/test_harness_archive*.py`、`test_harness_runtime.py`
+  等测试（只许加不许删）
+- `.auto/**`
 
 ## Off Limits
 
-- **禁止作弊**：不得删除/跳过/`it.skip`/`describe.skip` 任何用例；不得削弱断言
-  （删 expect、改阈值、把真断言换成 `expect(true)`）；不得让测试依赖缓存结果。
-  `test_count` 下降即视为失败。
-- 不得改 `packages/contracts` 的公开 schema（行为契约）。
-- 不得改 Python harness 的生产行为（只允许测试层优化）。
-- 不得动 `.github/workflows` 与发布链路。
+- **禁止作弊**：不得为基准专门造快路径；缓存必须语义等价（指纹含
+  size+mtime_ns+ctime_ns，任何写入都会失效）；不得删测试/削弱断言。
+- 不得改 `packages/`（TS 侧）与发布链路；typecheck 必须保持绿。
+- durable 写入后的 readback 校验语义不得削弱（磁盘腐化检测是有意为之）。
+- 归档磁盘产物的 schema 与字节稳定性：同一输入下 summary-data.json、
+  manifests、receipt 的内容（除时间戳类字段）必须逐字段一致。
 
 ## Constraints
 
-- `npm run typecheck` 必须通过（每次迭代都要跑，checks.sh 已接）。
-- vitest 全量必须全绿；慢用例若靠"调大超时"掩盖，视为作弊。
-- 收敛 stable/hash 工具时：**对同一输入的字节输出必须与现状完全一致**
-  （持久化哈希一旦漂移 = 数据损坏）。语义差异点（如 undefined 键是否过滤、
-  NaN 是否抛错）先逐调用点确认语义，再统一；有差异的调用点保留差异并用测试冻结。
-- 简化优先：同等性能下删除代码 = keep；为小收益引入复杂度 = discard。
+- 正确性背压（内嵌 measure.sh）：归档 Python 测试模块（archive /
+  archive_c / preflight / remote / runtime）全绿，否则该次迭代按失败处理。
+- 基准 integrity_failures > 0 视为失败（checks_failed 同类处理）。
+- 简化优先：同等收益下删代码/减扫描次数 > 加缓存层。
 
 ## What's Been Tried
 
 （随迭代更新）
 
-- 2026-09-01 本轮已落地（分支 autoresearch/optimize-arch-tests-2026-09-01）：
-  1. **事务双检查点按批落盘**（最大头）：durable 镜像（syncDurableRecovery）与
-     权威 journal（writeTransactionJournal）都从逐操作整份重写（O(n^2)）改为每
-     16 操作 + 收尾/中断/失败/提交路径写精确状态。恢复语义不变（resume 幂等重放 / rollback 快照还原）。
-     `--agents all` 五 Agent 安装 14.5s → ~5.2s；init.test.ts 32 用例 76.9s；
-     refresh-cli 25.9s。
-  2. **Agent Bundle 并行加载**：refresh/initialize/context-index 的 per-agent
-     加载与盘上校验 Promise.all 化（模块级 bundle 缓存复用，顺序保持）。
-  3. **fs/path-safety 微优化**：正则等价替换 Array.from 逐字符 + win32.isAbsolute。
-  4. **5 份 stable/hash 重复实现收敛**到 packages/core/src/fs/stable.ts
-     （canonical / raw / strict 三模式 + 兼容转发层，差分测试验证逐字节一致）。
-  5. **per-file 盘上哈希校验并行化**（refresh/initialize）；update.test.ts
-     seedBaseline 并行写入（测试侧）。
-  实测：vitest Duration 176.8s → ~129-130s（tests_sum 281 → ~189s），2244 用例全绿。
-- 2026-08 历史：recovery store 堆积导致 init/refresh 测试极慢（已修，readIndex
-  有界化 + 测试隔离）；CI_ONLY 两文件本地跳过；CLI 种子初始化（一次部署+目录拷贝）；
-  mini bundle 改造。全量 TS 从 36 分钟 → 当前 ~2.2 分钟。
-- 已确认并保留：maxWorkers=4 无收益（I/O 绑定，140s 与 2 workers 相当），维持 2。
-- 已知安全边界：事务协议（逐操作权威检查点 / completed_target_states / staged 幂等
-  重放）不可再压缩；installStaged 的 copy 必须保留（staged 是 pending 操作的恢复源）。
+- 2026-09-02 基线：archive_seconds ≈ 49-53s（无 profile 53.05 / 带 profile
+  48.98）。cProfile（34s in-process）热点：
+  1. `_sensitive_candidates` ×5 = 18.8s（每遍全树 read_bytes + 正则 + sha256；
+     io.open 在 Windows 上 1.3ms/次）
+  2. `validate_sensitive_evidence_publication_gate` ×3 = 11.0s（内含扫描）
+  3. `write_durable_archive` 内 `_archive_tree_digest` ×3 = 6.9s
+  4. `check_status` = 7.1s（内含一次 gate 扫描 + git 调用）
+  5. `_publishable_tree_digest` ×4 = 1.6s；manifest ×2 ≈ 1.1s；subprocess ×50
+     ≈ 1.4s
+- 前一会话（测试提速，test_wall_seconds 176.8→128.2s）见 git log / log.jsonl
+  早期条目，目标已切换。

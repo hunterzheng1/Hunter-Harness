@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import hashlib
 import json
@@ -11,9 +12,36 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Iterator
 from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+
+
+@contextlib.contextmanager
+def _tempdir(prefix: str | None = None) -> Iterator[str]:
+    """TemporaryDirectory that tolerates the detached worker's brief cwd hold.
+
+    On Windows the run-session worker keeps its working directory inside the
+    temp root for a moment after writing its terminal receipt; an immediate
+    rmtree then fails with WinError 32. Retry briefly instead of failing the
+    test on that teardown race.
+    """
+    directory = (
+        tempfile.TemporaryDirectory(prefix=prefix)
+        if prefix is not None
+        else tempfile.TemporaryDirectory()
+    )
+    try:
+        yield directory.name
+    finally:
+        for _ in range(20):
+            try:
+                directory.cleanup()
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        directory.cleanup()
 
 
 def load_module(name: str, filename: str):
@@ -32,7 +60,7 @@ test_runner = load_module("harness_test_runner_for_runtime", "harness_test_runne
 
 class RuntimeDoctorTests(unittest.TestCase):
     def test_doctor_uses_absolute_current_python_when_path_lookup_is_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+        with _tempdir() as tmp, mock.patch.object(
             runtime.shutil, "which", return_value=None
         ):
             root = Path(tmp)
@@ -191,7 +219,7 @@ class ManagedRunSessionTests(unittest.TestCase):
         self.assertEqual(terminal["status"], "OK")
 
     def test_reads_utf8_logs_by_byte_cursor_safely(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             stdout_path, _ = self._write_log_receipt(root)
             stdout_path.write_bytes("甲乙丙".encode("utf-8"))
@@ -223,7 +251,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             self.assertTrue(second["eof"])
 
     def test_preserves_raw_evidence_on_decode_degradation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             stdout_path, _ = self._write_log_receipt(root)
             raw = b"prefix\xffsuffix"
@@ -246,7 +274,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
 
     def test_quarantines_legacy_sensitive_bytes_without_publishing_plaintext(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             private = Path(tmp) / "private-evidence"
             source = root / "runtime" / "legacy-secret.txt"
@@ -278,7 +306,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
 
     def test_quarantine_rejects_private_root_inside_publishable_tree(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             source = root / "legacy.txt"
             source.parent.mkdir(parents=True)
@@ -296,7 +324,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             self.assertTrue(source.is_file())
 
     def test_refresh_preserves_quarantine_entries_and_rebinds_current_tree(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             private = Path(tmp) / "private-evidence"
             source = root / "runtime" / "legacy-secret.txt"
@@ -326,7 +354,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
 
     def test_refresh_fails_closed_when_plaintext_reappears(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             private = Path(tmp) / "private-evidence"
             source = root / "runtime" / "legacy-secret.txt"
@@ -356,7 +384,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
 
     def test_scan_allows_documented_authorization_placeholder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             design = root / "spec" / "api.md"
             design.parent.mkdir(parents=True)
@@ -371,7 +399,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             self.assertEqual(result["receipt"]["unresolvedFailures"], [])
 
     def test_scan_still_blocks_real_authorization_credential(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             evidence = root / "runtime" / "request.txt"
             evidence.parent.mkdir(parents=True)
@@ -389,7 +417,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
 
     def test_refresh_rejects_invalid_entries_without_overwriting_receipt(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp) / "change"
             receipt_path = runtime.sensitive_evidence_receipt_path(root)
             receipt_path.parent.mkdir(parents=True)
@@ -452,7 +480,7 @@ class ManagedRunSessionTests(unittest.TestCase):
         read_log_fn = getattr(runtime, "read_run_session_log", None)
         self.assertTrue(callable(start_fn), "start_run_session must be implemented")
         self.assertTrue(callable(read_log_fn), "read_run_session_log must be implemented")
-        with tempfile.TemporaryDirectory(prefix="harness runtime 空格 ") as tmp:
+        with _tempdir(prefix="harness runtime 空格 ") as tmp:
             root = Path(tmp)
             state_root = root / "状态 目录"
             result = start_fn(
@@ -514,7 +542,7 @@ class ManagedRunSessionTests(unittest.TestCase):
     def test_launcher_failure_is_not_reported_as_test_failure(self) -> None:
         start_fn = getattr(runtime, "start_run_session", None)
         self.assertTrue(callable(start_fn), "start_run_session must be implemented")
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             result = start_fn(
                 state_root=root,
@@ -536,7 +564,7 @@ class ManagedRunSessionTests(unittest.TestCase):
         self.assertTrue(callable(start_fn))
         self.assertTrue(callable(cancel_fn))
         self.assertTrue(callable(status_fn))
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+        with _tempdir() as tmp, mock.patch.dict(
             os.environ,
             {"HARNESS_RESOURCE_LOCK_ROOT": str(Path(tmp) / "global-locks")},
         ):
@@ -587,7 +615,7 @@ class ManagedRunSessionTests(unittest.TestCase):
 
     def test_fixback_session_without_batch_requires_product_identity(self) -> None:
         """F-2：fixback-* 会话缺 product-identity 且无 OPEN 批次 → 当场拒绝。"""
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             with self.assertRaises(ValueError) as ctx:
                 runtime.start_run_session(
@@ -600,7 +628,7 @@ class ManagedRunSessionTests(unittest.TestCase):
 
     def test_fixback_session_injects_open_batch_identity(self) -> None:
         """F-2：OPEN 批次存在时自动注入 baseProductIdentity，不再白跑一轮。"""
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             batches = root / "fixback" / "batches"
             batches.mkdir(parents=True)
@@ -623,7 +651,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             self._wait_for_terminal(root, started["sessionId"])
 
     def test_resource_locks_are_exclusive_across_state_roots(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+        with _tempdir() as tmp, mock.patch.dict(
             os.environ,
             {"HARNESS_RESOURCE_LOCK_ROOT": str(Path(tmp) / "global-locks")},
         ):
@@ -660,7 +688,7 @@ class ManagedRunSessionTests(unittest.TestCase):
             self._wait_for_terminal(first_state, first["sessionId"])
 
     def test_dead_resource_lock_owner_is_reclaimed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+        with _tempdir() as tmp, mock.patch.dict(
             os.environ,
             {"HARNESS_RESOURCE_LOCK_ROOT": str(Path(tmp) / "global-locks")},
         ):
@@ -708,7 +736,7 @@ class ManagedRunSessionTests(unittest.TestCase):
     def test_timeout_writes_diagnostics_before_bounded_termination(self) -> None:
         start_fn = getattr(runtime, "start_run_session", None)
         self.assertTrue(callable(start_fn), "start_run_session must be implemented")
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             root = Path(tmp)
             result = start_fn(
                 state_root=root,
@@ -739,7 +767,7 @@ class QuarantineReachabilityTests(unittest.TestCase):
     """
 
     def test_private_root_defaults_to_home_and_honors_override(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             source = Path(tmp) / "proj" / ".harness" / "changes" / "demo" / "x.txt"
             source.parent.mkdir(parents=True)
             source.write_text("token=blocked", encoding="utf-8")
@@ -760,7 +788,7 @@ class QuarantineReachabilityTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "跨盘概念仅 Windows 适用")
     def test_cross_drive_quarantine_transfers_via_copy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             # 模拟源在其它盘：把默认根固定到 tmp（与源同盘），再显式传一个
             # 跨盘私有根，验证 _transfer_evidence 走 copy+unlink 而非 os.replace。
             project = Path(tmp) / "proj"
@@ -785,7 +813,7 @@ class QuarantineReachabilityTests(unittest.TestCase):
             self.assertTrue(Path(result["privatePath"]).is_file())
 
     def test_private_root_inside_project_root_is_rejected_up_front(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             project = Path(tmp) / "proj"
             change_root = project / ".harness" / "changes" / "demo"
             source = change_root / "meta" / "journal.json"
@@ -846,7 +874,7 @@ class PublicationScopedScanTests(unittest.TestCase):
         return change
 
     def test_runtime_scratch_is_out_of_publication_scope(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = self._change_with_runtime_scratch(Path(tmp))
 
             full = runtime.sensitive_evidence_candidates(change)
@@ -863,7 +891,7 @@ class PublicationScopedScanTests(unittest.TestCase):
 
     def test_harness_recovery_token_is_not_a_user_secret(self) -> None:
         """P1-2：发布日志里 harness 自生成的 recovery_token 不该被扫成明文秘密。"""
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = Path(tmp) / "change"
             journals = change / "meta" / "publication-journals"
             journals.mkdir(parents=True)
@@ -896,7 +924,7 @@ class PublicationScopedScanTests(unittest.TestCase):
             self.assertNotIn("meta/publication-journals/plan_finalize-1.json", paths)
 
     def test_publishable_digest_ignores_runtime_churn(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = self._change_with_runtime_scratch(Path(tmp))
             excluded = runtime.PUBLICATION_EXCLUDED_DIRS
 
@@ -908,7 +936,7 @@ class PublicationScopedScanTests(unittest.TestCase):
             self.assertEqual(before, after)
 
     def test_receipt_records_its_own_exclusions(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = self._change_with_runtime_scratch(Path(tmp))
 
             result = runtime.refresh_sensitive_evidence_scan_receipt(
@@ -970,7 +998,7 @@ class SweepScratchTests(unittest.TestCase):
         )
 
     def test_sweep_removes_scratch_and_keeps_everything_else(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = Path(tmp) / "change"
             self._seed(change)
 
@@ -1000,7 +1028,7 @@ class SweepScratchTests(unittest.TestCase):
                 self.assertTrue((change / kept).is_file(), kept)
 
     def test_dry_run_reports_without_deleting(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = Path(tmp) / "change"
             self._seed(change)
 
@@ -1012,7 +1040,7 @@ class SweepScratchTests(unittest.TestCase):
             self.assertTrue((change / "runtime" / "review-diff.patch").is_file())
 
     def test_missing_runtime_dir_is_not_an_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _tempdir() as tmp:
             change = Path(tmp) / "change"
             change.mkdir()
 
