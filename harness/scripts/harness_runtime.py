@@ -205,9 +205,18 @@ def scanned_file_digest(path: Path, relative: str) -> str | None:
         stat = path.stat()
     except OSError:
         return None
-    if cached[0] != stat.st_size or cached[1] != stat.st_mtime_ns:
+    # Both mtime and ctime must match. mtime alone has a real granularity
+    # window (a scan followed by a same-size rewrite can land inside it under
+    # load); ctime (NTFS change time) updates on any write/rename/metadata
+    # change and is independent of mtime, so a stale hit requires BOTH clocks
+    # to stay still across a content change - effectively impossible.
+    if (
+        cached[0] != stat.st_size
+        or cached[1] != stat.st_mtime_ns
+        or cached[2] != stat.st_ctime_ns
+    ):
         return None
-    return cached[2].hex()
+    return cached[3].hex()
 
 
 def _cached_file_hash(path: Path, relative: str) -> tuple[int, bytes] | None:
@@ -223,7 +232,12 @@ def _cached_file_hash(path: Path, relative: str) -> tuple[int, bytes] | None:
         return len(data), digest
     if len(_file_hash_cache) >= _FILE_CACHE_MAX:
         _file_hash_cache.clear()
-    _file_hash_cache[relative] = (stat.st_size, stat.st_mtime_ns, digest)
+    _file_hash_cache[relative] = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        digest,
+    )
     return len(data), digest
 
 
@@ -261,8 +275,9 @@ def _publishable_tree_digest(
                 stat is not None
                 and cached[0] == stat.st_size
                 and cached[1] == stat.st_mtime_ns
+                and cached[2] == stat.st_ctime_ns
             ):
-                return cached[0], cached[2]
+                return cached[0], cached[3]
         fresh = _cached_file_hash(path, relative)
         if fresh is None:
             # Unreadable file: keep the historical behaviour of letting the
@@ -467,8 +482,9 @@ def _sensitive_candidates(
                 stat is not None
                 and cached[0] == stat.st_size
                 and cached[1] == stat.st_mtime_ns
+                and cached[2] == stat.st_ctime_ns
             ):
-                return cached[2]
+                return cached[3]
         try:
             raw = path.read_bytes()
         except OSError:
@@ -517,6 +533,7 @@ def _sensitive_candidates(
         _file_hash_cache[relative] = (
             stat.st_size,
             stat.st_mtime_ns,
+            stat.st_ctime_ns,
             raw_digest,
         )
         return entry
