@@ -190,3 +190,9 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   必失效、e14 传递表可证伪（改后=新哈希）+ 无扫描回退、e18 stat 失配拒绝、
   e19 渲染契约 + render-policy。审计发现这 5 项优化此前只有一次性诊断验证、
   零持久化覆盖。已入 measure.sh 门禁。
+
+- 迭代 19（规模加固）：**缓存容量悬崖修复**：per-file 缓存上限 8192→131072
+  （hruntime._FILE_CACHE_MAX / archive._SHA256_CACHE_MAX）。验证 9000 文件树：
+  修复前扫描缓存仅剩 808/9000（8192 处整体清空）、before-manifest 回退 8192 次
+  真实读（5.41s）；修复后 9000/9000 全命中、0 真实读（1.41s）——大会话优化
+  在大树上的静默失效被消除。防护模块加 CacheCapacityTests 冻结下限。
