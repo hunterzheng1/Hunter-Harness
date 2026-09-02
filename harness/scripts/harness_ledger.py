@@ -555,7 +555,37 @@ def apply_inferred_project_root(args: argparse.Namespace, change_dir: Path) -> N
         args.project = str(inferred)
 
 
+# Per-process sha256 cache keyed by (st_dev, st_ino) file identity +
+# (size, mtime_ns) fingerprint — the same discipline as harness_archive's
+# sha256_file. compute_inputs_hash is the shared verification-fingerprint
+# primitive (state snapshot segments, ledger validation reuse, service
+# session fingerprint polling) and repeatedly hashes the same unchanged input
+# files within one process. Any write updates mtime so a stat match proves the
+# bytes are unchanged; identity survives renames on the same volume. Unreadable
+# files are never cached (callers must see the FileNotFoundError).
+_LEDGER_SHA256_CACHE_MAX = 131_072
+_ledger_sha256_cache: dict[tuple, tuple[int, int, str]] = {}
+
+
+def _ledger_sha256_cache_key(path: Path, stat: os.stat_result) -> tuple:
+    if stat.st_ino:
+        return (stat.st_dev, stat.st_ino)
+    return ("path", str(path))
+
+
 def sha256_file(path: Path) -> str:
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    if stat is not None:
+        cached = _ledger_sha256_cache.get(_ledger_sha256_cache_key(path, stat))
+        if (
+            cached is not None
+            and cached[0] == stat.st_size
+            and cached[1] == stat.st_mtime_ns
+        ):
+            return cached[2]
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while True:
@@ -563,7 +593,21 @@ def sha256_file(path: Path) -> str:
             if not chunk:
                 break
             digest.update(chunk)
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    try:
+        # Stat after the read so the cached fingerprint matches the bytes that
+        # were actually hashed.
+        stat = path.stat()
+    except OSError:
+        return result
+    if len(_ledger_sha256_cache) >= _LEDGER_SHA256_CACHE_MAX:
+        _ledger_sha256_cache.clear()
+    _ledger_sha256_cache[_ledger_sha256_cache_key(path, stat)] = (
+        stat.st_size,
+        stat.st_mtime_ns,
+        result,
+    )
+    return result
 
 
 def compute_inputs_hash(
