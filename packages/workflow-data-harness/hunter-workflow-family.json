@@ -7,7 +7,7 @@
     "java"
   ],
   "bundle_version": "0.2.76",
-  "content_sha256": "sha256:46f5ab2a7788156e011466545e3e1ed98bb0e57a1db53f6e98ee73fc2f3d20d9",
+  "content_sha256": "sha256:405ba296f5152c285a8ad74fe8f5bbfae1ea9673fe7df3fc7b0e1895bc6b9c41",
   "minimumCliVersion": "0.4.13",
   "workflowPackageVersion": "0.4.16",
   "capabilities": [

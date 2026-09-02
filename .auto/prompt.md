@@ -146,6 +146,12 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   （>0.3s）先测后做：warm sha256×600 实测 0.406s 达标。三路径差分验证
   （有扫描/无扫描回退/扫描后改动不返回陈旧值）。候选 B（渲染 4ms×7）测得
   negligible 已关闭。
+- 迭代 17（-85.5%→ 5.06）：**归档 append_event 渲染契约对齐**（修真 bug）：
+  归档侧每次 append 都全量重渲染 execution-log，而 events §6.1 契约（CLI 路径）
+  规定仅 phase.end/auto-seal 渲染（普通 append O(1)）且尊重 render-policy
+  （on-demand 项目被强制重渲染）。对齐后仅终局 phase.end 渲染（collect/summary
+  在其后消费日志，新鲜度依赖保留）。大日志（1.25MB）A/B：7 append 0.368s →
+  机械 append 0.142s + phase.end 0.037s；基准中性如实记录。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
