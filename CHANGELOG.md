@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.18] — workflow-harness
+
+> TDD 执行纪律固化轮（CLI 无代码变更，不发 hunter-harness）：coding-reference
+> 批量构建验证策略增补三条——冒烟编译前置、Mock 流不可回读约束、断言修改
+> 自检。来源：sales-insight-agent execute 复盘（32 分钟可避免修复循环）。
+> workflow-harness 0.4.17 → 0.4.18，bundle 0.2.77 → 0.2.78。
+
+### Added
+
+- **冒烟编译前置（多类变更强制顺序）**：全部类写完先跑 `test-compile`
+  （<10s 一次暴露全部编译错），秒级迭代修完才合并跑一次 test；禁止逐类跑
+  完整 test、禁止跳过冒烟编译。
+- **Mock 设计约束（流不可回读）**：`BodyPublisher`/`InputStream`/已消费
+  body 不得作断言来源；请求体构造提静态方法单独单测；HTTP mock 只断言
+  URL/header/状态码；响应 mock 用薄 Shim。
+- **断言修改自检**：改断言字符串后 grep 确认旧断言已删（残留靠测试报错
+  逐轮排查平均多耗 2~3 轮完整测试周期）。
+
 ## [0.4.17] — workflow-harness
 
 > 归档性能优化轮（CLI 无代码变更，不发 hunter-harness）：归档全流程
