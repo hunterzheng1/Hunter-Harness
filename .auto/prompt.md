@@ -83,7 +83,17 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
 - 迭代 4（-75.5%→ 8.57）：**并行 copytree**（staging/durable/restore 三处拷贝，
   遇符号链接整体回退 shutil.copytree；copy2 保留 mtime 供缓存命中）。
   A/B：串行中位 9.28（有 28.6s 慢态离群），并行中位 8.57 全快态。
+- 迭代 5（-79.9%→ 7.04）：**git_run memo**（40 位全哈希钉住的只读命令
+  rev-parse --verify/archive/diff/merge-base/cat-file/ls-tree/show；refs 可变
+  不缓存；仅 code=0 缓存）。execute 内 58 次 git 调用：22 次重复 rev-parse
+  --verify 同一 hash、10 次重复 `git archive` 同一 commit（真实大仓上是
+  10 次全树 tar 提取，现在 1 次）。
+- 迭代 6（-80.1%→ 6.96）：**append_event 去二次全量读**：append 后不再
+  重读整个 events.ndjson，用 existing+autoSealed+event 内存拼装渲染
+  execution-log（写入仍是每次 append 后渲染，契约不变）。基准收益中性
+  （fixture 事件小），真实大事件流收益显著。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
-  必要读）；215 归档测试全绿。
+  必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
+  （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
 - 前一会话（测试提速，test_wall_seconds 176.8→128.2s）见 git log / log.jsonl
   早期条目，目标已切换。

@@ -1,0 +1,6470 @@
+[harness-test] 1/64 test_harness_acceptance.py profile=safe maxWorkers=2
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+...
+----------------------------------------------------------------------
+Ran 6 tests in 15.493s
+
+OK
+[harness-test] 2/64 test_harness_adoption_metrics.py profile=safe maxWorkers=2
+.........projects: E:\Agent Data\Temp\tmpgdxywsrt
+overall: pass
+[         pass] finalize_first_try: 10/10（最近 10 次 finalize 中首次即 publication_committed_event_complete 的有 10 次（阈值 >= 8））
+[         pass] evidence_closure: 5/5（最近 5 个 v2 change 中证据闭环干净的有 5 个（阈值 = 5/5））
+[         pass] legacy_fallback: 0/10（最近 10 个 change 中含 legacy plan-finalization.json 的有 0 个（阈值 <= 1））
+{
+  "projects": [
+    "E:\\Agent Data\\Temp\\tmpgdxywsrt"
+  ],
+  "overall": "pass",
+  "criteria": [
+    {
+      "id": "finalize_first_try",
+      "reading": "10/10",
+      "threshold": ">= 8/10",
+      "sample": 10,
+      "status": "pass",
+      "detail": "最近 10 次 finalize 中首次即 publication_committed_event_complete 的有 10 次（阈值 >= 8）",
+      "changes": [
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-00",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-01",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-02",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-03",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-04",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-05",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-06",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-07",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-08",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        },
+        {
+          "project": "E:\\Agent Data\\Temp\\tmpgdxywsrt",
+          "change": "chg-09",
+          "first_status": "publication_committed_event_complete",
+          "first_try_ok": true,
+          "retry_count": 0
+        }
+      ]
+    },
+    {
+      "id": "evidence_closure",
+      "reading": "5/5",
+      "threshold": "5/5 干净",
+      "sample": 5,
+      "status": "pass",
+      "detail": "最近 5 个 v2 change 中证据闭环干净的有 5 个（阈值 = 5/5）",
+      "changes": [
+        {
+          "change": "chg-05",
+          "clean": true,
+          "ledger_scenarios": 1,
+          "reason": "ok"
+        },
+        {
+          "change": "chg-06",
+          "clean": true,
+          "ledger_scenarios": 1,
+          "reason": "ok"
+        },
+        {
+          "change": "chg-07",
+          "clean": true,
+          "ledger_scenarios": 1,
+          "reason": "ok"
+        },
+        {
+          "change": "chg-08",
+          "clean": true,
+          "ledger_scenarios": 1,
+          "reason": "ok"
+        },
+        {
+          "change": "chg-09",
+          "clean": true,
+          "ledger_scenarios": 1,
+          "reason": "ok"
+        }
+      ]
+    },
+    {
+      "id": "legacy_fallback",
+      "reading": "0/10",
+      "threshold": "<= 1/10",
+      "sample": 10,
+      "status": "pass",
+      "detail": "最近 10 个 change 中含 legacy plan-finalization.json 的有 0 个（阈值 <= 1）",
+      "legacy_changes": []
+    }
+  ]
+}
+projects: E:\Agent Data\Temp\tmpk_yusb0g
+overall: indeterminate
+[indeterminate] finalize_first_try: 0/0（样本 0/10，判据不可判定）
+[indeterminate] evidence_closure: 0/0（样本 0/5，判据不可判定）
+[indeterminate] legacy_fallback: 0/0（样本 0/10，判据不可判定）
+projects: E:\Agent Data\Temp\tmpk_yusb0g
+overall: indeterminate
+[indeterminate] finalize_first_try: 0/0（样本 0/10，判据不可判定）
+[indeterminate] evidence_closure: 0/0（样本 0/5，判据不可判定）
+[indeterminate] legacy_fallback: 0/0（样本 0/10，判据不可判定）
+.
+----------------------------------------------------------------------
+Ran 10 tests in 0.446s
+
+OK
+[harness-test] 3/64 test_harness_apidoc.py profile=safe maxWorkers=2
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK
+[harness-test] 4/64 test_harness_archive.py profile=safe maxWorkers=2
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+..usage: harness_archive.py [-h]
+                          {status,auto-gate,adopt-existing-range,certify-local,finalize,execute,restore-durable,replay,repair,republish}
+                          ...
+harness_archive.py: error: argument command_name: invalid choice: 'collect' (choose from 'status', 'auto-gate', 'adopt-existing-range', 'certify-local', 'finalize', 'execute', 'restore-durable', 'replay', 'repair', 'republish')
+usage: harness_archive.py [-h]
+                          {status,auto-gate,adopt-existing-range,certify-local,finalize,execute,restore-durable,replay,repair,republish}
+                          ...
+harness_archive.py: error: argument command_name: invalid choice: 'validate' (choose from 'status', 'auto-gate', 'adopt-existing-range', 'certify-local', 'finalize', 'execute', 'restore-durable', 'replay', 'repair', 'republish')
+..................warning: in the working copy of 'base.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'feature.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'feature-2.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'unrelated.txt', LF will be replaced by CRLF the next time Git touches it
+.........ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/app.py', LF will be replaced by CRLF the next time Git touches it
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+......................ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+...............ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+..ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+........................ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+....ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+warning: in the working copy of '.gitattributes', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/events.ndjson', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/evidence/product-candidate-ci.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/evidence/verification-ledger.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/plans/demo-plan.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/reports/review/review-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/tests/test-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'product.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.gitattributes', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/events.ndjson', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/evidence/product-candidate-ci.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/evidence/verification-ledger.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/plans/demo-plan.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/reports/review/review-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/identity-demo/tests/test-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'product.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'later.txt', LF will be replaced by CRLF the next time Git touches it
+............ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+......ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+....ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+warning: in the working copy of '.gitattributes', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/events.ndjson', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/evidence/product-candidate-ci.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/evidence/verification-ledger.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/meta/worktree.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/plans/demo-plan.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/reports/review/review-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/tests/test-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/events.ndjson', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.harness/changes/anc-change/meta/worktree.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'f.txt', LF will be replaced by CRLF the next time Git touches it
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.
+----------------------------------------------------------------------
+Ran 155 tests in 70.434s
+
+OK
+[harness-test] 5/64 test_harness_archive_c.py profile=safe maxWorkers=2
+..ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+..ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+...ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+...ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+......
+----------------------------------------------------------------------
+Ran 38 tests in 75.194s
+
+OK
+[harness-test] 6/64 test_harness_archive_preflight.py profile=safe maxWorkers=2
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.218s
+
+OK
+[harness-test] 7/64 test_harness_archive_remote.py profile=safe maxWorkers=2
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 0.420s
+
+OK
+[harness-test] 8/64 test_harness_change.py profile=safe maxWorkers=2
+.........................................
+----------------------------------------------------------------------
+Ran 41 tests in 6.672s
+
+OK
+[harness-test] 9/64 test_harness_check_gate.py profile=safe maxWorkers=2
+.....pre-push: skipping npm run check (verified 0s ago for tree tree123)
+.check-ok marker written for tree treefee
+pre-push: skipping npm run check (verified 0s ago for tree treefee)
+.
+----------------------------------------------------------------------
+Ran 7 tests in 0.046s
+
+OK
+[harness-test] 10/64 test_harness_concurrency_mode.py profile=safe maxWorkers=2
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.074s
+
+OK
+[harness-test] 11/64 test_harness_context.py profile=safe maxWorkers=2
+........................................................
+----------------------------------------------------------------------
+Ran 56 tests in 27.188s
+
+OK
+[harness-test] 12/64 test_harness_deploy.py profile=safe maxWorkers=2
+..............WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+..WARNING: --agent missing, defaulting to claude-code (deprecated)
+WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.WARNING: --agent missing, defaulting to claude-code (deprecated)
+.....
+----------------------------------------------------------------------
+Ran 34 tests in 4.483s
+
+OK
+[harness-test] 13/64 test_harness_deploy_manifest.py profile=safe maxWorkers=2
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.278s
+
+OK
+[harness-test] 14/64 test_harness_doc_contract.py profile=safe maxWorkers=2
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.808s
+
+OK
+[harness-test] 15/64 test_harness_efficiency.py profile=safe maxWorkers=2
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.082s
+
+OK
+[harness-test] 16/64 test_harness_events.py profile=safe maxWorkers=2
+................{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-5dc8e9a876a143f4af5f34bbef4dec5e",
+    "timestamp": "2026-09-02T14:17:05.607+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8f166278af74414fbfd2a9036892d5c7",
+    "timestamp": "2026-09-02T14:17:05.619+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a365aaa49b0f4948b277ac529da5bc17",
+    "timestamp": "2026-09-02T14:17:05.629+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0ef91d5064744c8eb3cdba848013d3be",
+    "timestamp": "2026-09-02T14:17:05.638+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4b76219202a04e52bc45d7256dd33291",
+    "timestamp": "2026-09-02T14:17:05.647+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-cdbce19823204a7e8028e589da2043ed",
+    "timestamp": "2026-09-02T14:17:05.655+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3cf94bee53b844b99f7e9418c2f8613c",
+    "timestamp": "2026-09-02T14:17:05.664+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-06c30cf653234a6284efee21b7b83c2a",
+    "timestamp": "2026-09-02T14:17:05.611+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8a6bea8a3ee248d9b9680a3f952f39f4",
+    "timestamp": "2026-09-02T14:17:05.679+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6f00a1e631d241a7a722f8e576064f44",
+    "timestamp": "2026-09-02T14:17:05.687+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-639e5cad2aa8426c8704b3add19ca230",
+    "timestamp": "2026-09-02T14:17:05.696+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a7965942904a4bcb96cfdfb9ed497cab",
+    "timestamp": "2026-09-02T14:17:05.704+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-658bc63ce4884a67a996e8a234793b1c",
+    "timestamp": "2026-09-02T14:17:05.711+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-229fc71ec15c423788947cb6d868d105",
+    "timestamp": "2026-09-02T14:17:05.719+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-38e1a71f2e784e78bf9fac7915a48024",
+    "timestamp": "2026-09-02T14:17:05.727+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0bd86a320eac4f15b1d897782b0d60b1",
+    "timestamp": "2026-09-02T14:17:05.736+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d7ae89a71d1a497e9f3c2ea74d435455",
+    "timestamp": "2026-09-02T14:17:05.745+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-bf482d429f764feca60f786b34571b58",
+    "timestamp": "2026-09-02T14:17:05.776+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ac518203f15e415394e00893bab40b4d",
+    "timestamp": "2026-09-02T14:17:05.784+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d5387aa6d7024be9899e4b29f5169e9a",
+    "timestamp": "2026-09-02T14:17:05.792+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d8b8626d52b44aa8a2f646266eb594f6",
+    "timestamp": "2026-09-02T14:17:05.800+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3c6b346ed9a04078ae1faa334d525f98",
+    "timestamp": "2026-09-02T14:17:05.645+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a38f4a5d6f5041c99241c0ede4e0dded",
+    "timestamp": "2026-09-02T14:17:05.672+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-bd98ce9f9c9f428dada2907ce9e22103",
+    "timestamp": "2026-09-02T14:17:05.699+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-f993dfd949644ea282a0eabbab17817b",
+    "timestamp": "2026-09-02T14:17:05.808+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-97065581944d41d18a6f436b0d9944b9",
+    "timestamp": "2026-09-02T14:17:05.816+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-51175be1db6b4f2299cf83a24a0a6b1f",
+    "timestamp": "2026-09-02T14:17:05.823+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a6b97f9d824f49feb65910530271fdc9",
+    "timestamp": "2026-09-02T14:17:05.830+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0eba2856ecb84940aa16449f1e47ab51",
+    "timestamp": "2026-09-02T14:17:05.836+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-65ec488fbf034b579d2a9bf9b3481eaf",
+    "timestamp": "2026-09-02T14:17:05.846+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9a5a70240fea4c77884791a6ccf81fa6",
+    "timestamp": "2026-09-02T14:17:05.852+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-e95ee7941d03454fa35b7ed0436b2335",
+    "timestamp": "2026-09-02T14:17:05.859+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-fd67bb893614486db3b462c2962303e0",
+    "timestamp": "2026-09-02T14:17:05.888+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-08ac19baf09c4548be933c86d09be5de",
+    "timestamp": "2026-09-02T14:17:05.873+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-023e67be822b418f999b5c75cd2c6973",
+    "timestamp": "2026-09-02T14:17:05.881+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-deb8605423b244c89d39acec22e4a2ac",
+    "timestamp": "2026-09-02T14:17:05.910+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-484f011569934f7b9592d1b60eca82ec",
+    "timestamp": "2026-09-02T14:17:05.918+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3f7f865853e34b8fae847c149c8404b2",
+    "timestamp": "2026-09-02T14:17:05.925+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d2feb6c179624f9191988f4ddbf40495",
+    "timestamp": "2026-09-02T14:17:05.902+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8f7da0f1d6db47e3aed857f0a7c90227",
+    "timestamp": "2026-09-02T14:17:05.650+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0b6de64ea6de46b48ae1901d41626f27",
+    "timestamp": "2026-09-02T14:17:05.639+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b11a1506830045529db0b0c07570dc3d",
+    "timestamp": "2026-09-02T14:17:05.992+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-bc9b0d3a41c647c587aafc69c81b5a8f",
+    "timestamp": "2026-09-02T14:17:06.002+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-230dcbead86644869bfbff6740188d08",
+    "timestamp": "2026-09-02T14:17:05.624+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6b9b0e00e24c4b04910d2e5ed312a6b7",
+    "timestamp": "2026-09-02T14:17:06.018+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6e561e2b28f24436a667d7f0cf316f1d",
+    "timestamp": "2026-09-02T14:17:05.986+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-1c39ec1f68a3422ba86f35ba0c2ab38a",
+    "timestamp": "2026-09-02T14:17:06.034+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c2245e46ba5a460c8e2438546a1c1aee",
+    "timestamp": "2026-09-02T14:17:06.043+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9865be873b874547a0f5b9e5b809cbce",
+    "timestamp": "2026-09-02T14:17:05.867+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7932a51c89f64384858e69999f517c91",
+    "timestamp": "2026-09-02T14:17:05.691+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c0",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ff3864cda88e447fa0d3350b4b7af826",
+    "timestamp": "2026-09-02T14:17:06.065+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c1",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9dabfad24a9a4b629bff372895d858eb",
+    "timestamp": "2026-09-02T14:17:06.052+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a519d97312b1472382577bfbc999241a",
+    "timestamp": "2026-09-02T14:17:06.059+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0888969c3d084318b9c29f6024e6600a",
+    "timestamp": "2026-09-02T14:17:06.087+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-f8292fe7002549c0b90bb58b7776eff4",
+    "timestamp": "2026-09-02T14:17:06.074+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7b1c6357335440e1895abae7bdc615cf",
+    "timestamp": "2026-09-02T14:17:06.080+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-e02c34c1f03a4ac59438b2bd8034f550",
+    "timestamp": "2026-09-02T14:17:06.111+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-259dcef338574facaa566c10688a134d",
+    "timestamp": "2026-09-02T14:17:06.120+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-df1e6e7a7cff442e9b187f8a4ccc43ec",
+    "timestamp": "2026-09-02T14:17:06.128+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-55c14c29b635456f926e7c2424df944f",
+    "timestamp": "2026-09-02T14:17:05.974+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-daba3e70d0ce4c18907d9198cf61f61b",
+    "timestamp": "2026-09-02T14:17:06.164+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b2fe101707fb41189d06a4815de7526e",
+    "timestamp": "2026-09-02T14:17:06.096+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4ba7c05bf8834753bd3d10644c296bf2",
+    "timestamp": "2026-09-02T14:17:06.104+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8276229b8f4549cba1d3792fb7572215",
+    "timestamp": "2026-09-02T14:17:06.010+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a9ac36c4607943b58bffd08fd03112d0",
+    "timestamp": "2026-09-02T14:17:05.979+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-5cfeb8cd671042eba82618b0cbc836e2",
+    "timestamp": "2026-09-02T14:17:06.027+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c2",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-544749d6ac364268b1e85c618a6c7f7a",
+    "timestamp": "2026-09-02T14:17:06.217+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c3",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-630917169c354922a58808c340741a6c",
+    "timestamp": "2026-09-02T14:17:06.205+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-12e9ee84f9794c8780d7396f75f667dc",
+    "timestamp": "2026-09-02T14:17:06.211+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c0e4aa1ae2694d43b337c423c1e22f1c",
+    "timestamp": "2026-09-02T14:17:05.895+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-634fa9f53ce4470d8f0ef90d095a9817",
+    "timestamp": "2026-09-02T14:17:06.187+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3f60837393724b4e846006e22a611e41",
+    "timestamp": "2026-09-02T14:17:06.194+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-df6737d64b6c4e8e945000fc1503415a",
+    "timestamp": "2026-09-02T14:17:06.263+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a40e93ca31c24665bc0d6a42c9ec98bf",
+    "timestamp": "2026-09-02T14:17:06.250+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b5987f7880624ca2bbf82eabd09785ef",
+    "timestamp": "2026-09-02T14:17:06.256+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d1ffd20eeecf463abef4128c5bab3045",
+    "timestamp": "2026-09-02T14:17:06.285+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-094d0a1e085045989890ff5c09542951",
+    "timestamp": "2026-09-02T14:17:06.271+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-cc89f24963c8487086cd78c55b0eb6cc",
+    "timestamp": "2026-09-02T14:17:06.278+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-84168811cdd3438b9d8ba0359dd8ef0b",
+    "timestamp": "2026-09-02T14:17:06.226+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c4",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-eab39a1c76b44e359e7e7ca69015b37e",
+    "timestamp": "2026-09-02T14:17:06.293+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8829f559adfd402b9eda38d082bc624f",
+    "timestamp": "2026-09-02T14:17:06.299+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c79e4873da2644579ceaf3a4859e3a12",
+    "timestamp": "2026-09-02T14:17:06.233+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-859f6af31b4642b0b8bb9d15c7287525",
+    "timestamp": "2026-09-02T14:17:06.370+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d72b5db263e14634a8d553d29f2cec21",
+    "timestamp": "2026-09-02T14:17:06.137+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-cf703df4a91a4d4491a9f3ec8525b348",
+    "timestamp": "2026-09-02T14:17:06.395+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-49a5683cfcb64e7b9618411d23a3c0f3",
+    "timestamp": "2026-09-02T14:17:06.178+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d072458b00684660aeadc610399bdf9f",
+    "timestamp": "2026-09-02T14:17:06.388+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ef3a2bd4f96c4857a6a3640bb2789be0",
+    "timestamp": "2026-09-02T14:17:06.315+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c5",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7ef9eb43507144c8a8757bed49f2ac7b",
+    "timestamp": "2026-09-02T14:17:06.403+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-70b99a35a1bd48c6960574e1f65422a1",
+    "timestamp": "2026-09-02T14:17:06.308+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4a203bd06b4543a9bc2397f3bc8a758a",
+    "timestamp": "2026-09-02T14:17:06.418+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0bfb68e1d4754794825ae3780fd706b3",
+    "timestamp": "2026-09-02T14:17:06.425+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c6",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a0d62aa22ed04453800efae32be93499",
+    "timestamp": "2026-09-02T14:17:06.431+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b2cafa6cd502495f972e18c27990fd02",
+    "timestamp": "2026-09-02T14:17:06.378+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0f84e8e7cf184ea7a908e0704537f6b4",
+    "timestamp": "2026-09-02T14:17:06.446+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ff644f1b324e4722af12e7b282dd9ff9",
+    "timestamp": "2026-09-02T14:17:06.453+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8138a44c8f6e46afbdb67953f0548d92",
+    "timestamp": "2026-09-02T14:17:06.482+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-da3a276920e64e14b495ed789f2870ac",
+    "timestamp": "2026-09-02T14:17:06.325+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w1-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-f4bee460d5f34164ba98b900314cbeb9",
+    "timestamp": "2026-09-02T14:17:06.439+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-313798e3070d40ac829c7ceb9a259ac9",
+    "timestamp": "2026-09-02T14:17:06.508+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-e8691b93cf7f4bd9a00c4d7072e629d7",
+    "timestamp": "2026-09-02T14:17:06.516+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d68c229d45954500b0bbaed2f18440f5",
+    "timestamp": "2026-09-02T14:17:06.462+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d80b5acce9a24c18ba61ac8e7d2d2a7d",
+    "timestamp": "2026-09-02T14:17:06.554+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a3a8a254290f4d89a0dac6120e3c18a4",
+    "timestamp": "2026-09-02T14:17:06.561+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4365fab821954f1cbf0842ec9946cbd2",
+    "timestamp": "2026-09-02T14:17:06.570+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-50a16045e65e497280310ffbe324263c",
+    "timestamp": "2026-09-02T14:17:06.579+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-422bfc62acd44f7e8b332b0204172baa",
+    "timestamp": "2026-09-02T14:17:06.524+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-25d80a6439644977a0ccebb40027396b",
+    "timestamp": "2026-09-02T14:17:06.491+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-61b188df540543b887ce463d8919fb7b",
+    "timestamp": "2026-09-02T14:17:06.600+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9a1e6faf384e48199d708c72617c4a5f",
+    "timestamp": "2026-09-02T14:17:06.241+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c7",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-847d923d24db4afe941387aa7134f56e",
+    "timestamp": "2026-09-02T14:17:06.594+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d1d87932edb54ca2a5de4c5362fdc7a1",
+    "timestamp": "2026-09-02T14:17:06.622+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-5a2c80cf383e498891eceb301c468fc2",
+    "timestamp": "2026-09-02T14:17:06.469+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6d44c196aee74d02bcda1b165fd8b8d4",
+    "timestamp": "2026-09-02T14:17:06.640+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ce1c6a5900d143c4b903bc82831f5d9d",
+    "timestamp": "2026-09-02T14:17:06.587+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-de3e148424ae411885f9ab5b946bc798",
+    "timestamp": "2026-09-02T14:17:06.412+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ed7ae55eff1d46a08bb6c85d798b0885",
+    "timestamp": "2026-09-02T14:17:06.665+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ea7910dc738c48ac84c560f2f6c5e772",
+    "timestamp": "2026-09-02T14:17:06.633+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-dbe1bc4eb39842d888ea29fb39b30b43",
+    "timestamp": "2026-09-02T14:17:06.683+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9392dc8abb6a4be8b6a3868190ffa2c1",
+    "timestamp": "2026-09-02T14:17:06.692+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-87810ea55890439e9ef154df113cb758",
+    "timestamp": "2026-09-02T14:17:06.475+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d174caeabdac48f4870a4a7f7915775d",
+    "timestamp": "2026-09-02T14:17:06.706+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6e58ad22e53d4fbbbfadb0bbff96f9ef",
+    "timestamp": "2026-09-02T14:17:06.673+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-1938770b91ac486da66589120fece16a",
+    "timestamp": "2026-09-02T14:17:06.609+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-dcbcd31e366f46afb5e1603dc594b2e4",
+    "timestamp": "2026-09-02T14:17:06.649+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-17f7095386c843e6ab5ff97fc938834e",
+    "timestamp": "2026-09-02T14:17:06.700+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-483b0b71c62545498380bb1cbcb762ba",
+    "timestamp": "2026-09-02T14:17:06.789+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-fbdd79e450bc49fdb71731c4a1740820",
+    "timestamp": "2026-09-02T14:17:06.774+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-17e50545270649b4a953a387dcba38cb",
+    "timestamp": "2026-09-02T14:17:06.783+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3f4b757b2a1b44cbabab94974ab0bafa",
+    "timestamp": "2026-09-02T14:17:06.811+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-62bae5c5020845d984de64c470662e46",
+    "timestamp": "2026-09-02T14:17:06.797+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-2d323a09bfe7497e936e93cfc8848887",
+    "timestamp": "2026-09-02T14:17:06.827+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-371825098a87440eae35882db3f8f5d1",
+    "timestamp": "2026-09-02T14:17:06.834+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-83bbb731462a4c0c9423f35da65b56e2",
+    "timestamp": "2026-09-02T14:17:06.843+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-ff2cf52ff6144006a0bdde99392d665e",
+    "timestamp": "2026-09-02T14:17:06.851+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3d144b76a4fc44ba8fa4213897ee1217",
+    "timestamp": "2026-09-02T14:17:06.717+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-da270c9f4ec94236a372606272ecf113",
+    "timestamp": "2026-09-02T14:17:06.872+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0783fcb1d62749a5afa5e14ae919fe5f",
+    "timestamp": "2026-09-02T14:17:06.616+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c8",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7f5ecc7d051e40c3971a3b60dd7e3bd1",
+    "timestamp": "2026-09-02T14:17:06.896+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c9",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-cb51878af902438a998bd259f797b2c8",
+    "timestamp": "2026-09-02T14:17:06.803+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-01a8b521ccbb40ba90c33f086b9e86c1",
+    "timestamp": "2026-09-02T14:17:06.913+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-5be0c8d20cdb48b595f4a056a4758b32",
+    "timestamp": "2026-09-02T14:17:06.921+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-8d6de6857e4747beb901569b6e2d4a62",
+    "timestamp": "2026-09-02T14:17:06.928+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-953aab6e0bfb4615b57b9f27ac0b2750",
+    "timestamp": "2026-09-02T14:17:06.938+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6fcdd44b2a614fab8f13016ea8315469",
+    "timestamp": "2026-09-02T14:17:06.946+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4609a3eedf8d4eecaa0a1bb0f9359f31",
+    "timestamp": "2026-09-02T14:17:06.979+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-28fe25ad1d7e4f01babc1d5ddc73646a",
+    "timestamp": "2026-09-02T14:17:06.906+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c10",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-38e1f86a7f2d4681b55a202601ee764f",
+    "timestamp": "2026-09-02T14:17:06.995+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c11",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b4e869d4b24b47828a7c838069349b2f",
+    "timestamp": "2026-09-02T14:17:07.002+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c12",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-e57fa5c3a7be4709a94bb9562588119f",
+    "timestamp": "2026-09-02T14:17:07.012+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c13",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-4580b924eb664eaabea9a93db9330a15",
+    "timestamp": "2026-09-02T14:17:07.020+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c14",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0135cce641fa46bdb527e4757a34aa14",
+    "timestamp": "2026-09-02T14:17:06.988+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-f41d049004c54670835753554c142aa4",
+    "timestamp": "2026-09-02T14:17:07.037+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-54cb7630a4a34dd8832cbb2f77a8bd9c",
+    "timestamp": "2026-09-02T14:17:06.861+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w7-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-93cf718d649d484bae2836ef2a91bd4e",
+    "timestamp": "2026-09-02T14:17:06.759+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-1e62a3dfd3364ca08f7f9818f6cb8118",
+    "timestamp": "2026-09-02T14:17:07.072+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6da068e26d9c43e1b5f47043442e5087",
+    "timestamp": "2026-09-02T14:17:07.080+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-076b1b37a3924685809059539a5fd87b",
+    "timestamp": "2026-09-02T14:17:06.886+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-fe126441f1f74cc1bbaf8ffd8bbf04ed",
+    "timestamp": "2026-09-02T14:17:07.096+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-da55820fc8db45fca6298b5e90965593",
+    "timestamp": "2026-09-02T14:17:07.105+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c12796e2a2344365abbc6f04e2e10cc9",
+    "timestamp": "2026-09-02T14:17:07.114+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-1073fd0ce6324d6f87c3b160b4313441",
+    "timestamp": "2026-09-02T14:17:07.122+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-478dc20a05da4baf8b73201fecc7abde",
+    "timestamp": "2026-09-02T14:17:07.134+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c5425d19a72a4312878a9cc35a7f8e14",
+    "timestamp": "2026-09-02T14:17:07.141+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-cd1071b22a3d496eabf8f61cade97bb5",
+    "timestamp": "2026-09-02T14:17:07.028+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3da3e2b1c4ad4a53b33681eb54abfa84",
+    "timestamp": "2026-09-02T14:17:07.158+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d25d8c7502c04be386d926e4213447c1",
+    "timestamp": "2026-09-02T14:17:07.089+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-42e7037c9684490ebfd24760a4c2dbf4",
+    "timestamp": "2026-09-02T14:17:07.201+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-1134dd5890694a26a1ccd1fda613f548",
+    "timestamp": "2026-09-02T14:17:07.208+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-c7cb33b2430a4543bacf1a14437ad4de",
+    "timestamp": "2026-09-02T14:17:07.216+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-da9647d338dd4290835d8f69ca2bcdbb",
+    "timestamp": "2026-09-02T14:17:07.225+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w3-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-181fb52770aa42598212591ec8275e28",
+    "timestamp": "2026-09-02T14:17:07.151+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-82d0230504974aeb9d459eb5cbc6b553",
+    "timestamp": "2026-09-02T14:17:07.243+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w6-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d0ce9b18f27c4e43a8931c3215bd80c2",
+    "timestamp": "2026-09-02T14:17:07.196+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7bae16aa40ae4e229845b1a9ef7e1fe2",
+    "timestamp": "2026-09-02T14:17:07.267+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-91cba6b01bf745cd884302a497c155e4",
+    "timestamp": "2026-09-02T14:17:07.274+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d88e3d6940fb47e4b4c22e85adba31dc",
+    "timestamp": "2026-09-02T14:17:07.282+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d4ca5f639bfa42a0bfcf2e9fd8500dad",
+    "timestamp": "2026-09-02T14:17:07.290+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a86efebe990c43bf99acce6faaa4f73d",
+    "timestamp": "2026-09-02T14:17:07.298+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-230dffcc23104e7f8f3bcc88f20289b8",
+    "timestamp": "2026-09-02T14:17:07.306+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a80d437fccf54160aea2bf21cfd25865",
+    "timestamp": "2026-09-02T14:17:07.315+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w4-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-2d065efc7c1d46618738e3b25a7a6f60",
+    "timestamp": "2026-09-02T14:17:07.045+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a0c2dd2595ef41a8abfe1b09c453e42a",
+    "timestamp": "2026-09-02T14:17:07.338+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-bed6f6ce33904d1182577a7bd1af8111",
+    "timestamp": "2026-09-02T14:17:07.345+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w2-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-d3dd395a6c6a4fa9bdfdea72f7ba3eef",
+    "timestamp": "2026-09-02T14:17:06.821+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c15",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b2be97ff0f8a48e19e43caebcf830c93",
+    "timestamp": "2026-09-02T14:17:07.378+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c16",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-9ff3fda2eab24e8d9e0e1862a51fd0bb",
+    "timestamp": "2026-09-02T14:17:07.387+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c17",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-984fe841c36946c5a3df5b86669c1d0d",
+    "timestamp": "2026-09-02T14:17:07.425+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c18",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-5a0b6fd243ca4ecb8cf22911001d1c08",
+    "timestamp": "2026-09-02T14:17:07.434+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-24cc4f9a43fc45549a408845f9c5613f",
+    "timestamp": "2026-09-02T14:17:07.442+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-36a3e8b1204343bd9d1a7197909854c0",
+    "timestamp": "2026-09-02T14:17:07.450+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-36817a84bf7f40d99d38fcde3d52b404",
+    "timestamp": "2026-09-02T14:17:07.458+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-433c99648a834b4491b16b67205b5318",
+    "timestamp": "2026-09-02T14:17:07.466+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-6812fec8efd641d3ab937862be10e4d3",
+    "timestamp": "2026-09-02T14:17:07.475+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w0-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-7d435756ec654e0582003454aa14194c",
+    "timestamp": "2026-09-02T14:17:06.659+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c19",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-b3324cff47a54f1f8aa1bad5b0c7b265",
+    "timestamp": "2026-09-02T14:17:07.501+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c20",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-40f8b7eb6fb04bee88d1a70891b8a7c4",
+    "timestamp": "2026-09-02T14:17:07.509+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c21",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-0afaf62fcdaa46249d6b8dd0c1470c59",
+    "timestamp": "2026-09-02T14:17:07.517+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c22",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-2f754732c2a54959bb20037ad888871c",
+    "timestamp": "2026-09-02T14:17:07.526+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c23",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-3bcfe492317f44dda9e644bba24d8c6f",
+    "timestamp": "2026-09-02T14:17:07.533+08:00",
+    "phase": "execute",
+    "type": "command",
+    "command": "w5-c24",
+    "exit_code": 0,
+    "duration_ms": 1,
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmp4_en4wrl\\change-o1\\events.ndjson",
+  "rendered": false
+}
+......{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-889a8505011d477984bf7d0817b3bddc",
+    "timestamp": "2026-09-02T14:17:07.753+08:00",
+    "phase": "plan",
+    "type": "phase.start",
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmpuofm64s6\\proj\\.harness\\changes\\demo\\events.ndjson",
+  "rendered": false,
+  "autoSealed": []
+}
+{
+  "ok": true,
+  "action": "append",
+  "event": {
+    "schema_version": 3,
+    "id": "evt-a81d994f8e0f4d4c8d824144bcd3f7f5",
+    "timestamp": "2026-09-02T14:17:07.806+08:00",
+    "phase": "plan",
+    "type": "phase.end",
+    "note": ""
+  },
+  "events_path": "E:\\Agent Data\\Temp\\tmpuofm64s6\\proj\\.harness\\changes\\demo\\events.ndjson",
+  "rendered": false
+}
+{
+  "ok": true,
+  "action": "render",
+  "events_path": "E:\\Agent Data\\Temp\\tmpuofm64s6\\proj\\.harness\\changes\\demo\\events.ndjson",
+  "execution_log_path": "E:\\Agent Data\\Temp\\tmpuofm64s6\\proj\\.harness\\changes\\demo\\logs\\execution-log.md",
+  "event_count": 2,
+  "execution_log_lines": 9
+}
+.......................
+----------------------------------------------------------------------
+Ran 45 tests in 79.704s
+
+OK
+[harness-test] 17/64 test_harness_events_semantics.py profile=safe maxWorkers=2
+....................
+----------------------------------------------------------------------
+Ran 20 tests in 0.078s
+
+OK
+[harness-test] 18/64 test_harness_events_sync.py profile=safe maxWorkers=2
+............................
+----------------------------------------------------------------------
+Ran 28 tests in 1.409s
+
+OK
+[harness-test] 19/64 test_harness_execution_root_contract.py profile=safe maxWorkers=2
+...
+----------------------------------------------------------------------
+Ran 3 tests in 1.437s
+
+OK
+[harness-test] 20/64 test_harness_fail_state_close.py profile=safe maxWorkers=2
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.034s
+
+OK
+[harness-test] 21/64 test_harness_fixback.py profile=safe maxWorkers=2
+......................
+----------------------------------------------------------------------
+Ran 22 tests in 1.312s
+
+OK
+[harness-test] 22/64 test_harness_fixback_evidence_contract.py profile=safe maxWorkers=2
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.001s
+
+OK
+[harness-test] 23/64 test_harness_gate.py profile=safe maxWorkers=2
+................{"ok": false, "code": "FOUNDATION_GATE_PENDING", "message": "foundation-gate is not approved; tasks 6+ are blocked until reports/review/foundation-gate-review.md is reviewed and checkpoint approved", "checkpointId": "foundation-gate", "checkpointStatus": "pending", "task": 6}
+....{"ok": false, "code": "TASK_NUMBER_REQUIRED", "message": "--task is required while foundation-gate is pending", "checkpointId": "foundation-gate", "checkpointStatus": "pending"}
+.{
+  "ok": true,
+  "code": "PHASE_BEGUN",
+  "phase": "execute",
+  "changeId": "demo",
+  "changeDir": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga\\.harness\\changes\\demo",
+  "projectRoot": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga\\.codebuddy\\skills",
+  "lease": {},
+  "identity": {
+    "adapter": "codebuddy",
+    "bundleHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "event": {
+    "ok": true
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "testGuard": {
+    "ok": true
+  },
+  "policySchemaVersion": 1,
+  "planVerification": {
+    "ok": true,
+    "code": "PLAN_HANDOFF_NOT_APPLICABLE",
+    "skipped": true
+  },
+  "projection": {
+    "ok": true,
+    "code": "PROJECTION_RECEIPT_NOT_CONFIGURED",
+    "status": "legacy",
+    "mode": "legacy",
+    "receiptPath": "E:\\Agent Data\\Temp\\harness-gate-project-amkmimga\\.harness\\config\\projection-receipt.json",
+    "releasePhase": false
+  },
+  "executionRootSource": "main-project-default",
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  }
+}
+.{
+  "ok": true,
+  "code": "PHASE_BEGUN",
+  "phase": "execute",
+  "changeId": "demo",
+  "changeDir": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.harness\\changes\\demo",
+  "projectRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.agents\\skills",
+  "lease": {
+    "leaseId": "a170506b-d419-4a1d-9deb-0f243b1f8ddc",
+    "changeId": "demo",
+    "phase": "execute",
+    "runId": "run-5973b15098074ad69b100c286187895f",
+    "pid": 37104,
+    "acquiredAt": "2026-09-02T14:17:18.487+08:00",
+    "expiresAt": "2026-09-02T15:17:18.487+08:00",
+    "ttlSeconds": 3600,
+    "generation": 1
+  },
+  "identity": {
+    "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.agents\\skills",
+    "registryVersion": "0.2.6",
+    "bundleHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "coreHash": "aaaaaaaaaaaaaaaa",
+    "overlay": "none",
+    "profile": "general",
+    "adapter": "codex",
+    "buildMarkerHash": "0641d2fc1f9cb243905b6fb39e1ace3176652640c37979ec2e89329ab7c73141",
+    "contextIndexPresent": true,
+    "executorTool": "codex",
+    "executorMatchesBundle": true
+  },
+  "event": {
+    "ok": true,
+    "eventId": "evt-cb79246e4c43405eb07fc05b010a5001",
+    "path": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.harness\\changes\\demo\\events.ndjson",
+    "rendered": false,
+    "executionLogPath": null,
+    "autoSealed": []
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "testGuard": {
+    "ok": true,
+    "action": "begin",
+    "code": "SNAPSHOT_CAPTURED",
+    "files": [],
+    "snapshotPath": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.harness\\changes\\demo\\evidence\\test-guard-snapshot.json",
+    "fileCount": 0
+  },
+  "policySchemaVersion": 1,
+  "planVerification": {
+    "ok": true,
+    "code": "PLAN_HANDOFF_NOT_APPLICABLE",
+    "skipped": true
+  },
+  "projection": {
+    "ok": true,
+    "code": "PROJECTION_RECEIPT_NOT_CONFIGURED",
+    "status": "legacy",
+    "mode": "legacy",
+    "receiptPath": "E:\\Agent Data\\Temp\\harness-gate-project-9hkoovnd\\.harness\\config\\projection-receipt.json",
+    "releasePhase": false
+  },
+  "executionRootSource": "main-project-default",
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  }
+}
+...{
+  "ok": true,
+  "code": "CHECKPOINT_APPROVED",
+  "checkpointId": "foundation-gate",
+  "status": "approved",
+  "path": "E:\\Agent Data\\Temp\\harness-gate-project-3lrxn_vc\\.harness\\changes\\demo\\meta\\implementation-checkpoints.json"
+}
+.{"ok": false, "code": "CHECKPOINT_NOT_FOUND", "message": "checkpoint not found: invented-gate"}
+.{"ok": false, "code": "CHECKPOINT_REPORT_MISSING", "message": "required report is missing: reports/review/foundation-gate-review.md"}
+{"ok": false, "code": "CHECKPOINT_REVIEWER_MISMATCH", "message": "checkpoint requires reviewer codex"}
+{
+  "ok": true,
+  "code": "CHECKPOINT_APPROVED",
+  "checkpointId": "foundation-gate",
+  "status": "approved",
+  "path": "E:\\Agent Data\\Temp\\harness-gate-project-ftka144v\\.harness\\changes\\demo\\meta\\implementation-checkpoints.json"
+}
+.{
+  "ok": true,
+  "code": "CLASSIFIED",
+  "stage": "plan",
+  "tier": "standard",
+  "source": "default-standard",
+  "changeId": "demo",
+  "signals": [],
+  "defaultPhases": [
+    "plan",
+    "execute",
+    "submit",
+    "archive"
+  ],
+  "requiredValidations": [
+    "compile",
+    "unitTest",
+    "unitTestFull"
+  ],
+  "conditionalStages": [
+    "review",
+    "package",
+    "apidoc"
+  ],
+  "stageDecisions": {
+    "review": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "package": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "apidoc": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    }
+  },
+  "capabilities": [],
+  "requiredValidationsByPhase": {
+    "execute": [
+      "compile",
+      "unitTest",
+      "unitTestFull"
+    ]
+  },
+  "requiredGateDag": {
+    "schemaVersion": 1,
+    "nodes": [
+      {
+        "id": "validation:compile",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": []
+      },
+      {
+        "id": "validation:unitTest",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:compile"
+        ]
+      },
+      {
+        "id": "validation:unitTestFull",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:unitTest"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "validation:compile",
+        "to": "validation:unitTest"
+      },
+      {
+        "from": "validation:unitTest",
+        "to": "validation:unitTestFull"
+      }
+    ]
+  },
+  "tierOverride": null,
+  "classifiedAt": "2026-09-02T14:17:20.826+08:00",
+  "policyPersisted": true,
+  "policyPath": "E:\\Agent Data\\Temp\\harness-gate-project-rofr_ndz\\.harness\\changes\\demo\\meta\\gate-policy.json"
+}
+.usage: harness_gate.py classify [-h] [--json] [--project PROJECT]
+                                [--change CHANGE] --stage {plan,post-run}
+                                [--tier-override {fast,standard,full}]
+                                [--override-by OVERRIDE_BY] [--force]
+harness_gate.py classify: error: argument --tier-override: invalid choice: 'extreme' (choose from 'fast', 'standard', 'full')
+..{
+  "ok": true,
+  "code": "CLASSIFIED",
+  "stage": "plan",
+  "tier": "standard",
+  "source": "default-standard",
+  "changeId": "demo",
+  "signals": [],
+  "defaultPhases": [
+    "plan",
+    "execute",
+    "submit",
+    "archive"
+  ],
+  "requiredValidations": [
+    "compile",
+    "unitTest",
+    "unitTestFull"
+  ],
+  "conditionalStages": [
+    "review",
+    "package",
+    "apidoc"
+  ],
+  "stageDecisions": {
+    "review": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "package": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "apidoc": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    }
+  },
+  "capabilities": [],
+  "requiredValidationsByPhase": {
+    "execute": [
+      "compile",
+      "unitTest",
+      "unitTestFull"
+    ]
+  },
+  "requiredGateDag": {
+    "schemaVersion": 1,
+    "nodes": [
+      {
+        "id": "validation:compile",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": []
+      },
+      {
+        "id": "validation:unitTest",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:compile"
+        ]
+      },
+      {
+        "id": "validation:unitTestFull",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:unitTest"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "validation:compile",
+        "to": "validation:unitTest"
+      },
+      {
+        "from": "validation:unitTest",
+        "to": "validation:unitTestFull"
+      }
+    ]
+  },
+  "tierOverride": null,
+  "classifiedAt": "2026-09-02T14:17:21.462+08:00",
+  "policyPersisted": true,
+  "policyPath": "E:\\Agent Data\\Temp\\harness-gate-project-rmgcght1\\.harness\\changes\\demo\\meta\\gate-policy.json"
+}
+.{
+  "ok": true,
+  "code": "CLASSIFIED",
+  "stage": "plan",
+  "tier": "standard",
+  "source": "default-standard",
+  "changeId": "demo",
+  "signals": [],
+  "defaultPhases": [
+    "plan",
+    "execute",
+    "submit",
+    "archive"
+  ],
+  "requiredValidations": [
+    "compile",
+    "unitTest",
+    "unitTestFull"
+  ],
+  "conditionalStages": [
+    "review",
+    "package",
+    "apidoc"
+  ],
+  "stageDecisions": {
+    "review": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "package": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "apidoc": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    }
+  },
+  "capabilities": [],
+  "requiredValidationsByPhase": {
+    "execute": [
+      "compile",
+      "unitTest",
+      "unitTestFull"
+    ]
+  },
+  "requiredGateDag": {
+    "schemaVersion": 1,
+    "nodes": [
+      {
+        "id": "validation:compile",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": []
+      },
+      {
+        "id": "validation:unitTest",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:compile"
+        ]
+      },
+      {
+        "id": "validation:unitTestFull",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:unitTest"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "validation:compile",
+        "to": "validation:unitTest"
+      },
+      {
+        "from": "validation:unitTest",
+        "to": "validation:unitTestFull"
+      }
+    ]
+  },
+  "tierOverride": null,
+  "classifiedAt": "2026-09-02T14:17:21.695+08:00",
+  "policyPersisted": false,
+  "warning": "change 已发布（meta/plan-profile.json 存在），classify 不再重写 meta/gate-policy.json 工作副本；确需重算请显式传 --force",
+  "writeGuarded": true
+}
+{
+  "ok": true,
+  "code": "CLASSIFIED",
+  "stage": "plan",
+  "tier": "standard",
+  "source": "default-standard",
+  "changeId": "demo",
+  "signals": [],
+  "defaultPhases": [
+    "plan",
+    "execute",
+    "submit",
+    "archive"
+  ],
+  "requiredValidations": [
+    "compile",
+    "unitTest",
+    "unitTestFull"
+  ],
+  "conditionalStages": [
+    "review",
+    "package",
+    "apidoc"
+  ],
+  "stageDecisions": {
+    "review": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "package": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    },
+    "apidoc": {
+      "required": false,
+      "reason": "not-triggered",
+      "matchedSignals": []
+    }
+  },
+  "capabilities": [],
+  "requiredValidationsByPhase": {
+    "execute": [
+      "compile",
+      "unitTest",
+      "unitTestFull"
+    ]
+  },
+  "requiredGateDag": {
+    "schemaVersion": 1,
+    "nodes": [
+      {
+        "id": "validation:compile",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": []
+      },
+      {
+        "id": "validation:unitTest",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:compile"
+        ]
+      },
+      {
+        "id": "validation:unitTestFull",
+        "kind": "validation",
+        "phase": "execute",
+        "dependsOn": [
+          "validation:unitTest"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "validation:compile",
+        "to": "validation:unitTest"
+      },
+      {
+        "from": "validation:unitTest",
+        "to": "validation:unitTestFull"
+      }
+    ]
+  },
+  "tierOverride": null,
+  "classifiedAt": "2026-09-02T14:17:21.707+08:00",
+  "policyPersisted": true,
+  "policyPath": "E:\\Agent Data\\Temp\\harness-gate-project-kinmlom3\\.harness\\changes\\demo\\meta\\gate-policy.json",
+  "warning": "--force：已发布 change 的工作副本已被重写"
+}
+.......{"ok": false, "code": "LEASE_OWNER_MISMATCH", "message": "active lease does not match close phase/run-id", "holder": {"runId": "real-owner", "phase": "execute"}}
+..PHASE_CLOSED · phase=execute · status=OK · next=review
+.PHASE_CLOSED · phase=execute · status=OK · next=review(auto)
+..PHASE_CLOSE_RESUMED · phase=execute · status=OK · next=review(auto)
+.PHASE_CLOSE_RESUMED · phase=execute · status=OK · next=-
+.PHASE_CLOSE_RESUMED · phase=execute · status=OK · next=review(auto)
+..{
+  "ok": true,
+  "code": "PHASE_CLOSED",
+  "phase": "execute",
+  "status": "OK",
+  "changeId": "demo",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-0nd39_hg\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-0nd39_hg",
+  "skillsRoot": null,
+  "ledger": {
+    "ok": true,
+    "code": "LEDGER_OK"
+  },
+  "testGuard": {
+    "ok": true
+  },
+  "event": {
+    "ok": true
+  },
+  "lease": {
+    "ok": true
+  },
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "contextHandoff": null,
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "scratchSwept": {
+    "ok": true,
+    "code": "SCRATCH_SWEPT",
+    "removed": [],
+    "dryRun": false
+  }
+}
+PHASE_CLOSED · phase=execute · status=OK · next=-
+...PHASE_CLOSED · phase=execute · status=OK · next=review(auto)
+.PHASE_CLOSED · phase=execute · status=OK · next=-
+...CLOSED_DEGRADED · phase=execute · status=WARN · next=-
+.CLOSED_DEGRADED · phase=execute · status=WARN · next=-
+...PHASE_CLOSED · phase=execute · status=OK · next=submit(auto)
+.............{
+  "ok": true,
+  "code": "PHASE_BEGUN",
+  "phase": "execute",
+  "changeId": "demo",
+  "changeDir": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\changes\\demo",
+  "projectRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma-feature",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.agents\\skills",
+  "lease": {},
+  "identity": {
+    "adapter": "codex",
+    "bundleHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "event": {
+    "ok": true
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "testGuard": {
+    "ok": true
+  },
+  "policySchemaVersion": 1,
+  "planVerification": {
+    "ok": true,
+    "code": "PLAN_HANDOFF_NOT_APPLICABLE",
+    "skipped": true
+  },
+  "projection": {
+    "ok": true,
+    "code": "PROJECTION_RECEIPT_NOT_CONFIGURED",
+    "status": "legacy",
+    "mode": "legacy",
+    "receiptPath": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\config\\projection-receipt.json",
+    "releasePhase": false
+  },
+  "executionRootSource": "explicit",
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  }
+}
+{
+  "ok": true,
+  "code": "PHASE_BEGUN",
+  "phase": "execute",
+  "changeId": "demo",
+  "changeDir": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\changes\\demo",
+  "projectRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma-feature",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.agents\\skills",
+  "lease": {},
+  "identity": {
+    "adapter": "codex",
+    "bundleHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "event": {
+    "ok": true,
+    "skipped": true,
+    "reason": "already-recorded"
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "testGuard": {
+    "ok": true,
+    "code": "SNAPSHOT_REUSED"
+  },
+  "policySchemaVersion": 1,
+  "planVerification": {
+    "ok": true,
+    "code": "PLAN_HANDOFF_NOT_APPLICABLE",
+    "skipped": true
+  },
+  "projection": {
+    "ok": true,
+    "code": "PROJECTION_RECEIPT_NOT_CONFIGURED",
+    "status": "legacy",
+    "mode": "legacy",
+    "receiptPath": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\config\\projection-receipt.json",
+    "releasePhase": false
+  },
+  "executionRootSource": "phase-capsule",
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  }
+}
+{
+  "ok": true,
+  "code": "PHASE_CLOSED",
+  "phase": "execute",
+  "status": "OK",
+  "changeId": "demo",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma-feature",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-9zqv5mma\\.agents\\skills",
+  "ledger": {
+    "ok": true,
+    "code": "LEDGER_OK"
+  },
+  "testGuard": {
+    "ok": true
+  },
+  "event": {
+    "ok": true
+  },
+  "lease": {
+    "ok": true
+  },
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "contextHandoff": null,
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "scratchSwept": {
+    "ok": true,
+    "code": "SCRATCH_SWEPT",
+    "removed": [],
+    "errors": [],
+    "dryRun": false
+  }
+}
+PHASE_CLOSED · phase=execute · status=OK · next=-
+...............{
+  "ok": true,
+  "code": "PHASE_CLOSED",
+  "phase": "submit",
+  "status": "OK",
+  "changeId": "demo",
+  "stateRoot": "E:\\Agent Data\\Temp\\harness-gate-project-tc24r4st\\.harness\\changes\\demo",
+  "executionRoot": "E:\\Agent Data\\Temp\\harness-gate-project-tc24r4st",
+  "skillsRoot": "E:\\Agent Data\\Temp\\harness-gate-project-tc24r4st\\.agents\\skills",
+  "ledger": {
+    "ok": true,
+    "code": "LEDGER_OK"
+  },
+  "testGuard": null,
+  "event": {
+    "ok": true
+  },
+  "lease": {
+    "ok": true
+  },
+  "gateSeverityMode": "lenient",
+  "gateWarnings": [],
+  "contextHandoff": null,
+  "platformMonitor": {
+    "skipped": true,
+    "reason": "no remote credentials"
+  },
+  "gateRecovery": {
+    "ok": true,
+    "skipped": true,
+    "reason": "no-unresolved-block"
+  },
+  "scratchSwept": {
+    "ok": true,
+    "code": "SCRATCH_SWEPT",
+    "removed": [],
+    "errors": [],
+    "dryRun": false
+  }
+}
+PHASE_CLOSED · phase=submit · status=OK · next=-
+...........PHASE_CLOSED · phase=execute · status=OK · next=execute
+.PHASE_CLOSED · phase=execute · status=OK · next=-
+.PHASE_CLOSED · phase=execute · status=OK · next=-
+...................
+----------------------------------------------------------------------
+Ran 119 tests in 142.598s
+
+OK
+[harness-test] 24/64 test_harness_gate_severity.py profile=safe maxWorkers=2
+...........
+----------------------------------------------------------------------
+Ran 11 tests in 0.047s
+
+OK
+[harness-test] 25/64 test_harness_global_optimization_contracts.py profile=safe maxWorkers=2
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.049s
+
+OK
+[harness-test] 26/64 test_harness_headless.py profile=safe maxWorkers=2
+..{
+  "schema_version": 1,
+  "ok": true,
+  "command": "events.sync",
+  "change": null,
+  "phase": null,
+  "exit_code": 0,
+  "warnings": [],
+  "errors": [],
+  "result": {
+    "results": [
+      {
+        "ok": true,
+        "skipped": true,
+        "reason": "remote credentials not configured"
+      }
+    ]
+  },
+  "results": [
+    {
+      "ok": true,
+      "skipped": true,
+      "reason": "remote credentials not configured"
+    }
+  ]
+}
+..
+----------------------------------------------------------------------
+Ran 4 tests in 0.005s
+
+OK
+[harness-test] 27/64 test_harness_ia_wave_a.py profile=safe maxWorkers=2
+..................ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+...ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+.ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+........
+----------------------------------------------------------------------
+Ran 46 tests in 10.824s
+
+OK
+[harness-test] 28/64 test_harness_knowledge_candidates.py profile=safe maxWorkers=2
+..................[harness-knowledge-candidates] 跳过候选：source_refs 非法（path='backend/src/main/java/com/klerp/salesinsight/quality/'，finding='f-5e6c7edd899d9b97'）
+....
+----------------------------------------------------------------------
+Ran 22 tests in 0.101s
+
+OK
+[harness-test] 29/64 test_harness_ledger.py profile=safe maxWorkers=2
+...............warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+...[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'new.txt', LF will be replaced by CRLF the next time Git touches it
+.warning: in the working copy of 'base.txt', LF will be replaced by CRLF the next time Git touches it
+...........[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification package --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+..[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTestFull --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+...[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTestFull --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.....[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification compile --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification unitTest --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+................
+----------------------------------------------------------------------
+Ran 78 tests in 9.050s
+
+OK
+[harness-test] 30/64 test_harness_ledger_targets.py profile=safe maxWorkers=2
+[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification compile --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+{
+  "ok": true,
+  "action": "record",
+  "verification": "compile",
+  "status": "OK"
+}
+.[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification compile --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+{
+  "ok": true,
+  "action": "record",
+  "verification": "compile",
+  "status": "OK"
+}
+....[harness-ledger] WARNING PROFILE_INPUT_MISSING: 未传 --profile-input，本条记录缺少 profile 推导的 scope/coverage/inputsHash 身份字段，can-reuse 将无法复用。建议重跑：record --verification compile --profile-input <key> --project . （key 见 build-profile.json verificationInputs）
+{
+  "ok": true,
+  "action": "record",
+  "verification": "compile",
+  "status": "OK"
+}
+..
+----------------------------------------------------------------------
+Ran 7 tests in 0.215s
+
+OK
+[harness-test] 31/64 test_harness_ledger_v3.py profile=safe maxWorkers=2
+.......................................
+----------------------------------------------------------------------
+Ran 39 tests in 11.142s
+
+OK
+[harness-test] 32/64 test_harness_multiday_release_hardening.py profile=safe maxWorkers=2
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 1.770s
+
+OK
+[harness-test] 33/64 test_harness_multiday_resilience.py profile=safe maxWorkers=2
+......
+----------------------------------------------------------------------
+Ran 6 tests in 1.010s
+
+OK
+[harness-test] 34/64 test_harness_multiday_state_machine.py profile=safe maxWorkers=2
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.207s
+
+OK
+[harness-test] 35/64 test_harness_multiday_usability.py profile=safe maxWorkers=2
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.007s
+
+OK
+[harness-test] 36/64 test_harness_orchestration.py profile=safe maxWorkers=2
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.032s
+
+OK
+[harness-test] 37/64 test_harness_paths.py profile=safe maxWorkers=2
+............................
+----------------------------------------------------------------------
+Ran 28 tests in 5.089s
+
+OK
+[harness-test] 38/64 test_harness_performance_contract.py profile=safe maxWorkers=2
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.029s
+
+OK
+[harness-test] 39/64 test_harness_phase.py profile=safe maxWorkers=2
+{
+  "schemaVersion": 1,
+  "runner": "vitest",
+  "source": "E:\\Agent Data\\Temp\\tmpmbc0a7wa\\vitest.json",
+  "suites": 2,
+  "passed": 4,
+  "failed": 0,
+  "skipped": 1,
+  "setupErrors": null,
+  "durationMs": null,
+  "headSha": "dddddddddddddddddddddddddddddddddddddddd"
+}
+.......................ok
+...
+----------------------------------------------------------------------
+Ran 26 tests in 0.925s
+
+OK
+[harness-test] 40/64 test_harness_phase_aliases.py profile=safe maxWorkers=2
+...........
+----------------------------------------------------------------------
+Ran 11 tests in 1.692s
+
+OK
+[harness-test] 41/64 test_harness_phase_auto_seal.py profile=safe maxWorkers=2
+........................
+----------------------------------------------------------------------
+Ran 24 tests in 0.493s
+
+OK
+[harness-test] 42/64 test_harness_phase_lifecycle_e2e.py profile=safe maxWorkers=2
+..
+----------------------------------------------------------------------
+Ran 2 tests in 9.069s
+
+OK
+[harness-test] 43/64 test_harness_plan_aggregate.py profile=safe maxWorkers=2
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+[harness-test] 44/64 test_harness_plan_finalize.py profile=safe maxWorkers=2
+................Exception in thread Thread-1 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\WINDOWS\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "C:\Users\WINDOWS\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\WINDOWS\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\subprocess.py", line 1599, in _readerthread
+    buffer.append(fh.read())
+                  ^^^^^^^^^
+  File "<frozen codecs>", line 322, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb4 in position 159: invalid start byte
+..........
+----------------------------------------------------------------------
+Ran 26 tests in 1.203s
+
+OK
+[harness-test] 45/64 test_harness_preflight.py profile=safe maxWorkers=2
+..................{
+  "ok": true,
+  "action": "check-agents",
+  "agent": "harness-reviewer",
+  "path": "E:\\Agent Data\\Temp\\preflight-cli-waravxgn\\.claude\\agents\\harness-reviewer.md",
+  "agentsRoot": "E:\\Agent Data\\Temp\\preflight-cli-waravxgn\\.claude\\agents",
+  "usable": true,
+  "executionMode": "delegated",
+  "fallbackPolicy": "inline-no-retry",
+  "definitionPresent": true,
+  "hostCallable": false,
+  "toolContractValid": true,
+  "capabilityManifestPresent": false,
+  "reasonCode": "READY",
+  "reason": "agent available; definition=present, hostCallable=False, tools=valid",
+  "name": "harness-reviewer",
+  "tools": [
+    "Read",
+    "Grep"
+  ],
+  "frontmatterKeys": [
+    "name",
+    "tools"
+  ]
+}
+.{
+  "ok": true,
+  "action": "detect",
+  "project": "E:\\Agent Data\\Temp\\preflight-cli-0sqen96u",
+  "profilePath": "E:\\Agent Data\\Temp\\preflight-cli-0sqen96u\\.harness\\config\\build-profile.json",
+  "profile": {
+    "schemaVersion": 3,
+    "defaultsFingerprint": "sha256:d882d426394c7d0fe8d9af869cfd72d9392e1872dd2f91554657b8feea269e02",
+    "detectedAt": "2026-09-02T14:20:35+08:00",
+    "projectType": "java-maven",
+    "toolPaths": {
+      "node": "C:\\Program Files\\nodejs\\node.exe",
+      "mvn": "C:\\Program Files\\Apache\\maven\\apache-maven-3.9.14\\bin\\mvn.cmd",
+      "gradle": "",
+      "npm": "C:\\Program Files\\nodejs\\npm.cmd",
+      "pnpm": "C:\\Program Files\\nodejs\\pnpm.CMD"
+    },
+    "excludedRoots": [
+      ".git",
+      ".harness",
+      ".worktrees",
+      ".claude/worktrees",
+      ".codex/worktrees",
+      ".cursor/worktrees",
+      ".codebuddy/worktrees",
+      ".codeium/worktrees",
+      "target",
+      "build",
+      "dist",
+      "node_modules",
+      ".gradle",
+      ".idea",
+      ".vscode",
+      "__pycache__",
+      ".pytest_cache",
+      ".cache"
+    ],
+    "commands": {
+      "compile": {
+        "command": "mvn -f pom.xml compile -o -q",
+        "argvTemplate": [
+          "mvn",
+          "-f",
+          "pom.xml",
+          "compile",
+          "-o",
+          "-q"
+        ],
+        "scope": "module",
+        "inputs": [
+          "pom.xml",
+          "src/main/**"
+        ],
+        "coverage": "compile",
+        "dependsOn": [],
+        "requiredCapabilities": [
+          "java",
+          "maven"
+        ],
+        "source": "detected",
+        "basis": {
+          "reactorModules": [
+            "."
+          ],
+          "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+        }
+      },
+      "unitTest": {
+        "command": "mvn -f pom.xml test -Dtest={testClasses} -o",
+        "argvTemplate": [
+          "mvn",
+          "-f",
+          "pom.xml",
+          "test",
+          "-Dtest={testClasses}",
+          "-o"
+        ],
+        "scope": "incremental",
+        "inputs": [
+          "pom.xml",
+          "src/test/**"
+        ],
+        "coverage": "unitTest",
+        "dependsOn": [
+          "compile"
+        ],
+        "requiredCapabilities": [
+          "java",
+          "maven"
+        ],
+        "source": "detected",
+        "basis": {
+          "reactorModules": [
+            "."
+          ],
+          "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+        }
+      },
+      "unitTestFull": {
+        "command": "mvn -f pom.xml test -o",
+        "argvTemplate": [
+          "mvn",
+          "-f",
+          "pom.xml",
+          "test",
+          "-o"
+        ],
+        "scope": "full",
+        "inputs": [
+          "pom.xml",
+          "src/main/**",
+          "src/test/**"
+        ],
+        "coverage": "unitTestFull",
+        "dependsOn": [
+          "compile"
+        ],
+        "requiredCapabilities": [
+          "java",
+          "maven"
+        ],
+        "source": "detected",
+        "basis": {
+          "reactorModules": [
+            "."
+          ],
+          "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+        }
+      },
+      "install": {
+        "command": "mvn install -pl {modules} -am -DskipTests -nsu",
+        "argvTemplate": [
+          "mvn",
+          "install",
+          "-pl",
+          "{modules}",
+          "-am",
+          "-DskipTests",
+          "-nsu"
+        ],
+        "scope": "module-am",
+        "inputs": [
+          "pom.xml"
+        ],
+        "coverage": "install",
+        "dependsOn": [
+          "compile"
+        ],
+        "requiredCapabilities": [
+          "java",
+          "maven"
+        ],
+        "source": "detected",
+        "basis": {
+          "reactorModules": [
+            "."
+          ],
+          "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+        }
+      },
+      "package": {
+        "command": "mvn -f pom.xml clean package '-Dmaven.test.skip=true'",
+        "argvTemplate": [
+          "mvn",
+          "-f",
+          "pom.xml",
+          "clean",
+          "package",
+          "-Dmaven.test.skip=true"
+        ],
+        "scope": "module",
+        "inputs": [
+          "pom.xml",
+          "src/main/**",
+          "src/test/**"
+        ],
+        "coverage": "package",
+        "dependsOn": [
+          "compile"
+        ],
+        "requiredCapabilities": [
+          "java",
+          "maven"
+        ],
+        "source": "detected",
+        "basis": {
+          "reactorModules": [
+            "."
+          ],
+          "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+        }
+      }
+    },
+    "verificationInputs": {
+      "compile": [
+        "pom.xml",
+        "src/main/**"
+      ],
+      "unitTest": [
+        "pom.xml",
+        "src/test/**"
+      ],
+      "unitTestFull": [
+        "pom.xml",
+        "src/main/**",
+        "src/test/**"
+      ],
+      "install": [
+        "pom.xml"
+      ],
+      "package": [
+        "pom.xml",
+        "src/main/**",
+        "src/test/**"
+      ]
+    },
+    "verificationGraph": {
+      "schemaVersion": 1,
+      "source": "detected",
+      "candidateTarget": "unitTestFull",
+      "targets": {
+        "compile": {
+          "id": "compile",
+          "commandKey": "compile",
+          "argvTemplate": [
+            "mvn",
+            "-f",
+            "pom.xml",
+            "compile",
+            "-o",
+            "-q"
+          ],
+          "inputs": [
+            "pom.xml",
+            "src/main/**"
+          ],
+          "coverage": "compile",
+          "coverageLevel": "module",
+          "dependsOn": [],
+          "requiredCoverage": "module",
+          "candidate": false,
+          "requiredCapabilities": [
+            "java",
+            "maven"
+          ],
+          "resourceLocks": [],
+          "estimatedDurationSeconds": 0,
+          "requiresFrozenIdentity": false,
+          "reusePolicy": "ledger-exact"
+        },
+        "install": {
+          "id": "install",
+          "commandKey": "install",
+          "argvTemplate": [
+            "mvn",
+            "install",
+            "-pl",
+            "{modules}",
+            "-am",
+            "-DskipTests",
+            "-nsu"
+          ],
+          "inputs": [
+            "pom.xml"
+          ],
+          "coverage": "install",
+          "coverageLevel": "module-am",
+          "dependsOn": [
+            "compile"
+          ],
+          "requiredCoverage": "module-am",
+          "candidate": false,
+          "requiredCapabilities": [
+            "java",
+            "maven"
+          ],
+          "resourceLocks": [],
+          "estimatedDurationSeconds": 0,
+          "requiresFrozenIdentity": false,
+          "reusePolicy": "ledger-exact"
+        },
+        "package": {
+          "id": "package",
+          "commandKey": "package",
+          "argvTemplate": [
+            "mvn",
+            "-f",
+            "pom.xml",
+            "clean",
+            "package",
+            "-Dmaven.test.skip=true"
+          ],
+          "inputs": [
+            "pom.xml",
+            "src/main/**",
+            "src/test/**"
+          ],
+          "coverage": "package",
+          "coverageLevel": "module",
+          "dependsOn": [
+            "compile"
+          ],
+          "requiredCoverage": "module",
+          "candidate": false,
+          "requiredCapabilities": [
+            "java",
+            "maven"
+          ],
+          "resourceLocks": [],
+          "estimatedDurationSeconds": 0,
+          "requiresFrozenIdentity": false,
+          "reusePolicy": "ledger-exact"
+        },
+        "unitTest": {
+          "id": "unitTest",
+          "commandKey": "unitTest",
+          "argvTemplate": [
+            "mvn",
+            "-f",
+            "pom.xml",
+            "test",
+            "-Dtest={testClasses}",
+            "-o"
+          ],
+          "inputs": [
+            "pom.xml",
+            "src/test/**"
+          ],
+          "coverage": "unitTest",
+          "coverageLevel": "incremental",
+          "dependsOn": [
+            "compile"
+          ],
+          "requiredCoverage": "incremental",
+          "candidate": false,
+          "requiredCapabilities": [
+            "java",
+            "maven"
+          ],
+          "resourceLocks": [],
+          "estimatedDurationSeconds": 0,
+          "requiresFrozenIdentity": false,
+          "reusePolicy": "ledger-exact"
+        },
+        "unitTestFull": {
+          "id": "unitTestFull",
+          "commandKey": "unitTestFull",
+          "argvTemplate": [
+            "mvn",
+            "-f",
+            "pom.xml",
+            "test",
+            "-o"
+          ],
+          "inputs": [
+            "pom.xml",
+            "src/main/**",
+            "src/test/**"
+          ],
+          "coverage": "unitTestFull",
+          "coverageLevel": "full",
+          "dependsOn": [
+            "compile"
+          ],
+          "requiredCoverage": "module",
+          "candidate": true,
+          "requiredCapabilities": [
+            "java",
+            "maven"
+          ],
+          "resourceLocks": [],
+          "estimatedDurationSeconds": 0,
+          "requiresFrozenIdentity": true,
+          "reusePolicy": "ledger-exact"
+        }
+      }
+    },
+    "serviceStart": {
+      "argvTemplate": [],
+      "healthUrl": "",
+      "startTimeoutSec": 120,
+      "inputFiles": [],
+      "source": "detected",
+      "profile": "",
+      "overlayPath": ""
+    },
+    "identifier": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+      "maxLength": 64,
+      "prefix": ""
+    },
+    "knownPreexistingErrors": [],
+    "shellQuirks": [],
+    "fingerprint": {
+      "mvnVersion": "",
+      "nodeVersion": "",
+      "pomHash": "669eb3acb969e39d81eb56c0bfddfbefbc0e387283b2413ef824507c80f7ce47"
+    },
+    "testTracking": {
+      "source": "detected",
+      "mode": "force-track-touched",
+      "paths": [
+        "src/test/**"
+      ],
+      "staleTestPolicy": "safe-repair",
+      "forbidTemporaryExclusion": true
+    },
+    "moduleGraph": {
+      "modules": [],
+      "boundariesProven": true,
+      "needsReview": false
+    },
+    "commandGraph": {
+      "targets": [
+        {
+          "id": "compile",
+          "verification": "compile",
+          "command": "mvn -f pom.xml compile -o -q",
+          "scope": "module",
+          "inputs": [
+            "pom.xml",
+            "src/main/**"
+          ],
+          "coverage": "compile",
+          "source": "detected"
+        },
+        {
+          "id": "install",
+          "verification": "install",
+          "command": "mvn install -pl {modules} -am -DskipTests -nsu",
+          "scope": "module-am",
+          "inputs": [
+            "pom.xml"
+          ],
+          "coverage": "install",
+          "source": "detected"
+        },
+        {
+          "id": "package",
+          "verification": "package",
+          "command": "mvn -f pom.xml clean package '-Dmaven.test.skip=true'",
+          "scope": "module",
+          "inputs": [
+            "pom.xml",
+            "src/main/**",
+            "src/test/**"
+          ],
+          "coverage": "package",
+          "source": "detected"
+        },
+        {
+          "id": "unitTest",
+          "verification": "unitTest",
+          "command": "mvn -f pom.xml test -Dtest={testClasses} -o",
+          "scope": "incremental",
+          "inputs": [
+            "pom.xml",
+            "src/test/**"
+          ],
+          "coverage": "unitTest",
+          "source": "detected"
+        },
+        {
+          "id": "unitTestFull",
+          "verification": "unitTestFull",
+          "command": "mvn -f pom.xml test -o",
+          "scope": "full",
+          "inputs": [
+            "pom.xml",
+            "src/main/**",
+            "src/test/**"
+          ],
+          "coverage": "unitTestFull",
+          "source": "detected"
+        },
+        {
+          "id": "unitTest-candidate",
+          "verification": "unitTestFull",
+          "level": "candidate",
+          "command": "mvn -f pom.xml test -o",
+          "inputs": [
+            "pom.xml",
+            "**/src/**"
+          ],
+          "sharedConsumer": true
+        }
+      ]
+    }
+  },
+  "created": true,
+  "updated": true,
+  "applied": true
+}
+{
+  "ok": true,
+  "action": "check",
+  "project": "E:\\Agent Data\\Temp\\preflight-cli-0sqen96u",
+  "status": "ready",
+  "stale": false,
+  "issues": []
+}
+...........
+----------------------------------------------------------------------
+Ran 30 tests in 1.057s
+
+OK
+[harness-test] 46/64 test_harness_process.py profile=safe maxWorkers=2
+..............
+----------------------------------------------------------------------
+Ran 14 tests in 0.101s
+
+OK
+[harness-test] 47/64 test_harness_profile.py profile=safe maxWorkers=2
+...............................................
+----------------------------------------------------------------------
+Ran 47 tests in 2.076s
+
+OK
+[harness-test] 48/64 test_harness_profile_v3.py profile=safe maxWorkers=2
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.041s
+
+OK
+[harness-test] 49/64 test_harness_report_adequacy.py profile=safe maxWorkers=2
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.004s
+
+OK
+[harness-test] 50/64 test_harness_report_model.py profile=safe maxWorkers=2
+.............
+----------------------------------------------------------------------
+Ran 13 tests in 0.001s
+
+OK
+[harness-test] 51/64 test_harness_retro_20260721_w1.py profile=safe maxWorkers=2
+.......................
+----------------------------------------------------------------------
+Ran 23 tests in 0.262s
+
+OK
+[harness-test] 52/64 test_harness_retro_20260721_w2.py profile=safe maxWorkers=2
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.114s
+
+OK
+[harness-test] 53/64 test_harness_review.py profile=safe maxWorkers=2
+.............................{
+  "ok": false,
+  "code": "FINDINGS_INPUT_INVALID",
+  "error": "--input 与 --stdin 只能二选一"
+}
+.{
+  "ok": true,
+  "code": "FINDINGS_WRITTEN",
+  "path": "E:\\Agent Data\\Temp\\tmpnbj3p6ot\\reports\\review\\review-findings.json",
+  "count": 1
+}
+.
+----------------------------------------------------------------------
+Ran 31 tests in 5.127s
+
+OK
+[harness-test] 54/64 test_harness_runtime.py profile=safe maxWorkers=2
+....................................
+----------------------------------------------------------------------
+Ran 36 tests in 6.634s
+
+OK
+[harness-test] 55/64 test_harness_runtime_status_wait.py profile=safe maxWorkers=2
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.031s
+
+OK
+[harness-test] 56/64 test_harness_state.py profile=safe maxWorkers=2
+....warning: in the working copy of 'Svc.java', LF will be replaced by CRLF the next time Git touches it
+..warning: in the working copy of 'Svc.java', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'Svc.java', LF will be replaced by CRLF the next time Git touches it
+.....
+----------------------------------------------------------------------
+Ran 11 tests in 0.787s
+
+OK
+[harness-test] 57/64 test_harness_state_routing.py profile=safe maxWorkers=2
+.............
+----------------------------------------------------------------------
+Ran 13 tests in 2.159s
+
+OK
+[harness-test] 58/64 test_harness_sync.py profile=safe maxWorkers=2
+.................
+----------------------------------------------------------------------
+Ran 17 tests in 0.409s
+
+OK
+[harness-test] 59/64 test_harness_test_cleanup.py profile=safe maxWorkers=2
+..s.
+----------------------------------------------------------------------
+Ran 4 tests in 0.007s
+
+OK (skipped=1)
+[harness-test] 60/64 test_harness_test_guard.py profile=safe maxWorkers=2
+................................................
+----------------------------------------------------------------------
+Ran 48 tests in 28.621s
+
+OK
+[harness-test] 61/64 test_harness_test_runner.py profile=safe maxWorkers=2
+...............................
+----------------------------------------------------------------------
+Ran 31 tests in 1.482s
+
+OK
+[harness-test] 62/64 test_harness_tracking_v2.py profile=safe maxWorkers=2
+...........
+----------------------------------------------------------------------
+Ran 11 tests in 64.441s
+
+OK
+[harness-test] 63/64 test_harness_verification.py profile=safe maxWorkers=2
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.816s
+
+OK
+[harness-test] 64/64 test_harness_workflow_policy.py profile=safe maxWorkers=2
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.287s
+
+OK
+[harness-test] PASS profile=safe modulesPassed=64 modulesExecuted=64 modulesPlanned=64 durationSeconds=627.05
