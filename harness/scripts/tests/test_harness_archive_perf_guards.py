@@ -235,6 +235,21 @@ class ScannedFileDigestTests(unittest.TestCase):
         )
 
 
+class CacheCapacityTests(unittest.TestCase):
+    """Scale guard: per-file cache caps must stay above realistic tree sizes.
+
+    The caps used to be 8192 with wholesale clear on overflow, which silently
+    reverted every optimized pass to full re-reads for trees larger than 8192
+    files (verified on a 9000-file tree: 8192 of 9000 transfer entries lost,
+    before-manifest re-read 5.41s vs 1.41s after the fix). These assertions
+    freeze the floor so the cliff cannot be reintroduced by a constant tweak.
+    """
+
+    def test_file_cache_caps_cover_large_change_trees(self) -> None:
+        self.assertGreaterEqual(hruntime._FILE_CACHE_MAX, 131_072)
+        self.assertGreaterEqual(ha._SHA256_CACHE_MAX, 131_072)
+
+
 class AppendRenderContractTests(unittest.TestCase):
     """e19: archive append_event renders only on phase.end and honors policy."""
 

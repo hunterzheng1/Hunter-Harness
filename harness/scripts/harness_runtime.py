@@ -171,7 +171,11 @@ def _is_excluded(relative: str, exclude_dirs: Sequence[str]) -> bool:
 # Files that fail to read are never cached (the next scan retries them).
 # Stats are taken AFTER the read so the cached fingerprint matches the bytes
 # that were actually scanned.
-_FILE_CACHE_MAX = 8192
+# 128k entries (~25MB worst case): real change trees can exceed the old 8192
+# cap, and the wholesale clear on overflow silently reverted every optimized
+# pass to full re-reads for large trees (verified: 9000-file tree lost 8192 of
+# 9000 transfer entries and re-read them all in the before-manifest).
+_FILE_CACHE_MAX = 131_072
 _sensitive_file_cache: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
 _file_hash_cache: dict[str, tuple[int, int, bytes]] = {}
 

@@ -159,7 +159,10 @@ def write_json(path: Path, data: Any) -> None:
 # copied files (staging/durable) have new inodes and are always read for real,
 # preserving readback verification semantics; the fallback path key is used on
 # filesystems without usable inodes.
-_SHA256_CACHE_MAX = 8192
+# 128k entries (~25MB worst case): see the note on harness_runtime's
+# _FILE_CACHE_MAX — the old 8192 cap caused a silent performance cliff on
+# trees larger than 8192 files (wholesale clear -> manifest re-reads).
+_SHA256_CACHE_MAX = 131_072
 _sha256_cache: dict[tuple, tuple[int, int, str]] = {}
 
 # Whole-tree hashing passes are I/O bound (per-file open cost dominates on
