@@ -196,3 +196,11 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   修复前扫描缓存仅剩 808/9000（8192 处整体清空）、before-manifest 回退 8192 次
   真实读（5.41s）；修复后 9000/9000 全命中、0 真实读（1.41s）——大会话优化
   在大树上的静默失效被消除。防护模块加 CacheCapacityTests 冻结下限。
+
+- 迭代 20（跨模块加固）：**harness_ledger.sha256_file stat 缓存**：
+  compute_inputs_hash 是共享验证指纹原语（state snapshot 段、ledger 验证复用
+  explicit/profile 双哈希 2494/2497/2640、service 会话指纹轮询、archive 认证
+  stale-commit 重绑）。同进程重复指纹 600 文件 1.25s→0.06s（21×）；改动后
+  指纹正确变化（可证伪）；117 ledger 测试绿。基准中性（不在 execute 热路径）。
+  131k 上限沿用 e25 规模教训。发现途径：compute_inputs_hash 调用图审计，
+  非 ideas 池（池关闭只覆盖归档热路径假设）。
