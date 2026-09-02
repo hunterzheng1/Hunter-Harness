@@ -2224,7 +2224,41 @@ def review_evidence_present(
     return review_phase_completed(events)
 
 
+_GIT_OBJECT_HASH_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+_GIT_MEMO_COMMANDS = frozenset(
+    {"rev-parse", "archive", "diff", "merge-base", "cat-file", "ls-tree", "show"}
+)
+_git_memo_cache: dict[tuple[str, tuple[str, ...]], tuple[int, str, str]] = {}
+
+
+def _git_memoizable_args(args: tuple[str, ...]) -> bool:
+    """True for read-only git queries fully pinned by immutable object hashes.
+
+    A 40-hex object hash is content-addressed and immutable in Git, so e.g.
+    `rev-parse --verify <sha>^{commit}` or `archive <sha>` can never change
+    answer for the same input. Refs (HEAD, branch names, @{u}) ARE mutable
+    during the run (managed-snapshot commits) and are never memoized.
+    """
+    if not args or args[0] not in _GIT_MEMO_COMMANDS:
+        return False
+    for arg in args[1:]:
+        if arg.startswith("-"):
+            continue
+        for revision in arg.split(".."):
+            revision = revision.split("^")[0].split("~")[0]
+            if not revision:
+                continue
+            if not _GIT_OBJECT_HASH_RE.match(revision):
+                return False
+    return True
+
+
 def git_run(project: Path, *args: str) -> tuple[int, str, str]:
+    cache_key = (str(project), args)
+    if _git_memoizable_args(args):
+        cached = _git_memo_cache.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         proc = subprocess.run(
             ["git", "-C", str(project), *args],
@@ -2235,9 +2269,12 @@ def git_run(project: Path, *args: str) -> tuple[int, str, str]:
             timeout=30,
             check=False,
         )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        result = (proc.returncode, proc.stdout.strip(), proc.stderr.strip())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", str(exc)
+    if _git_memoizable_args(args) and result[0] == 0:
+        _git_memo_cache[cache_key] = result
+    return result
 
 
 def extract_final_pushed_hash(execution_log: str) -> str | None:

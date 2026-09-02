@@ -63,14 +63,27 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
 
 （随迭代更新）
 
-- 2026-09-02 基线：archive_seconds ≈ 49-53s（无 profile 53.05 / 带 profile
-  48.98）。cProfile（34s in-process）热点：
-  1. `_sensitive_candidates` ×5 = 18.8s（每遍全树 read_bytes + 正则 + sha256；
-     io.open 在 Windows 上 1.3ms/次）
-  2. `validate_sensitive_evidence_publication_gate` ×3 = 11.0s（内含扫描）
-  3. `write_durable_archive` 内 `_archive_tree_digest` ×3 = 6.9s
-  4. `check_status` = 7.1s（内含一次 gate 扫描 + git 调用）
-  5. `_publishable_tree_digest` ×4 = 1.6s；manifest ×2 ≈ 1.1s；subprocess ×50
-     ≈ 1.4s
+- 2026-09-02 基线：archive_seconds ≈ 34.75（中位数协议；单次协议曾测 34.99-
+  55，噪声双峰：快态 ~24-26 / 慢态 ~32-37，Defender 对新文件的周期扫描）。
+  cProfile（34s in-process）热点：`_sensitive_candidates` ×5 = 18.8s、
+  `validate_sensitive_evidence_publication_gate` ×3 = 11.0s、
+  `write_durable_archive` 内 `_archive_tree_digest` ×3 = 6.9s、
+  `check_status` = 7.1s、`_publishable_tree_digest` ×4 = 1.6s、manifest ×2 ≈ 1.1s、
+  subprocess ×50 ≈ 1.4s。io.open 每次开销 ~1.3-4ms（Defender）。
+- 迭代 1（-24%→ 26.5）：harness_runtime 加**按文件 stat 缓存**
+  （`_sensitive_candidates` + `_publishable_tree_digest`）：同进程内同一内容
+  只读一次；跨根命中 staging 副本（copy2 保留 mtime）；events.ndjson 增量只重读
+  该文件；扫描同时填充哈希缓存。
+- 迭代 2（-27%→ 25.5）：harness_archive 加**inode 键 sha256 缓存**
+  （sha256_file / generate_manifest / coverage / _archive_tree_digest 共享）：
+  键 (st_dev, st_ino)+size+mtime，同卷 rename 后仍命中；staged/durable 新 inode
+  真实重读（保住腐化检测）；树摘要字节格式不变（bytes.fromhex）。
+- 迭代 3（-70.6%→ 10.3）：**全树 pass 逐文件并行**（扫描/摘要/manifest/树摘要，
+  线程池 min(8,cpu)，结果按原顺序组装，磁盘产物逐字节一致）。双峰噪声消失。
+- 迭代 4（-75.5%→ 8.57）：**并行 copytree**（staging/durable/restore 三处拷贝，
+  遇符号链接整体回退 shutil.copytree；copy2 保留 mtime 供缓存命中）。
+  A/B：串行中位 9.28（有 28.6s 慢态离群），并行中位 8.57 全快态。
+- 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
+  必要读）；215 归档测试全绿。
 - 前一会话（测试提速，test_wall_seconds 176.8→128.2s）见 git log / log.jsonl
   早期条目，目标已切换。
