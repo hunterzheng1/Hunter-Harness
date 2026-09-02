@@ -27,7 +27,6 @@ warning: in the working copy of '.harness/changes/identity-demo/plans/demo-plan.
 warning: in the working copy of '.harness/changes/identity-demo/reports/review/review-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of '.harness/changes/identity-demo/tests/test-report-20260710.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'product.txt', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of '.harness/changes/identity-demo/logs/execution-log.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'product.txt', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'later.txt', LF will be replaced by CRLF the next time Git touches it
 ..........................warning: in the working copy of '.gitattributes', LF will be replaced by CRLF the next time Git touches it
@@ -843,6 +842,6 @@ ok
 ok
 ....................................
 ----------------------------------------------------------------------
-Ran 252 tests in 187.036s
+Ran 252 tests in 243.752s
 
 OK

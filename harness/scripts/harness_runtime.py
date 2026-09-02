@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import fnmatch
 from collections.abc import Sequence
@@ -162,6 +163,11 @@ _FILE_CACHE_MAX = 8192
 _sensitive_file_cache: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
 _file_hash_cache: dict[str, tuple[int, int, bytes]] = {}
 
+# Whole-tree passes are I/O bound (per-file open cost dominates on Windows);
+# bounded thread parallelism reads files concurrently without changing the
+# assembled result order.
+_IO_WORKERS = max(2, min(8, os.cpu_count() or 4))
+
 
 def _cached_file_hash(path: Path, relative: str) -> tuple[int, bytes] | None:
     """(length, sha256) of file bytes, cached per-process on a stat match."""
@@ -188,7 +194,7 @@ def _publishable_tree_digest(
     if not root.is_dir():
         raise OSError(f"publishable evidence root not found: {root}")
     receipt = (root / SECRET_SCAN_RECEIPT_REL).resolve()
-    digest = hashlib.sha256()
+    digest_items: list[tuple[str, Path]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.resolve() == receipt:
             continue
@@ -196,9 +202,10 @@ def _publishable_tree_digest(
             path.relative_to(root).as_posix(), exclude_dirs
         ):
             continue
-        relative = path.relative_to(root).as_posix()
-        length: int | None = None
-        data_hash: bytes | None = None
+        digest_items.append((path.relative_to(root).as_posix(), path))
+
+    def _hash_one(item: tuple[str, Path]) -> tuple[int, bytes] | None:
+        relative, path = item
         cached = _file_hash_cache.get(relative)
         if cached is not None:
             try:
@@ -210,14 +217,22 @@ def _publishable_tree_digest(
                 and cached[0] == stat.st_size
                 and cached[1] == stat.st_mtime_ns
             ):
-                length, data_hash = cached[0], cached[2]
-        if data_hash is None:
-            fresh = _cached_file_hash(path, relative)
-            if fresh is None:
-                # Unreadable file: keep the historical behaviour of letting the
-                # read error surface to the caller.
-                raise OSError(f"cannot read publishable file: {path}")
-            length, data_hash = fresh
+                return cached[0], cached[2]
+        fresh = _cached_file_hash(path, relative)
+        if fresh is None:
+            # Unreadable file: keep the historical behaviour of letting the
+            # read error surface to the caller.
+            raise OSError(f"cannot read publishable file: {path}")
+        return fresh
+
+    if len(digest_items) > 8:
+        with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
+            hashes = list(pool.map(_hash_one, digest_items))
+    else:
+        hashes = [_hash_one(item) for item in digest_items]
+    digest = hashlib.sha256()
+    for (relative, _path), entry in zip(digest_items, hashes):
+        length, data_hash = entry
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(str(length).encode("ascii"))
@@ -382,7 +397,7 @@ def _sensitive_candidates(
     # whole change tree, and on Windows each resolve() is a realpath syscall.
     receipt_rel = SECRET_SCAN_RECEIPT_REL.as_posix()
     root = root.expanduser().resolve()
-    candidates: list[dict[str, Any]] = []
+    scan_items: list[tuple[str, Path]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -391,6 +406,12 @@ def _sensitive_candidates(
             continue
         if exclude_dirs and _is_excluded(relative, exclude_dirs):
             continue
+        scan_items.append((relative, path))
+
+    _unreadable = object()
+
+    def _scan_one(item: tuple[str, Path]) -> Any:
+        relative, path = item
         cached = _sensitive_file_cache.get(relative)
         if cached is not None:
             try:
@@ -402,15 +423,11 @@ def _sensitive_candidates(
                 and cached[0] == stat.st_size
                 and cached[1] == stat.st_mtime_ns
             ):
-                if cached[2] is not None:
-                    # Defensive copy: callers build receipts from these entries
-                    # and must not be able to mutate the cached result.
-                    candidates.append(dict(cached[2]))
-                continue
+                return cached[2]
         try:
             raw = path.read_bytes()
         except OSError:
-            continue
+            return _unreadable
         raw_digest = hashlib.sha256(raw).digest()
         finding = next(
             (
@@ -429,11 +446,10 @@ def _sensitive_candidates(
                 "reasonCode": "PLAINTEXT_SENSITIVE_ASSIGNMENT",
                 "digest": "sha256:" + raw_digest.hex(),
             }
-            candidates.append(entry)
         try:
             stat = path.stat()
         except OSError:
-            continue
+            return entry
         if len(_sensitive_file_cache) >= _FILE_CACHE_MAX:
             _sensitive_file_cache.clear()
         _sensitive_file_cache[relative] = (stat.st_size, stat.st_mtime_ns, entry)
@@ -444,6 +460,20 @@ def _sensitive_candidates(
             stat.st_mtime_ns,
             raw_digest,
         )
+        return entry
+
+    if len(scan_items) > 8:
+        with ThreadPoolExecutor(max_workers=_IO_WORKERS) as pool:
+            entries = list(pool.map(_scan_one, scan_items))
+    else:
+        entries = [_scan_one(item) for item in scan_items]
+    candidates: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry is None or entry is _unreadable:
+            continue
+        # Defensive copy: callers build receipts from these entries and must
+        # not be able to mutate the cached result.
+        candidates.append(dict(entry))
     return candidates
 
 

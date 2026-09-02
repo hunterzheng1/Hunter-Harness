@@ -31,6 +31,7 @@ import time
 import uuid
 import zipfile
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -160,6 +161,11 @@ def write_json(path: Path, data: Any) -> None:
 # filesystems without usable inodes.
 _SHA256_CACHE_MAX = 8192
 _sha256_cache: dict[tuple, tuple[int, int, str]] = {}
+
+# Whole-tree hashing passes are I/O bound (per-file open cost dominates on
+# Windows); bounded thread parallelism reads files concurrently and the
+# assembled results keep their original deterministic order.
+_HASH_WORKERS = max(2, min(8, os.cpu_count() or 4))
 
 
 def _sha256_cache_key(path: Path, stat: os.stat_result) -> tuple:
@@ -314,6 +320,7 @@ def generate_manifest(root: Path, output_path: Path) -> dict[str, Any]:
 
     files: list[dict[str, Any]] = []
     total_bytes = 0
+    manifest_items: list[tuple[str, int, Path]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -324,13 +331,21 @@ def generate_manifest(root: Path, output_path: Path) -> dict[str, Any]:
             continue
         size = path.stat().st_size
         total_bytes += size
-        files.append(
-            {
-                "path": rel,
-                "sizeBytes": size,
-                "sha256": sha256_file(path),
-            }
-        )
+        manifest_items.append((rel, size, path))
+    if len(manifest_items) > 8:
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            hashes = list(
+                pool.map(
+                    lambda item: sha256_file(item[2]),
+                    manifest_items,
+                )
+            )
+    else:
+        hashes = [sha256_file(item[2]) for item in manifest_items]
+    files = [
+        {"path": rel, "sizeBytes": size, "sha256": digest}
+        for (rel, size, _path), digest in zip(manifest_items, hashes)
+    ]
 
     result = {
         "root": str(root),
@@ -7809,7 +7824,11 @@ def _archive_tree_digest(root: Path) -> str:
     root = root.resolve()
     if not root.is_dir():
         raise OSError(f"archive payload directory not found: {root}")
-    digest = hashlib.sha256()
+    # First pass: walk in the exact original order, validating links and
+    # collecting file hashes (in parallel); the digest stream is then fed in
+    # the identical order so the tree hash value is unchanged.
+    stream: list[tuple[str, str, str, str]] = []  # (kind, relative, size, hash)
+    hash_items: list[tuple[int, Path]] = []
     for directory, dir_names, file_names in os.walk(root, followlinks=False):
         current = Path(directory)
         dir_names.sort()
@@ -7819,24 +7838,39 @@ def _archive_tree_digest(root: Path) -> str:
             if child.is_symlink():
                 raise OSError(f"durable archive refuses directory link: {child}")
             relative = child.relative_to(root).as_posix()
-            digest.update(b"D\0")
-            digest.update(relative.encode("utf-8"))
-            digest.update(b"\0")
+            stream.append(("D", relative, "", ""))
         for name in file_names:
             child = current / name
             if child.is_symlink():
                 raise OSError(f"durable archive refuses file link: {child}")
             relative = child.relative_to(root).as_posix()
-            # sha256_file caches per (path, size, mtime): the source payload
-            # pass reuses hashes already computed by the manifest/coverage
-            # passes, while staged and readback passes (fresh paths) still
-            # read their own bytes and keep the corruption-detection semantics.
-            file_digest = sha256_file(child)
-            size = child.stat().st_size
-            digest.update(b"F\0")
-            digest.update(relative.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(str(size).encode("ascii"))
+            stream.append(("F", relative, "", ""))
+            hash_items.append((len(stream) - 1, child))
+
+    def _hash_one(item: tuple[int, Path]) -> str:
+        return sha256_file(item[1])
+
+    if len(hash_items) > 8:
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            file_hashes = list(pool.map(_hash_one, hash_items))
+    else:
+        file_hashes = [_hash_one(item) for item in hash_items]
+    for (stream_index, child), file_digest in zip(hash_items, file_hashes):
+        _kind, _rel, _size, _hash = stream[stream_index]
+        stream[stream_index] = (
+            "F",
+            _rel,
+            str(child.stat().st_size),
+            file_digest,
+        )
+
+    digest = hashlib.sha256()
+    for kind, relative, size, file_digest in stream:
+        digest.update((kind + "\0").encode("ascii"))
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if kind == "F":
+            digest.update(size.encode("ascii"))
             digest.update(b"\0")
             digest.update(bytes.fromhex(file_digest))
             digest.update(b"\0")
