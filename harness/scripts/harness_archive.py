@@ -7821,6 +7821,37 @@ def run_service_stop(change_dir: Path) -> dict[str, Any]:
             "skipped": True,
             "warning": f"harness_service.py not found; stop skipped",
         }
+    # Cheap in-process pre-check: with no service session the stop subprocess
+    # deterministically reports "already-stopped" — same loader, same path
+    # resolution. Spawning an interpreter per stop just to restate that costs
+    # ~150ms each (more when cold), twice per archive run, so resolve the
+    # session via harness_service's own load_session in-process and only
+    # delegate to the isolated subprocess when there is actually a session to
+    # stop — crash isolation for the kill path is preserved. Any doubt (import
+    # trouble, corrupt session) falls back to the subprocess unchanged.
+    try:
+        import harness_service as hsvc
+
+        if hsvc.load_session(change_dir) is None:
+            inline_payload = {
+                "ok": True,
+                "action": "already-stopped",
+                "killed": False,
+                "sessionCleared": False,
+                "detail": "no service-session.json",
+            }
+            return {
+                "ran": True,
+                "skipped": False,
+                "exit_code": 0,
+                "ok": True,
+                "inlined": True,
+                "stdout": (
+                    json.dumps(inline_payload, ensure_ascii=False, indent=2) + "\n"
+                ),
+            }
+    except Exception:  # noqa: BLE001 — any doubt falls back to the subprocess
+        pass
     try:
         proc = subprocess.run(
             [
