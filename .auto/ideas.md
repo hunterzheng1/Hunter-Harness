@@ -1,8 +1,7 @@
 # 归档优化：待试想法
 
-- **git 子进程去重**：finalize 流程内 ~50 次 subprocess（git rev-parse/ls-files 重复、
-  CLI 解析、events sync）。git_run 按参数 memoize 有状态突变风险（push/fetch 改 refs），
-  只对只读命令（rev-parse HEAD、cat-file、diff --name-only）做进程内 memo 可省 ~1s。
+- ~~git 子进程去重~~：已完成（e6 git_run 哈希钉住 memo + e10
+  compute_product_tree_hash_for_commit 结果 memo，git archive 10x→1x）。
 - **scan+manifest 融合**：第一次敏感扫描（change_dir）与 staging 拷贝后的 manifest
   （work_dir）是不同文件集，无法直接融合；但 staging 拷贝读源文件时可以顺带填充
   sha256 缓存（读的是源字节，不写 manifest，不削弱拷贝后校验）→ manifest-before

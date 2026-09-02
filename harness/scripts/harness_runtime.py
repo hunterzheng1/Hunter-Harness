@@ -193,16 +193,20 @@ def _publishable_tree_digest(
     root = root.expanduser().resolve()
     if not root.is_dir():
         raise OSError(f"publishable evidence root not found: {root}")
-    receipt = (root / SECRET_SCAN_RECEIPT_REL).resolve()
+    # Compare by relative path, not by resolve() per file: this loop covers the
+    # whole tree and on Windows each resolve() is a realpath syscall (the scan
+    # side already excludes the receipt the same way).
+    receipt_rel = SECRET_SCAN_RECEIPT_REL.as_posix()
     digest_items: list[tuple[str, Path]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.resolve() == receipt:
+        if not path.is_file():
             continue
-        if exclude_dirs and _is_excluded(
-            path.relative_to(root).as_posix(), exclude_dirs
-        ):
+        relative = path.relative_to(root).as_posix()
+        if relative == receipt_rel:
             continue
-        digest_items.append((path.relative_to(root).as_posix(), path))
+        if exclude_dirs and _is_excluded(relative, exclude_dirs):
+            continue
+        digest_items.append((relative, path))
 
     def _hash_one(item: tuple[str, Path]) -> tuple[int, bytes] | None:
         relative, path = item

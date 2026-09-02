@@ -6341,6 +6341,10 @@ def validate_source_consistency(
             entries = manifest.get("files") if isinstance(manifest, dict) else None
             valid = isinstance(entries, list) and manifest.get("fileCount") == len(entries)
             seen: set[str] = set()
+            # Resolve the containment root once; the per-entry resolve() below
+            # is the path-safety guard and must stay, but recomputing the root
+            # per entry was one extra realpath syscall per manifest entry.
+            change_root = change_dir.resolve()
             if valid:
                 for entry in entries:
                     rel = str(entry.get("path") or "") if isinstance(entry, dict) else ""
@@ -6354,7 +6358,7 @@ def validate_source_consistency(
                         break
                     seen.add(rel)
                     target = (change_dir / rel).resolve()
-                    if not target.is_relative_to(change_dir.resolve()) or not target.is_file():
+                    if not target.is_relative_to(change_root) or not target.is_file():
                         valid = False
                         break
                     if not _manifest_path_excluded(rel) and sha256_file(target) != digest:

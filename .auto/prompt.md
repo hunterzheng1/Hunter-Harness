@@ -92,6 +92,13 @@ run_experiment 在本机用 WSL bash 调 .auto/checks.sh 会因 Windows 路径�
   重读整个 events.ndjson，用 existing+autoSealed+event 内存拼装渲染
   execution-log（写入仍是每次 append 后渲染，契约不变）。基准收益中性
   （fixture 事件小），真实大事件流收益显著。
+- 迭代 8（-80.4%→ 6.86）：**service-stop 预检**：无服务会话时进程内内联
+  判定（load_session 纯加载器），有会话仍走隔离子进程（杀进程路径崩溃隔离
+  保留），异常回退子进程。
+- 迭代 9（-81.8%→ 6.37）：**compute_product_tree_hash_for_commit 结果 memo**
+  （键=project+解析后全哈希+limit；它直接 subprocess 调 `git archive` 绕过了
+  文本版 git_run memo，同一 product commit 每次归档被全树 tar 提取 10 次 → 1 次；
+  真实仓库收益随体积放大）。
 - 已验证：sha256 缓存命中 3065/1242 miss（miss = 首次观察 + 拷贝验证，均为协议
   必要读）；迭代 6 后 238 归档+事件测试绿；全量 safe profile 64/64 模块绿
   （迭代 5 后重跑中）；typecheck 绿。导入仅 ~0.2s，不值得瘦身。
