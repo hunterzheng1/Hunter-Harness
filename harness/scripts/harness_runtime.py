@@ -140,15 +140,55 @@ def _is_excluded(relative: str, exclude_dirs: Sequence[str]) -> bool:
     return head in exclude_dirs
 
 
+# Per-process per-file caches for the whole-tree readers.
+#
+# One archive run walks the same content several times (status gate, source
+# refresh, source gate, staged refresh, staged gate; digest passes likewise).
+# Each pass re-read every byte of the change tree, which dominates the archive
+# wall clock on Windows. Instead of re-reading, each file's scan result is
+# cached under its (size, mtime_ns) stat fingerprint:
+#
+# - Any write updates mtime, so a stat match proves "same content we already
+#   read" for every file our own flows touch (event appends, receipts, copies).
+# - shutil.copy2 preserves size+mtime, so the staged copy of the change tree
+#   reuses the source scan's per-file results instead of re-reading bytes.
+# - Small deltas (events.ndjson appended between two scans) only re-read the
+#   changed file, not the whole tree.
+#
+# Files that fail to read are never cached (the next scan retries them).
+# Stats are taken AFTER the read so the cached fingerprint matches the bytes
+# that were actually scanned.
+_FILE_CACHE_MAX = 8192
+_sensitive_file_cache: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
+_file_hash_cache: dict[str, tuple[int, int, bytes]] = {}
+
+
+def _cached_file_hash(path: Path, relative: str) -> tuple[int, bytes] | None:
+    """(length, sha256) of file bytes, cached per-process on a stat match."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    digest = hashlib.sha256(data).digest()
+    try:
+        stat = path.stat()
+    except OSError:
+        return len(data), digest
+    if len(_file_hash_cache) >= _FILE_CACHE_MAX:
+        _file_hash_cache.clear()
+    _file_hash_cache[relative] = (stat.st_size, stat.st_mtime_ns, digest)
+    return len(data), digest
+
+
 def _publishable_tree_digest(
     root: Path, *, exclude_dirs: Sequence[str] = ()
 ) -> str:
     """Hash publishable bytes while excluding the self-referential scan receipt."""
     root = root.expanduser().resolve()
-    digest = hashlib.sha256()
-    receipt = (root / SECRET_SCAN_RECEIPT_REL).resolve()
     if not root.is_dir():
         raise OSError(f"publishable evidence root not found: {root}")
+    receipt = (root / SECRET_SCAN_RECEIPT_REL).resolve()
+    digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.resolve() == receipt:
             continue
@@ -157,12 +197,32 @@ def _publishable_tree_digest(
         ):
             continue
         relative = path.relative_to(root).as_posix()
-        data = path.read_bytes()
+        length: int | None = None
+        data_hash: bytes | None = None
+        cached = _file_hash_cache.get(relative)
+        if cached is not None:
+            try:
+                stat = path.stat()
+            except OSError:
+                stat = None
+            if (
+                stat is not None
+                and cached[0] == stat.st_size
+                and cached[1] == stat.st_mtime_ns
+            ):
+                length, data_hash = cached[0], cached[2]
+        if data_hash is None:
+            fresh = _cached_file_hash(path, relative)
+            if fresh is None:
+                # Unreadable file: keep the historical behaviour of letting the
+                # read error surface to the caller.
+                raise OSError(f"cannot read publishable file: {path}")
+            length, data_hash = fresh
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(len(data)).encode("ascii"))
+        digest.update(str(length).encode("ascii"))
         digest.update(b"\0")
-        digest.update(hashlib.sha256(data).digest())
+        digest.update(data_hash)
         digest.update(b"\0")
     return "sha256:" + digest.hexdigest()
 
@@ -321,6 +381,7 @@ def _sensitive_candidates(
     # Compare by relative path, not by resolve() per file: this loop covers the
     # whole change tree, and on Windows each resolve() is a realpath syscall.
     receipt_rel = SECRET_SCAN_RECEIPT_REL.as_posix()
+    root = root.expanduser().resolve()
     candidates: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -330,10 +391,27 @@ def _sensitive_candidates(
             continue
         if exclude_dirs and _is_excluded(relative, exclude_dirs):
             continue
+        cached = _sensitive_file_cache.get(relative)
+        if cached is not None:
+            try:
+                stat = path.stat()
+            except OSError:
+                stat = None
+            if (
+                stat is not None
+                and cached[0] == stat.st_size
+                and cached[1] == stat.st_mtime_ns
+            ):
+                if cached[2] is not None:
+                    # Defensive copy: callers build receipts from these entries
+                    # and must not be able to mutate the cached result.
+                    candidates.append(dict(cached[2]))
+                continue
         try:
             raw = path.read_bytes()
         except OSError:
             continue
+        raw_digest = hashlib.sha256(raw).digest()
         finding = next(
             (
                 match
@@ -344,13 +422,28 @@ def _sensitive_candidates(
             ),
             None,
         )
-        if finding is None:
+        entry: dict[str, Any] | None = None
+        if finding is not None:
+            entry = {
+                "path": relative,
+                "reasonCode": "PLAINTEXT_SENSITIVE_ASSIGNMENT",
+                "digest": "sha256:" + raw_digest.hex(),
+            }
+            candidates.append(entry)
+        try:
+            stat = path.stat()
+        except OSError:
             continue
-        candidates.append({
-            "path": path.relative_to(root).as_posix(),
-            "reasonCode": "PLAINTEXT_SENSITIVE_ASSIGNMENT",
-            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        })
+        if len(_sensitive_file_cache) >= _FILE_CACHE_MAX:
+            _sensitive_file_cache.clear()
+        _sensitive_file_cache[relative] = (stat.st_size, stat.st_mtime_ns, entry)
+        if len(_file_hash_cache) >= _FILE_CACHE_MAX:
+            _file_hash_cache.clear()
+        _file_hash_cache[relative] = (
+            stat.st_size,
+            stat.st_mtime_ns,
+            raw_digest,
+        )
     return candidates
 
 

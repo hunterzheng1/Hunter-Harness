@@ -145,14 +145,8 @@ def _build_tree(change_dir: Path, files: int, file_kb: int) -> tuple[int, int]:
     return files, total_bytes
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--files", type=int, default=600)
-    parser.add_argument("--file-kb", type=int, default=24)
-    parser.add_argument("--keep", action="store_true", help="keep fixture for debugging")
-    args = parser.parse_args()
-
-    tmp = Path(tempfile.mkdtemp(prefix="harness-bench-archive-"))
+def run_scenario(args: argparse.Namespace, run_index: int) -> tuple[float, list[str], dict | None]:
+    tmp = Path(tempfile.mkdtemp(prefix=f"harness-bench-archive-{run_index}-"))
     try:
         project = tmp / "proj"
         change = project / ".harness" / "changes" / "bench-change"
@@ -368,27 +362,49 @@ def main() -> int:
         if proc.returncode != 0:
             failures.append(f"exit-code-nonzero: {proc.returncode}")
         if not failures and payload is not None:
-            # Print per-step info (analysis only, not a METRIC).
-            print(f"# steps: {json.dumps(sorted(payload.get('steps') or {}))}")
+            # Per-step info (analysis only, not a METRIC).
+            print(f"# run{run_index} steps: {json.dumps(sorted(payload.get('steps') or {}))}")
             print(
-                f"# durability: {(payload.get('archiveDurability') or {}).get('status')}"
+                f"# run{run_index} durability: "
+                f"{(payload.get('archiveDurability') or {}).get('status')}"
             )
-
-        print(f"METRIC archive_seconds={elapsed:.2f}")
-        print(f"METRIC integrity_failures={len(failures)}")
-        print(f"METRIC tree_files={tree_files}")
-        print(f"METRIC tree_mb={tree_bytes / (1024 * 1024):.1f}")
-        for failure in failures:
-            print(f"INTEGRITY-FAILURE {failure}", file=sys.stderr)
         if proc.stderr.strip():
             head = proc.stderr.strip()[:2000]
-            print(f"# stderr head: {head}", file=sys.stderr)
-        return 0 if not failures else 1
+            print(f"# run{run_index} stderr head: {head}", file=sys.stderr)
+        return elapsed, failures, payload
     finally:
         if args.keep:
             print(f"# fixture kept at {tmp}", file=sys.stderr)
         else:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--files", type=int, default=600)
+    parser.add_argument("--file-kb", type=int, default=24)
+    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--keep", action="store_true", help="keep fixture for debugging")
+    args = parser.parse_args()
+
+    elapsed_values: list[float] = []
+    all_failures: list[str] = []
+    for run_index in range(args.runs):
+        elapsed, failures, _payload = run_scenario(args, run_index)
+        elapsed_values.append(elapsed)
+        print(f"# run {run_index + 1}/{args.runs}: {elapsed:.2f}s failures={len(failures)}")
+        all_failures.extend(f"run{run_index + 1}:{item}" for item in failures)
+        if failures:
+            break
+    elapsed_values.sort()
+    median = elapsed_values[len(elapsed_values) // 2]
+    print(f"METRIC archive_seconds={median:.2f}")
+    print(f"METRIC integrity_failures={len(all_failures)}")
+    print(f"METRIC tree_files={args.files}")
+    print(f"METRIC tree_mb={(args.files * args.file_kb) / 1024:.1f}")
+    for failure in all_failures:
+        print(f"INTEGRITY-FAILURE {failure}", file=sys.stderr)
+    return 0 if not all_failures else 1
 
 
 if __name__ == "__main__":
