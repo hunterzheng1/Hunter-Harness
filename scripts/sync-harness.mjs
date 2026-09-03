@@ -30,7 +30,7 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy", "pi"];
-const BUNDLE_VERSION = "0.2.78";
+const BUNDLE_VERSION = "0.2.79";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
 // 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py

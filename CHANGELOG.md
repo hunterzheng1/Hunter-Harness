@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.4.19] — workflow-harness
+
+> 精简执行轮（CLI 无代码变更，不发 hunter-harness）：按
+> docs/simplification-analysis-2026-09.md 执行 harness 侧可删项，净 -6,563 行；
+> repo_python_loc 50,556 → 48,741（-3.6%）。修复 4 个负载敏感的评估基础设施
+> 竞态（此前把环境噪声误判为代码回归）。workflow-harness 0.4.18 → 0.4.19，
+> bundle 0.2.78 → 0.2.79。
+> 验证：Python safe profile 58/58 模块、TS 2,239/2,242（3 个失败为负载敏感
+> 超时，单独跑 37/37 全过，与本批无关）。
+
+### Removed
+
+- **7 个死模块**（§4.2）：harness_plan_aggregate / harness_retry /
+  harness_orchestration / harness_headless / harness_test_cleanup /
+  harness_sync / harness_check_gate，连同各自测试（98a79d7）。
+- **本地 events-sync 监控侧路**（§1）：4 个调用点 + 3 个自属文件 + TS 命令面，
+  -2,734 行（d255524）。
+- **正式层快照死写点**（§4.1）：snapshot_change_formal_layer + submit M6.5
+  步骤（fb75945）。
+- **本地 durable 内容寻址库分支**（§4.1）：write/restore_durable_archive、
+  --durable-root/--retention-policy 旗标、restore-durable 子命令（bd31bbf）。
+  远端 durable 回执（.remote.json）与 ARCHIVED_REMOTE_DURABLE 投影链保留。
+- **harness_efficiency.py --out 死参数**（§4.1，ec5b953）。
+- **仓库残留**（§5）：dev/null、resources/skills 旧镜像、requirements/、
+  发布残留目录。
+
+### Fixed
+
+- **评估基础设施 4 个负载竞态**（caee9e7 + 73aa530）：STARTING 会话误用稳态
+  宽限期判心跳丢失；launcher 失败路径身份从未持久化；
+  AssignProcessToJobObject 瞬时失败杀子进程；短命子进程在 Job 分配前退出的
+  良性竞态误报。修复后 runtime 模块 20/20 压测全绿、全量套件连续 58/58。
+- **plan 渲染器空引用行**（§6.4-1）：空 refs 不再渲染"决策引用：无"噪声行
+  （2949fef）。
+
+### Changed
+
+- **cli/README.md rules-sync 描述修正**（§4.4 复核为文档漂移）：实际是只读
+  审计，候选落在 .harness/state/local/rule-candidates.json（2949fef）。
+- **autoresearch skill 强化**：新增 baseline 前置卫生（clean tree + 评估器
+  脚本先跟踪）、flake 判别协议（单模块绿+全量红=环境噪声）、keep --commit
+  后验证提交、长评估前清理残留 worker。
+
 ## [0.4.18] — workflow-harness
 
 > TDD 执行纪律固化轮（CLI 无代码变更，不发 hunter-harness）：coding-reference
