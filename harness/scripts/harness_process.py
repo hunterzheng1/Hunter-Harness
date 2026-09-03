@@ -1029,12 +1029,18 @@ def spawn_structured_argv(
         # declaring the ownership proof unavailable — killing the child here
         # aborts an otherwise healthy managed run.
         assigned = False
+        child_exited = False
         if job.handle is not None:
             for attempt in range(5):
                 if job.assign(process):
                     assigned = True
                     break
                 if process.poll() is not None:
+                    # The child already exited: there is no live tree left to
+                    # isolate, so a failed assignment is benign.  Return the
+                    # spawn without an ownership proof instead of killing a
+                    # process that is already gone and raising.
+                    child_exited = True
                     break
                 time.sleep(0.02 * (attempt + 1))
         if assigned:
@@ -1051,6 +1057,13 @@ def spawn_structured_argv(
                 "membersComplete": True,
                 "leaderExited": False,
             }
+        elif child_exited:
+            # Benign race: short-lived child exited before job assignment.
+            # No proof, but the process tree is already gone — the caller's
+            # normal exit handling applies.
+            job.close()
+            job = None
+            proof = None
         else:
             try:
                 process.kill()
