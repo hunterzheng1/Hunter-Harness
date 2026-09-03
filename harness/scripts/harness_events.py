@@ -33,33 +33,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 import harness_paths  # noqa: E402
 
 
-def _project_root_for_change(change_dir: Path) -> Path | None:
-    resolved = change_dir.resolve()
-    for candidate in (resolved, *resolved.parents):
-        if candidate.name == "changes" and candidate.parent.name == ".harness":
-            return candidate.parent.parent
-    return None
-
-
-def nudge_remote_sync(change_dir: Path) -> None:
-    """Best-effort wake-up after the event append has been flushed to disk."""
-    project_root = _project_root_for_change(change_dir)
-    if project_root is None:
-        return
-    try:
-        from harness_events_sync import schedule_events_sync
-
-        schedule_events_sync(project_root, change_dir)
-    except Exception:
-        # Local event durability is authoritative; remote outages never roll it back.
-        return
-
-
-def _nudge_remote_sync(change_dir: Path) -> None:
-    """Compatibility wrapper for older callers and focused tests."""
-    nudge_remote_sync(change_dir)
-
-
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -782,7 +755,6 @@ def append_event(
             "event": event,
             "autoSealed": result.get("autoSealed") or [],
         }
-    _nudge_remote_sync(change_dir)
     return {
         "ok": True,
         "event": event,
@@ -908,7 +880,6 @@ def batch_append_events(
             atomic_append_line(
                 events_path_obj, json.dumps(event, ensure_ascii=False, separators=(",", ":"))
             )
-    _nudge_remote_sync(change_dir)
     return {
         "ok": True,
         "action": "batch-append",
@@ -2115,7 +2086,6 @@ def cmd_append(args: argparse.Namespace) -> int:
             error_code="EVENT_ATTEMPT_CONFLICT",
         )
 
-    _nudge_remote_sync(change_dir)
 
     # §6.1: phase.end append（或写路径产生了 auto-seal）-> 追加成功后执行一次
     # render（从完整 events 重建 log）。普通 command/issue 等 append 不渲染

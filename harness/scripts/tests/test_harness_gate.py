@@ -137,19 +137,6 @@ class HarnessGateTests(unittest.TestCase):
         self._write_checkpoints("approved")
         self.assertIsNone(gate.foundation_gate_blocks(6, self.change_dir))
 
-    def test_gate_event_append_nudges_remote_sync_after_the_write(self) -> None:
-        with mock.patch.object(gate.he, "nudge_remote_sync") as nudge:
-            result = gate.append_phase_event(
-                self.change_dir,
-                phase="execute",
-                type_="phase.end",
-                status="OK",
-                run_id="run-1",
-            )
-
-        self.assertTrue(result["ok"], result)
-        nudge.assert_called_once_with(self.change_dir)
-
     def test_retry_never_uses_a_terminal_event_from_an_older_context_session(self) -> None:
         terminal = {
             "type": "phase.end",
@@ -1217,7 +1204,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": False, "code": "TRANSITION_ILLEGAL", "allowedNextPhases": ["review"],
              }), \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
             code = gate.cmd_close(self._close_args("--to-phase", "review"))
 
@@ -1243,7 +1229,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
              }), \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args("--to-phase", "review"))
 
@@ -1273,7 +1258,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
              }) as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1316,7 +1300,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
              }) as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1349,7 +1332,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "allowed_next_phases", return_value=["review", "execute"]), \
              mock.patch.object(gate.hctx, "prepare_context", return_value={"ok": True}) as prepare, \
              mock.patch.object(gate.hctx, "close_transition", side_effect=handoff_results) as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1378,7 +1360,6 @@ class HarnessGateTests(unittest.TestCase):
                  "ok": True, "current": None, "transitions": [],
              }), \
              mock.patch.object(gate.hctx, "close_transition") as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1430,7 +1411,6 @@ class HarnessGateTests(unittest.TestCase):
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
              }) as handoff, \
              mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}) as release, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1456,7 +1436,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {},
              }) as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -1500,7 +1479,6 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "context_view", return_value=ctx["view"]), \
              mock.patch.object(gate.hctx, "allowed_next_phases", return_value=ctx["candidates"]), \
              mock.patch.object(gate.hctx, "close_transition") as handoff, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={"skipped": True}), \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kw: emitted.append(payload)):
             code = gate.cmd_close(self._close_args())
 
@@ -2670,7 +2648,7 @@ class ScenarioCoverageTests(unittest.TestCase):
             code = gate.cmd_close(args)
         self.assertEqual(code, 0)
 
-    def test_close_finishes_handoff_and_remote_sync_in_one_command(self) -> None:
+    def test_close_finishes_handoff_in_one_command(self) -> None:
         args = gate.build_parser().parse_args([
             "close", "--phase", "execute", "--change", "demo",
             "--status", "OK", "--run-id", "run-1",
@@ -2692,9 +2670,6 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch.object(gate.hctx, "close_transition", return_value={
                  "ok": True, "code": "TRANSITION_CLOSED", "receipt": {"receiptHash": "sha256:test"}
              }) as close_context, \
-             mock.patch.object(gate.hes, "auto_events_sync", return_value={
-                 "ok": True, "code": "EVENTS_SYNCED"
-             }) as sync, \
              mock.patch.object(gate, "emit", side_effect=lambda payload, **_kwargs: emitted.append(payload)):
             code = gate.cmd_close(args)
 
@@ -2708,9 +2683,7 @@ class ScenarioCoverageTests(unittest.TestCase):
             artifacts=["evidence/verification-ledger.json"],
             status="OK",
         )
-        sync.assert_called_once_with(self.project, self.change_dir)
         self.assertEqual(emitted[0]["contextHandoff"]["code"], "TRANSITION_CLOSED")
-        self.assertEqual(emitted[0]["platformMonitor"]["code"], "EVENTS_SYNCED")
 
 
 class V2ArtifactManifestTests(unittest.TestCase):

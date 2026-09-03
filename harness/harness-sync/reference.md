@@ -68,7 +68,7 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 所有模式的 `reportPath` 和 `reportSha256` 固定为 `null`。只有显式 `--verbose` 才把每个
 组件的 `status`、`reasonCode`、`observedAt`、`durationMs`、证据、是否自动修复及
 `nextAction` 写到 stdout。`sync` 不写 `.harness/runtime/sync/`，不追加 change 生命周期
-事件，不调用 `events-sync`，也不上传运行监控。
+事件，也不上传运行监控。
 
 ### 结构化修复
 

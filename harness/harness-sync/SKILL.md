@@ -24,7 +24,7 @@ disallowed-tools:
 
 ## Purpose
 
-通过一个有界入口刷新 Harness Adapter 与元数据、检查远端知识职责和项目指令状态，并在当前命令输出中给出组件结果。`sync` 是维护命令，不是 change 生命周期阶段：不追加 change 事件、不调用 `events-sync`、不上传运行监控。`sync` 不直接改写 AGENTS/CLAUDE/CODEBUDDY 或规则；文档优化使用远端审计提案。
+通过一个有界入口刷新 Harness Adapter 与元数据、检查远端知识职责和项目指令状态，并在当前命令输出中给出组件结果。`sync` 是维护命令，不是 change 生命周期阶段：不追加 change 事件、不上传运行监控。`sync` 不直接改写 AGENTS/CLAUDE/CODEBUDDY 或规则；文档优化使用远端审计提案。
 
 ## Before running
 
@@ -72,7 +72,7 @@ CLI 负责 Python runtime 解析、Adapter 事务、远端知识职责、文档�
 
 同步不得直接修改项目指令文档或规则。配置真源与生成投影存在漂移时只报告，不静默覆盖真源。change 清理先 dry-run，仅对已验证归档收据执行安全清理。知识查询和 ingest 均为远端职责，不创建 `.harness/knowledge`。
 
-无论结果如何，`sync` 都不写持久同步报告、不追加 change 事件、不调用 `events-sync`，也不上传监控；组件详情仅存在于本次 stdout。Adapter 事务本身的必要备份和回滚证据不属于 sync 日志，不得因此禁用。
+无论结果如何，`sync` 都不写持久同步报告、不追加 change 事件，也不上传监控；组件详情仅存在于本次 stdout。Adapter 事务本身的必要备份和回滚证据不属于 sync 日志，不得因此禁用。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]

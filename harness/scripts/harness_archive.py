@@ -89,7 +89,6 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events as he  # noqa: E402
-import harness_events_sync as hes  # noqa: E402
 import harness_efficiency as heff  # noqa: E402
 import harness_gate as hgate  # noqa: E402
 import harness_knowledge_candidates as hkc  # noqa: E402
@@ -3601,13 +3600,6 @@ def execute_archive(
         }
         if candidate_certification is not None:
             blocked_payload["candidateCertification"] = candidate_certification
-        _best_effort_archive_terminal_sync(
-            find_project_root(change_dir),
-            state_root,
-            change_key=change_dir.name,
-            run_id=hes.run_id_for(change_dir),
-            payload=blocked_payload,
-        )
         return 1, blocked_payload
     code, payload = cmd_finalize(
         change_dir,
@@ -6166,34 +6158,6 @@ def _append_finalize_failure_terminal(
         pass
 
 
-def _best_effort_archive_terminal_sync(
-    project_root: Path,
-    event_dir: Path,
-    *,
-    change_key: str,
-    run_id: str | None,
-    payload: dict[str, Any],
-) -> None:
-    """Publish terminal archive state before any slow post-archive networking."""
-    try:
-        monitor = hes.auto_events_sync(
-            project_root,
-            event_dir,
-            run_id=run_id,
-            change_key=change_key,
-        )
-        payload.setdefault("steps", {})["platform_events_sync"] = monitor
-        if monitor.get("warning"):
-            payload.setdefault("warnings", []).append(str(monitor["warning"]))
-    except Exception as exc:  # noqa: BLE001 — monitoring cannot roll back archive
-        warning = f"events-sync terminal hook failed: {exc}"
-        payload.setdefault("warnings", []).append(warning)
-        payload.setdefault("steps", {})["platform_events_sync"] = {
-            "ok": False,
-            "warning": warning,
-        }
-
-
 def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
     """Freeze the events cutoff: fsync events, write evidence-cutoff.json.
 
@@ -8427,7 +8391,6 @@ def cmd_finalize(
         if split_state_dir is not None and split_state_dir.is_dir()
         else original_change_dir
     )
-    monitoring_run_id = hes.run_id_for(original_change_dir)
     operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
     operation_temp_dir = operation_root / "staging" / operation_id / change_dir.name
@@ -8453,13 +8416,6 @@ def cmd_finalize(
                 )
             except OSError:
                 pass
-        _best_effort_archive_terminal_sync(
-            project_root,
-            authoritative_event_dir,
-            change_key=change_name,
-            run_id=monitoring_run_id,
-            payload=payload,
-        )
         try:
             write_json(
                 operation_record,
@@ -8543,13 +8499,6 @@ def cmd_finalize(
             authoritative_event_dir,
             payload["error"],
             operation_id=operation_id,
-        )
-        _best_effort_archive_terminal_sync(
-            project_root,
-            authoritative_event_dir,
-            change_key=change_name,
-            run_id=monitoring_run_id,
-            payload=payload,
         )
         return 1, payload
 
@@ -9395,17 +9344,6 @@ def cmd_finalize(
         "legacySkipIngestFlag": bool(skip_ingest),
     }
     payload["knowledgeMaintenance"] = "REMOTE_PENDING"
-
-    # Freeze the platform run immediately after the local archive is published.
-    # Service shutdown, ZIP upload, and managed snapshot synchronization are
-    # independent post-phase work and may wait on process/network deadlines.
-    _best_effort_archive_terminal_sync(
-        project_root,
-        archive_dir,
-        change_key=change_name,
-        run_id=monitoring_run_id,
-        payload=payload,
-    )
 
     service_result = run_service_stop(work_dir)
     payload["steps"]["service_stop"] = service_result

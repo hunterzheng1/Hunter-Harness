@@ -32,7 +32,7 @@ describe("harness-sync interaction guidance", () => {
     );
 
     expect(skill).toContain("不追加 change 事件");
-    expect(skill).toContain("不调用 `events-sync`");
+    expect(skill).toContain("不上传运行监控");
     expect(skill).toContain("不写入 `.harness/runtime/sync/`");
     expect(skill).not.toContain("shared/logging.md");
     expect(reference).toContain("`reportPath` 和 `reportSha256` 固定为 `null`");

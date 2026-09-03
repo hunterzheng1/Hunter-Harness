@@ -487,10 +487,10 @@ def _ensure_phase_end_event(
 ) -> dict[str, Any] | None:
     """补齐 phase.start/end 事件对（P0-2）。
 
-    平台 Run 计时由 events-sync 上报的 phase.start/end 事件对驱动。不经
-    gate close 收尾的阶段（典型：plan 走 finalize + context close）只写
-    transitions 收据，phase.end 永远缺席，平台计时永不停——连续两个 change
-    复现，属结构性缺口（2026-08-30 sales-insight-agent demo-datasource 实测）。
+    事件对是本地执行日志与阶段计时的权威依据。不经 gate close 收尾的
+    阶段（典型：plan 走 finalize + context close）只写 transitions 收据，
+    phase.end 永远缺席——连续两个 change 复现，属结构性缺口（2026-08-30
+    sales-insight-agent demo-datasource 实测）。
     close_transition 是所有跨阶段推进的共同通道，在此按事件配对补齐：
     有 start 无 end → 复用 start 的 run_id/attempt 代写 end；已有 end（gate
     close 先行写入）或连 start 都没有 → 不动，返回 None。

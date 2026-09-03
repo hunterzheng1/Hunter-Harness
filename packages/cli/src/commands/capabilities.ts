@@ -20,7 +20,6 @@ const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   "harness-push": 1,
   "harness-pull": 1,
   connect: 1,
-  "events-sync": 1,
   cleanup: 1,
   "rules-sync": 1,
   "rules-review": 1,

@@ -14,7 +14,6 @@ import {
 } from "./commands/configure.js";
 import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runConnect, type ConnectOptions } from "./commands/connect.js";
-import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
 import { runPlanReviewRecord, type PlanReviewRecordOptions } from "./commands/plan-review-record.js";
@@ -563,14 +562,6 @@ export async function runCli(
     .option("--json")
     .action(async (url: string, options: ConnectOptions) => {
       exitCode = await runConnect(url, options, dependencies);
-    });
-  program.command("events-sync")
-    .description("将本地 events.ndjson 增量上报到平台 Run 监控（batch + heartbeat）")
-    .option("--change-dir <path>", "仅同步指定 change 目录")
-    .option("--heartbeat-only", "只发送心跳，不上报事件")
-    .option("--json")
-    .action(async (options: EventsSyncOptions) => {
-      exitCode = await runEventsSync(options, dependencies);
     });
   const planCmd = program.command("plan").description("Plan v2 产物与最终化");
   planCmd.command("evidence-pack")

@@ -32,7 +32,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 import harness_change as hc  # noqa: E402
 import harness_context as hctx  # noqa: E402
 import harness_events as he  # noqa: E402
-import harness_events_sync as hes  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_plan_finalize as hpf  # noqa: E402
@@ -1882,7 +1881,6 @@ def append_phase_event(
         content = he.render_execution_log(events)
         log_path = he.write_execution_log(change_dir, content)
         rendered = True
-    he.nudge_remote_sync(change_dir)
     return {
         "ok": True,
         "eventId": event.get("id"),
@@ -2173,17 +2171,6 @@ def _close_context_handoff(
             "ok": False,
             "code": "CONTEXT_HANDOFF_FAILED",
             "message": str(exc),
-        }
-
-
-def _sync_after_phase_close(project: Path, change_dir: Path) -> dict[str, Any]:
-    try:
-        return hes.auto_events_sync(project, change_dir)
-    except Exception as exc:  # noqa: BLE001 — remote sync is recoverable
-        return {
-            "ok": False,
-            "code": "PLATFORM_EVENTS_SYNC_WARN",
-            "warning": f"events-sync hook failed: {exc}",
         }
 
 
@@ -3059,22 +3046,6 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "gateSeverityMode": severity_mode,
         "gateWarnings": gate_warnings,
     }
-    # C3: best-effort start platform run monitoring (register + running via heartbeat/events).
-    try:
-        monitor = hes.auto_events_sync(project, change_dir)
-        payload["platformMonitor"] = monitor
-        if monitor.get("warning"):
-            warnings_msg = str(monitor["warning"])
-            gate_warnings.append({
-                "code": "PLATFORM_EVENTS_SYNC_WARN",
-                "message": warnings_msg,
-            })
-            payload["gateWarnings"] = gate_warnings
-    except Exception as exc:  # noqa: BLE001 — never block phase begin
-        payload["platformMonitor"] = {
-            "ok": False,
-            "warning": f"events-sync hook failed: {exc}",
-        }
     emit(payload, as_json=as_json)
     return 0
 
@@ -3213,7 +3184,6 @@ def _resume_closed_phase(
                 args,
                 status=close_status,
             )
-    monitor = _sync_after_phase_close(project, change_dir)
     if isinstance(handoff, dict) and not handoff.get("ok"):
         # S-1：续跑路径同样的自愈
         repaired = _repair_handoff_missing_lease(
@@ -3231,7 +3201,6 @@ def _resume_closed_phase(
                 "localCloseComplete": True,
                 "retryable": True,
                 "contextHandoff": handoff,
-                "platformMonitor": monitor,
             },
         )
     recovery_result = record_gate_recovered(
@@ -3253,7 +3222,6 @@ def _resume_closed_phase(
             "changeId": change_id,
             "localCloseComplete": True,
             "contextHandoff": handoff,
-            "platformMonitor": monitor,
             "gateRecovery": recovery_result,
             "scratchSwept": scratch_swept,
             **({"derivedToPhase": derived_to_phase} if derived_to_phase else {}),
@@ -3804,7 +3772,6 @@ def cmd_close(args: argparse.Namespace) -> int:
         args,
         status=close_status,
     )
-    platform_monitor = _sync_after_phase_close(project, change_dir)
     if isinstance(context_handoff, dict) and not context_handoff.get("ok"):
         # S-1：context 租约缺失时自愈一次（prepare 幂等重建 + 重试交接），
         # 修复前“原样重跑”永远撞同一个 CONTEXT_LEASE_REQUIRED
@@ -3833,7 +3800,6 @@ def cmd_close(args: argparse.Namespace) -> int:
                 "status": close_status,
                 "changeId": resolved["changeId"],
                 "contextHandoff": context_handoff,
-                "platformMonitor": platform_monitor,
                 "recoveryAction": (
                     "租约仍持有，无需重新 claim——原样重跑同一 close 命令即可幂等续跑"
                     "（phase.end 已落会跳过，handoff 会重试；context 租约缺失时会自动"
@@ -3916,7 +3882,6 @@ def cmd_close(args: argparse.Namespace) -> int:
         "gateSeverityMode": severity_mode,
         "gateWarnings": gate_warnings,
         "contextHandoff": context_handoff,
-        "platformMonitor": platform_monitor,
         "gateRecovery": recovery_result,
         "scratchSwept": scratch_swept,
     }

@@ -10,9 +10,8 @@ export interface CliResult {
     | "refresh"
     | "cleanup"
     | "rules-sync"
-  | "rules-review"
-  | "connect"
-  | "events-sync";
+    | "rules-review"
+    | "connect";
   request_id: string;
   dry_run: boolean;
   ok: boolean;

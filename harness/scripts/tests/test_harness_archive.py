@@ -1145,10 +1145,6 @@ class RemoteKnowledgeOwnershipTests(unittest.TestCase):
             "auto_push_managed_snapshot",
             side_effect=lambda *_args, **_kwargs: (call_order.append("managed-push"), managed)[1],
         ), mock.patch.object(
-            ha.hes,
-            "auto_events_sync",
-            side_effect=lambda *_args, **_kwargs: (call_order.append("events-sync"), {"ok": True})[1],
-        ), mock.patch.object(
             ha,
             "run_service_stop",
             side_effect=lambda path, *_args, **_kwargs: (
@@ -1185,7 +1181,6 @@ class RemoteKnowledgeOwnershipTests(unittest.TestCase):
             call_order,
             [
                 "service-stop-pre",
-                "events-sync",
                 "service-stop-post",
                 "archive-upload",
                 "managed-push",
@@ -1217,16 +1212,11 @@ class RemoteKnowledgeOwnershipTests(unittest.TestCase):
                 "nextAction": "先完成缺失条件",
                 "status": {"blockers": []},
             },
-        ), mock.patch.object(
-            ha.hes, "auto_events_sync", return_value={"ok": True}
-        ) as sync:
+        ):
             code, payload = ha.execute_archive(self.change, self.archive_root)
 
         self.assertEqual(code, 1)
         self.assertEqual(payload["finalStatus"], "BLOCKED")
-        self.assertTrue(payload["steps"]["platform_events_sync"]["ok"])
-        sync.assert_called_once()
-        self.assertEqual(sync.call_args.args[1], state_root.resolve())
         events = he.load_events(he.events_path(state_root))
         self.assertTrue(any(
             item.get("phase") == "archive"
@@ -2887,14 +2877,11 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self._collapse_archive_boundary()
         archive_root = self.tmp / ".harness" / "archive"
 
-        with mock.patch.object(
-            ha.hes, "auto_events_sync", return_value={"ok": True}
-        ) as sync:
-            code, payload = ha.cmd_finalize(
-                self.change,
-                archive_root,
-                archive_intent="record-only",
-            )
+        code, payload = ha.cmd_finalize(
+            self.change,
+            archive_root,
+            archive_intent="record-only",
+        )
 
         self.assertEqual(code, 1, payload)
         self.assertEqual(payload["reasonCode"], "ARCHIVE_REPORT_ADEQUACY_FAILED")
@@ -2905,8 +2892,6 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertFalse(Path(payload["operationTempDir"]).exists())
         operation_root = self.tmp / ".harness" / "archive-operations" / "staging"
         self.assertFalse(operation_root.exists())
-        sync.assert_called_once()
-        self.assertEqual(sync.call_args.args[1], self.change.resolve())
 
     def test_direct_finalize_syncs_blocked_terminal_from_split_state(self) -> None:
         state_root = self.tmp / ".harness" / "state" / "changes" / self.change.name
@@ -2922,22 +2907,17 @@ class ArchiveAutoGateTests(unittest.TestCase):
             "runtimeRoot": f".harness/state/changes/{self.change.name}",
         }
         _write_json(context_path, context)
-        with mock.patch.object(
-            ha.hes, "auto_events_sync", return_value={"ok": True}
-        ) as sync:
-            code, payload = ha.cmd_finalize(
-                self.change,
-                self.tmp / ".harness" / "archive",
-                archive_intent="record-only",
-                preflight_status={
-                    "archivable": False,
-                    "blockers": [{"code": "TEST_BLOCK", "message": "测试阻断"}],
-                },
-            )
+        code, payload = ha.cmd_finalize(
+            self.change,
+            self.tmp / ".harness" / "archive",
+            archive_intent="record-only",
+            preflight_status={
+                "archivable": False,
+                "blockers": [{"code": "TEST_BLOCK", "message": "测试阻断"}],
+            },
+        )
 
         self.assertEqual(code, 1, payload)
-        sync.assert_called_once()
-        self.assertEqual(sync.call_args.args[1], state_root.resolve())
         events = he.load_events(he.events_path(state_root))
         self.assertTrue(any(
             item.get("phase") == "archive"

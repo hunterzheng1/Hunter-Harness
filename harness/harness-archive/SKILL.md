@@ -98,7 +98,6 @@ disallowed-tools:
    **本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
    - **归档包上传**：始终先生成一个确定性 ZIP；有远程凭据时再调用 `npx hunter-harness archive upload`。ZIP 仅包含 `summary-data.json`、`spec/**/*.md`、`plans/**/*.md`、`archive-meta.md`、`change-context.json` 和稳定 manifest；明确排除 logs、review/test 报告、HTML、缓存、备份、凭据和临时文件。
    - **失败可恢复**：无论远端凭据是否齐全，都先生成 ZIP 与 `<change-key>.upload.json`；上传或服务端 ingest 失败不破坏本地归档。待上传 ZIP 与逐 change 回执保留在 `.harness/state/local/archive-packages/`，可枚举独立重试。只有 CLI 核验 package hash 且服务端同时返回 `archive_status=durable`、`knowledge_status=ready` 后，才清理对应 ZIP 与回执；`indexing` 记为 pending，不记为失败。
-   - **监控终态（C3）**：auto-upload 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；失败只记 warning。
 
 - **Read `reference.md`** — 仅在阻断恢复或需要解释输出字段时读取
 - **Read `templates/summary-data-template.json`** — 仅在排查 summary 校验失败时读取
