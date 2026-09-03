@@ -14,7 +14,7 @@ npx hunter-harness update
 - 默认命令可离线初始化或打开事务恢复菜单。
 - `--agents <csv>` 可选择 `claude-code`、`codex`、`cursor`、`codebuddy` 的任意组合（或 `all`）；未提供时保持 Claude Code 默认值。
 - `--codebuddy-surface both|ide|cli` 只在选择 CodeBuddy 时有效，默认 `both`。
-- `rules-sync` 扫描各 Agent 的用户规则，将全局一致内容收敛到 `.harness/rules/` 并刷新受管投影；分歧不覆盖，带路径范围的规则保留为 Agent 专属。默认还会从结构化 review/test/archive 证据生成 `.harness/knowledge/rule-candidates.json`，候选不会自动激活；可用 `--no-learn` 跳过。
+- `rules-sync` 是只读审计入口：扫描各 Agent 的用户规则并生成远端中文提案（不改写本地文件）；审阅后用 `instructions apply` 确认应用。规则候选由归档证据管线写入 `.harness/state/local/rule-candidates.json`，经 `rules-review` 人工裁决，不会自动激活。
 - `push` 只创建 proposal，不发布、不推进本地 baseline。
 - `update` 只事务化应用人工批准的 artifact。
 

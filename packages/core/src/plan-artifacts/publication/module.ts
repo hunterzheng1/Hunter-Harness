@@ -189,24 +189,24 @@ function labeledRef(ref: string, label: string | undefined): string {
   return label === undefined ? shortRef(ref) : `${markdown(label)}（${shortRef(ref)}）`;
 }
 
-/** 渲染需求引用列表：可读标签优先，每条一行，完整 ID 只在 design.md 注册表出现一次。 */
+/** 渲染需求引用列表：可读标签优先，每条一行，完整 ID 只在 design.md 注册表出现一次。空引用整行省略。 */
 function renderRequirementRefs(refs: readonly string[], lookup: RefLookup): string {
-  if (refs.length === 0) return "- 需求引用: 无";
+  if (refs.length === 0) return "";
   return ["- 需求引用:", ...sorted(refs).map((ref) => {
     const item = lookup.requirements.get(ref);
     return `  - ${labeledRef(ref, item === undefined ? undefined : `[${item.kind}] ${item.text}`)}`;
   })].join("\n");
 }
 
-/** 渲染证据引用列表：keep `prefix:value` 可读性。 */
+/** 渲染证据引用列表：keep `prefix:value` 可读性。空引用整行省略。 */
 function renderEvidenceRefs(refs: readonly string[]): string {
-  if (refs.length === 0) return "- 证据引用: 无";
+  if (refs.length === 0) return "";
   return ["- 证据引用:", ...sorted(refs).map((ref) => `  - ${refSpan(ref)}`)].join("\n");
 }
 
-/** 渲染所有权引用列表：路径标签优先。 */
+/** 渲染所有权引用列表：路径标签优先。空引用整行省略。 */
 function renderOwnershipRefs(refs: readonly string[], lookup: RefLookup): string {
-  if (refs.length === 0) return "- 归属文件: 无";
+  if (refs.length === 0) return "";
   return ["- 归属文件:", ...sorted(refs).map((ref) =>
     `  - ${labeledRef(ref, lookup.ownership.get(ref))}`)].join("\n");
 }
@@ -260,7 +260,7 @@ function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
       renderRequirementRefs(task.requirement_refs, lookup),
       renderEvidenceRefs(task.evidence_refs),
       renderOwnershipRefs(task.ownership_refs, lookup)
-    ].join("\n")).join("\n\n")}\n`;
+    ].filter((line) => line !== "").join("\n")).join("\n\n")}\n`;
 }
 
 function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenarios"],
@@ -283,7 +283,7 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
       ...(scenario.test_file === undefined ? [] : [`- 测试文件: ${scenario.test_file}`]),
       ...(scenario.test_title === undefined ? [] : [`- 测试标题: ${scenario.test_title}`]),
       ...(scenario.verification_command === undefined ? [] : [`- 验证命令: ${scenario.verification_command}`])
-    ].join("\n")).join("\n\n") +
+    ].filter((line) => line !== "").join("\n")).join("\n\n") +
     `\n\n## Coverage\n\n${artifact.content.coverage.map((item) =>
       `- ${item.coverage_dimension}: ${item.applicability}; scenarios=${item.scenario_refs.join(",") || "none"}` +
       (item.not_applicable_reason === undefined ? "" : `; reason=${item.not_applicable_reason}`)).join("\n")}\n`;
