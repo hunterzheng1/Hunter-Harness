@@ -114,6 +114,7 @@ docs/
 docs/*
 !docs/harness-improvement-roadmap/
 !docs/harness-improvement-roadmap/**
+!docs/simplification-analysis-*.md
 
 # local exact-tarball lock dirs
 release-lock-*/
