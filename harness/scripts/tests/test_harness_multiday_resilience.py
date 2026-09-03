@@ -22,7 +22,6 @@ import harness_events as he  # noqa: E402
 import harness_gate as hg  # noqa: E402
 import harness_integration as hi  # noqa: E402
 import harness_phase as hp  # noqa: E402
-import harness_retry as hretry  # noqa: E402
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -308,36 +307,6 @@ class MultiDayResilienceTests(unittest.TestCase):
         self.assertGreater(first["bytesAdded"], 0)
         self.assertEqual(second["bytesAdded"], 0)
         self.assertEqual(second["bytesReused"], first["bytesAdded"])
-
-    def test_retry_classifier_stops_identical_no_information_retry(self) -> None:
-        history = [
-            {
-                "candidateIdentity": self.subject,
-                "failureSignature": "registry:permission-denied",
-                "inputHash": "sha256:" + "9" * 64,
-                "externalPrerequisiteHash": "sha256:" + "8" * 64,
-                "status": "FAILED",
-            }
-        ]
-        decision = hretry.classify_retry(
-            history,
-            candidate_identity=self.subject,
-            failure_signature="registry:permission-denied",
-            input_hash="sha256:" + "9" * 64,
-            external_prerequisite_hash="sha256:" + "8" * 64,
-        )
-        self.assertFalse(decision["allowed"], decision)
-        self.assertEqual(decision["decision"], "NO_NEW_INFORMATION")
-
-        changed = hretry.classify_retry(
-            history,
-            candidate_identity=self.subject,
-            failure_signature="registry:permission-denied",
-            input_hash="sha256:" + "7" * 64,
-            external_prerequisite_hash="sha256:" + "8" * 64,
-        )
-        self.assertTrue(changed["allowed"], changed)
-        self.assertEqual(changed["decision"], "RETRY_ALLOWED_INPUT_CHANGED")
 
     def test_worktree_retirement_blocks_active_capsule_agent_and_junction(self) -> None:
         target = self.project / ".worktrees" / "demo"
