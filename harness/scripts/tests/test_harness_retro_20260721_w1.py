@@ -575,35 +575,6 @@ class CleanupTopologyAndSnapshotTest(unittest.TestCase):
                 hp.assert_cleanup_safe(cleanup, state_roots=[state], archive_roots=[])
             self.assertTrue((state / "keep.json").is_file())
 
-    def test_ut018_snapshot_writes_cache_outside_change(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "proj"
-            change = project / ".harness" / "changes" / "demo"
-            (change / "plans").mkdir(parents=True)
-            (change / "plans" / "demo-plan.md").write_text("# plan\n", encoding="utf-8")
-            (change / "spec").mkdir()
-            (change / "spec" / "demo-design.md").write_text("# design\n", encoding="utf-8")
-            (change / "evidence").mkdir()
-            (change / "evidence" / "verification-ledger.json").write_text(
-                "{}", encoding="utf-8"
-            )
-            (change / "reports").mkdir()
-            (change / "meta").mkdir()
-            (change / "meta" / "worktree.json").write_text(
-                '{"requested":true}', encoding="utf-8"
-            )
-            (change / "events.ndjson").write_text("{}\n", encoding="utf-8")
-
-            with mock.patch.object(hp, "resolve_main_project_root", return_value=project):
-                result = hp.snapshot_change_formal_layer(project, "demo")
-
-            dest = project / ".harness" / "cache" / "change-snapshots" / "demo"
-            self.assertTrue(result["ok"])
-            self.assertTrue((dest / "plans" / "demo-plan.md").is_file())
-            self.assertTrue((dest / "events.ndjson").is_file())
-            self.assertTrue((dest / "manifest.json").is_file())
-            self.assertFalse(str(dest).startswith(str(change)))
-
 
 if __name__ == "__main__":
     unittest.main()

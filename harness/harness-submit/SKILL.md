@@ -85,7 +85,6 @@ M3. **merge** — `--no-ff` 合并 feature 分支；merge diff 出现其他 Chan
 M4. **verify** — 在 integration worktree 内执行组合态验证；他人提交引入或 ledger 不可复用时必跑
 M5. **push** — 仅在验证身份与远端基线仍匹配时 push；远端漂移 → `TARGET_MOVED` 结构化失败，不继续
 M6. **cleanup** — `git worktree remove --force` 精确路径 + 临时分支 + （push 成功后）保护 ref；释放 integration lock；失败保留 journal 与诊断证据；更新 `worktree.json`（`created=false` + removedAt）
-M6.5. **formal snapshot** — mergeFinalHash 写入后调用 `harness_paths.snapshot_change_formal_layer(projectRoot, changeId)`，备份到主仓 `.harness/cache/change-snapshots/<change>/`（不得写在 feature worktree 内）
 M7. **ledger + 收尾** — 经 `harness_ledger.py record` 写入 `mergeFinalHash`（= journal `pushedHead`）；**`harness_gate.py close --phase merge`**（禁止手工 phase.end）；提示 `/harness-archive`
 
 > Ledger v3（v2 契约 / split-v1 布局起）：`record` 强制顶层身份（`schemaVersion=3/repositoryId/baseCommit/currentHead/diffHash/ownershipHash`，缺失非零退出、`LEDGER_IDENTITY_INVALID`，不写账本）与 typed metrics；legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
@@ -124,7 +123,6 @@ test-tracking manifest 是 ignored test 的唯一强制暂存授权：只允许 
 - **冲突不自动解** → 停下 → 用户手动解 → 确认后继续
 - **`mergeFinalHash`** = 主分支 push 后 HEAD；archive 优先读此字段
 - **迁根后再删 feature WT**：Agent 仍在待删 root 内则拒绝删除；目标分支已删时切主仓 `main`/`master`，禁止强行 fetch
-- **snapshot 后再清**：正式层已写入 `.harness/cache/change-snapshots/<change>/`
 - **拓扑安全**：`assert_cleanup_safe` 拒绝 state/archive ⊆ cleanup（含 junction）
 - **abandon ≠ cleanup**：仅失败 txn；永不删 feature worktree
 

@@ -427,11 +427,10 @@ python harness/scripts/harness_integration.py abandon --change <change-name> --r
 1. 若 Agent root / cwd 落在待删 worktree → 先 `move_agent_to_root(<projectRoot>)`；目标为主仓，feature 分支已删则切 `main`/`master`，禁止 fetch 已不存在分支
 2. 迁根失败 → **停止删除**
 3. `assert_cleanup_safe(cleanupRoot, [.harness/changes/<id>, .harness/state/...], [.harness/archive])`；`CLEANUP_TOPOLOGY_REFUSED` → 停止
-4. mergeFinalHash 已写后先 `snapshot_change_formal_layer`，再清 feature WT
 
 ### 步骤 M7：更新 ledger + 收尾
 
-ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_gate.py close --phase merge` 关闭（禁止手工 phase.end）。正式层快照确认存在于 `.harness/cache/change-snapshots/<change-name>/`。
+ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_gate.py close --phase merge` 关闭（禁止手工 phase.end）。
 
 ```markdown
 ## 合并完成 — <change-name>
@@ -440,7 +439,6 @@ ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_ga
 - 主分支 push: ✅（<old>..<new> → origin/<主分支>）
 - mergeFinalHash: `<merge-final-hash>`
 - 验证策略: 🔁REUSED / 🔄已重跑
-- snapshot: `.harness/cache/change-snapshots/<change-name>/`
 - worktree: 已清理（迁根后）
 - 下一步: `/harness-archive`
 ```
