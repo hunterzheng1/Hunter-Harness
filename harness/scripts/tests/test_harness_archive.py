@@ -360,10 +360,9 @@ class FinalizeSuccessTests(unittest.TestCase):
             "capability-profile",
         )
 
-    def test_finalize_writes_and_verifies_durable_archive_before_source_deletion(
+    def test_finalize_writes_local_only_durability_without_durable_root(
         self,
     ) -> None:
-        durable_root = self.tmp / "durable"
         code, payload = _run(
             [
                 "finalize",
@@ -373,10 +372,6 @@ class FinalizeSuccessTests(unittest.TestCase):
                 str(self.change),
                 "--archive-root",
                 str(self.archive_root),
-                "--durable-root",
-                str(durable_root),
-                "--retention-policy",
-                "keep-365-days",
                 "--skip-ingest",
                 "--json",
             ]
@@ -384,12 +379,8 @@ class FinalizeSuccessTests(unittest.TestCase):
 
         self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
         durability = payload["archiveDurability"]
-        self.assertEqual(durability["status"], "ARCHIVED_DURABLE")
-        receipt_path = Path(durability["receiptPath"])
-        self.assertTrue(receipt_path.is_file())
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(receipt["retentionPolicy"], "keep-365-days")
-        self.assertTrue(Path(receipt["payloadPath"]).is_dir())
+        self.assertEqual(durability["status"], "ARCHIVED_LOCAL_ONLY")
+        self.assertEqual(durability["retentionPolicy"], "project-local")
         self.assertFalse(self.change.exists())
         archive_dir = Path(payload["archive_dir"])
         summary = json.loads(
@@ -397,57 +388,12 @@ class FinalizeSuccessTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(summary["archiveDurability"]["status"], "ARCHIVED_DURABLE")
+        self.assertEqual(
+            summary["archiveDurability"]["status"], "ARCHIVED_LOCAL_ONLY"
+        )
         self.assertFalse(
             (archive_dir / "reports" / "final" / "final-summary.html").exists()
         )
-
-        restore_root = self.tmp / "restored"
-        restore_code, restore_payload = _run(
-            [
-                "restore-durable",
-                "--receipt",
-                str(receipt_path),
-                "--target-root",
-                str(restore_root),
-                "--json",
-            ]
-        )
-        self.assertEqual(restore_code, 0, msg=restore_payload)
-        restored = Path(restore_payload["restoredArchive"])
-        self.assertTrue(
-            (restored / "reports" / "final" / "summary-data.json").is_file()
-        )
-
-    def test_durable_write_failure_keeps_source_change(self) -> None:
-        with mock.patch.object(
-            ha,
-            "write_durable_archive",
-            side_effect=OSError("durable sink unavailable"),
-        ):
-            code, payload = _run(
-                [
-                    "finalize",
-                    "--intent",
-                    "record-only",
-                    "--change-dir",
-                    str(self.change),
-                    "--archive-root",
-                    str(self.archive_root),
-                    "--durable-root",
-                    str(self.tmp / "durable"),
-                    "--skip-ingest",
-                    "--json",
-                ]
-            )
-
-        self.assertNotEqual(code, 0)
-        self.assertEqual(
-            payload["issues"][0]["code"],
-            "DURABLE_ARCHIVE_WRITE_FAILED",
-        )
-        self.assertTrue(self.change.is_dir())
-        self.assertFalse(Path(payload["archive_dir"]).exists())
 
 
 class ArchiveIdentityResolutionTests(unittest.TestCase):
@@ -1308,7 +1254,6 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
                 "certify-local",
                 "execute",
                 "finalize",
-                "restore-durable",
                 "replay",
                 "repair",
                 "republish",
@@ -1318,6 +1263,11 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
         # 废弃的 collect/validate 不得作为子命令存在（旧编排路径已删）
         self.assertNotIn("collect", choices, "collect subcommand must not exist")
         self.assertNotIn("validate", choices, "validate subcommand must not exist")
+        self.assertNotIn(
+            "restore-durable",
+            choices,
+            "restore-durable subcommand must not exist (dead durable branch removed)",
+        )
 
     def test_collect_and_validate_subcommands_are_rejected(self) -> None:
         """未知子命令 collect/validate 被 argparse 拒绝 (exit 2)，证明无旧编排 CLI 路径。"""

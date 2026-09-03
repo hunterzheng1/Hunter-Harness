@@ -108,15 +108,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 - generatedFiles：archive 过程中生成的文件数；
 - totalArchiveFiles：归档目录最终文件总数。
 
-## Durable archive
+## 归档耐久性
 
-同一工作区内从 `changes/` move 到 `archive/` 只属于 local archive。需要抗工作区删除时，finalize 必须配置独立 `--durable-root`：
-
-- payload 以整树 digest 写入 `<durable-root>/objects/sha256/<digest>/payload/`，对象不可变且可内容寻址；
-- `<durable-root>/receipts/<archive-id>.json` 记录 digest、来源 identity、保留策略与验证时间；
-- durable 写入采用 staging → hash/readback verify → atomic publish；失败时保留原 change，且不得留下可被误认成功的 local archive；
-- `restore-durable` 先验证 receipt 与对象 digest，只恢复到不存在的目标，完成后再次比对整树 digest；
-- 成功状态区分 `ARCHIVED_DURABLE` 与 `ARCHIVED_LOCAL_ONLY`，后者必须进入 knownRisks。
+同一工作区内从 `changes/` move 到 `archive/` 只属于 local archive（`ARCHIVED_LOCAL_ONLY`，必须进入 knownRisks）。跨工作区耐久性由远端归档上传承担：上传确认 durable 后，`archiveDurability.status` 回写为 `ARCHIVED_REMOTE_DURABLE` 并携带 `archiveId`/`uploadStatus`/`knowledgeStatus`。
 
 ## 页面内容
 

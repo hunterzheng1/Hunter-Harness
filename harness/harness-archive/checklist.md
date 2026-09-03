@@ -12,9 +12,7 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - 归档前生成 `evidence/archive-manifest-before.json`，移动后生成 `archive-manifest-after.json`。
 - 归档统计只能来自 summary-data 或 manifest。
 - before/after checksum 不一致时，不得删除原目录。
-- 需要跨工作区恢复时传 `--durable-root <独立存储>`；成功必须为 `ARCHIVED_DURABLE`，并验证 content-addressed object 与 durable receipt 可读回。
-- `restore-durable` 只恢复到不存在的目标；目标已存在或对象 digest 不符时 fail closed，禁止覆盖。
-- 未配置 durable root 时显式记录 `ARCHIVED_LOCAL_ONLY` 风险，不得把同工作区 move 宣称为独立备份。
+- 归档耐久性由远端上传承担：`archiveDurability.status` 起始为 `ARCHIVED_LOCAL_ONLY`，远端上传确认 durable 后回写为 `ARCHIVED_REMOTE_DURABLE`（同工作区 move 不是独立备份）。
 
 ### Wave-A 状态机与身份（IA-1 / IA-4）
 
