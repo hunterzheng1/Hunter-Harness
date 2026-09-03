@@ -427,14 +427,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness_efficiency.py")
     parser.add_argument("summary", nargs="?")
     parser.add_argument("--change-dir", required=True)
-    parser.add_argument("--out")
     args = parser.parse_args(argv)
     result = collect_efficiency_summary(Path(args.change_dir))
     text = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
-    if args.out:
-        path = Path(args.out)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="\n")
     print(text, end="")
     return 0
 
