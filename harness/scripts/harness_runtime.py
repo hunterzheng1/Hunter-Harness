@@ -897,6 +897,35 @@ def _resource_lock_secrets_path(state_root: Path, session_id: str) -> Path:
     return _run_session_root(state_root, session_id) / "resource-lock-secrets.json"
 
 
+def _worker_handoff_path(state_root: Path, session_id: str) -> Path:
+    return _run_session_root(state_root, session_id) / "worker-handoff.json"
+
+
+def _load_worker_handoff(
+    state_root: Path,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Best-effort read of the launcher→worker identity handoff sidecar.
+
+    The launcher deliberately never rewrites the session receipt after spawn
+    (the worker may already have advanced it).  This sidecar is the durable
+    record of the spawned worker's identity so a status poll during the
+    STARTING handshake can verify the worker instead of misclassifying an
+    unpublished identity as a mismatch.
+    """
+    try:
+        value = json.loads(
+            _worker_handoff_path(state_root, session_id).read_text(
+                encoding="utf-8-sig"
+            )
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
 def _load_run_receipt(state_root: Path, session_id: str) -> dict[str, Any]:
     path = _run_receipt_path(state_root, session_id)
     last_error: OSError | None = None
@@ -1572,6 +1601,18 @@ def start_run_session(
     # Best-effort early handoff. The worker repeats and verifies this transfer
     # before spawning the managed command. Do not rewrite the session receipt
     # here: the detached worker may already have advanced it to RUNNING.
+    # The sidecar keeps the handoff durable for status polls that race the
+    # worker's own first receipt write (STARTING handshake window).
+    atomic_write_json(
+        _worker_handoff_path(state_root, session_id),
+        {
+            "schemaVersion": 1,
+            "sessionId": session_id,
+            "workerPid": worker.pid,
+            "workerIdentity": dict(receipt["workerIdentity"]),
+            "writtenAt": now_iso(),
+        },
+    )
     _refresh_resource_locks(
         state_root,
         session_id,
@@ -1672,6 +1713,12 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
         _write_run_receipt(state_root, receipt)
         return 1
     _write_run_receipt(state_root, receipt)
+    # The receipt now carries the authoritative worker identity; the
+    # launcher's handoff sidecar has served its purpose.
+    try:
+        _worker_handoff_path(state_root, session_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
     stdout_path = Path(str(receipt["stdoutPath"]))
     stderr_path = Path(str(receipt["stderrPath"]))
@@ -2000,23 +2047,48 @@ def _run_session_status_raw(state_root: Path, session_id: str) -> dict[str, Any]
     # The detached worker owns the durable identity record.  The launcher can
     # return before the worker has published it, so STARTING is intentionally
     # treated as a bounded handshake window rather than an identity failure.
+    # During that window the launcher's handoff sidecar (written right after
+    # spawn, never rewritten by the worker) supplies the identity to verify.
     if (
         receipt.get("status") == "STARTING"
         and receipt.get("workerIdentity") is None
         and heartbeat_age < startup_grace
     ):
+        handoff = _load_worker_handoff(state_root, session_id)
+        if handoff is not None and handoff.get("sessionId") == session_id:
+            handoff_identity = handoff.get("workerIdentity")
+            if isinstance(handoff_identity, dict):
+                receipt = dict(receipt)
+                receipt["workerPid"] = handoff.get("workerPid")
+                receipt["workerIdentity"] = handoff_identity
         return receipt
+    if receipt.get("workerIdentity") is None:
+        handoff = _load_worker_handoff(state_root, session_id)
+        if handoff is not None and handoff.get("sessionId") == session_id:
+            handoff_identity = handoff.get("workerIdentity")
+            if isinstance(handoff_identity, dict):
+                receipt = dict(receipt)
+                receipt["workerPid"] = handoff.get("workerPid")
+                receipt["workerIdentity"] = handoff_identity
     identity_state = _receipt_identity_state(receipt)
     worker_gone = (
         isinstance(worker_pid, int)
         and worker_pid > 0
         and not is_pid_alive(worker_pid)
     )
-    if worker_gone or identity_state is False or heartbeat_age >= grace:
+    # While the session is still STARTING the heartbeat was written by the
+    # launcher at spawn time; the detached worker has not taken it over yet.
+    # A stale heartbeat alone must not kill the session inside the startup
+    # grace window — the worker may simply be slow to cold-start under load.
+    effective_grace = (
+        startup_grace if receipt.get("status") == "STARTING" else grace
+    )
+    heartbeat_lost = heartbeat_age >= effective_grace
+    if worker_gone or identity_state is False or heartbeat_lost:
         latest = _load_run_receipt(state_root, session_id)
         if latest.get("status") in RUN_TERMINAL_STATUSES:
             return latest
-        if heartbeat_age < grace and worker_gone and identity_state is not False:
+        if not heartbeat_lost and worker_gone and identity_state is not False:
             return latest
         receipt.update(
             {

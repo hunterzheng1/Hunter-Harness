@@ -1024,7 +1024,20 @@ def spawn_structured_argv(
         job = _WindowsNamedJob(
             "Local\\HunterHarness-" + owner_hash.split(":", 1)[1][:16] + "-" + proof_id
         )
-        if job.handle is not None and job.assign(process):
+        # AssignProcessToJobObject can transiently fail under system load
+        # (e.g. while the child is still being set up).  Retry briefly before
+        # declaring the ownership proof unavailable — killing the child here
+        # aborts an otherwise healthy managed run.
+        assigned = False
+        if job.handle is not None:
+            for attempt in range(5):
+                if job.assign(process):
+                    assigned = True
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.02 * (attempt + 1))
+        if assigned:
             _WINDOWS_JOB_HANDLES[proof_id] = job
             proof = {
                 "schemaVersion": 1,
