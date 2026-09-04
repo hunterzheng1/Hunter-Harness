@@ -6,7 +6,7 @@
 > - `E:/MyProject/AI Related/hunter-platform`（平台 server + web）
 >
 > 目的：评估"精简、解耦、移除冗余与过度复杂的中间产物，让 agent 专注任务"这一方向的合理性，逐条给出证据与建议。
-> **§8 记录了 2026-09-03/04 对 harness 侧可执行项的落地结果与新发现；平台侧（§2/§3）未动。**
+> **§8 记录了 2026-09-03/04 对 harness 侧可执行项的落地结果与新发现；§9 记录 2026-09-04 平台侧三批次的落地结果。两侧可执行项均已执行完毕。**
 
 ---
 
@@ -241,19 +241,19 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 ## 7. 补充建议与执行顺序
 
-> 2026-09-04 状态：第 1、2、5 条的 harness 侧部分已执行（§8.1）；平台侧条目未动。
+> 2026-09-04 状态：第 1、2、5 条的 harness 侧部分已执行（§8.1）；平台侧三批次已全部执行（§9）。
 
-1. ~~**先删已确认死代码**（零风险热身）：平台 `remote-sync-archive-*` 整组 + `remote_archive_v2_records` 表；harness 死模块清单（§4.2）+ `dev/null` + 发布残留（§5）。~~ harness 侧 ✅（98a79d7）；平台侧待做。
-2. ~~**砍监控链**：本地 events_sync 调用点（4 处）~~ ✅（d255524）+ 平台 runs/、branch-monitor-query/ + 对应 web 组件——平台侧待做。
-3. **砍 tab 按"视图分支"而非"目录"**：change-records-query 可整删；branch-version-query 只能裁 version_records；platform-information 裁 view；apiKeys 需先定鉴权方案（§2.3）。
-4. **知识管线去留单独拍板**（§3.2）：平台最大精简空间，取决于知识 tab 是否保留自动沉淀。
+1. ~~**先删已确认死代码**（零风险热身）：平台 `remote-sync-archive-*` 整组 + `remote_archive_v2_records` 表；harness 死模块清单（§4.2）+ `dev/null` + 发布残留（§5）。~~ harness 侧 ✅（98a79d7）；平台侧 ✅（22783e4）。
+2. ~~**砍监控链**：本地 events_sync 调用点（4 处）~~ ✅（d255524）+ 平台 runs/、branch-monitor-query/ + 对应 web 组件——平台侧 ✅（bd3f8a2）。
+3. ~~**砍 tab 按"视图分支"而非"目录"**：change-records-query 可整删；branch-version-query 只能裁 version_records；platform-information 裁 view；apiKeys 需先定鉴权方案（§2.3）。~~ 平台侧 ✅（d7352be；apiKeys 按用户决策保留）。
+4. **知识管线去留单独拍板**（§3.2）：平台最大精简空间，取决于知识 tab 是否保留自动沉淀。→ **用户决策：整组保留，不精简。**
 5. ~~**plan 文档改渲染器**，不回退格式~~ ✅ 第 1 步已落地（2949fef）；同步精简 skill 文档自身（13.5k 行，含大量 `<!-- @include -->` 与交叉引用，agent 每次加载都付 token 成本）——未动。
 
 ---
 
 ## 8. 执行结果（2026-09-03/04，harness 侧）
 
-> 平台侧（§2/§3）未动。以下记录已落地项、复核纠错、以及执行过程中的新发现。
+> 平台侧结果见 §9。以下记录 harness 侧已落地项、复核纠错、以及执行过程中的新发现。
 
 ### 8.1 已落地项
 
@@ -304,21 +304,61 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 - §4.3 只读兼容层（plan-finalization / product-candidate-ci / adoption_metrics）——受 roadmap 14 管辖，未动；
 - §6.4-2/3（引用清单折叠、四件套收敛）——渲染层增强，未动；
 - §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；
-- 平台侧全部条目（§2/§3/附录 B）——待平台仓库单独执行。
+- ~~平台侧全部条目（§2/§3/附录 B）——待平台仓库单独执行。~~ → 已执行，见 §9。
+
+---
+
+## 9. 执行结果（2026-09-04，平台侧）
+
+> 仓库 `hunter-platform`，AutoLoop 会话 `platform-simplification-batch1`（3 实验 kept / 0 discarded，已 finalize）。
+> 指标 `platform_loc` = apps/server/src + apps/web 生产源非空非注释行数。基线 64,688 → 57,778（**-6,910，-10.7%**）。
+
+### 9.1 已落地批次
+
+| 批次 | 内容 | 提交 | platform_loc |
+|---|---|---|---|
+| Batch 1（§3.3 死代码） | remote-sync-archive-http/-pg 模块与路由、content-upload 路由（保留 file-upload）、`remote_archive_v2_records` 表（migration 036）、contracts 导出与 OpenAPI 路径/模式、GC liveness probe | `22783e4` | 64,688 → 64,020 |
+| Batch 2（§1 监控链平台侧） | runs/、branch-monitor-query/ 模块、dashboard active_runs、legacy change archive 读取端点、web 运行监控页签与 mock | `bd3f8a2` | 64,020 → 59,315 |
+| Batch 3（§2 页签裁剪） | change-records-query 全模块（5 文件 + 3 测试 + 2 fixtures）；branch-version-query 只裁 version_records 投影/diff（**branch_files 服务保留**，push 链路依赖）；contracts/openapi schema 收窄（View/ContentType/Sort + 5 个 item/detail schema 删除）并重算 sha256 冻结；web 工作台收敛为 分支文件/项目资料/项目知识/API 密钥 四页签 | `d7352be` | 59,315 → 57,778 |
+
+### 9.2 用户决策记录
+
+- **知识管线（§3.2）整组保留**：知识 tab 依赖归档包自动沉淀，是平台核心价值，不在精简范围；
+- **apiKeys 页签保留（§2.3 跳过）**：外部 ingest 鉴权基础，方案 A（极简 key 管理入口）即现状。
+
+### 9.3 验证收据
+
+- 每批次：lint + typecheck + 受影响测试文件全绿；
+- Batch 3 全量 fast 套件：5 文件失败均为已知负载 flake（PDA / platform-information-export-local-cas / remote-content-upload-pg / external-skill-detail / bounded-rendering 超时）——失败集合漂移、仅超时无断言错误、单独跑通过、与改动无导入依赖；
+- docker build（server + web）成功，三容器 healthy；
+- harness CLI 冒烟对本地实例（3002）全过：push（ok）、archive upload（durable + knowledge ready）、knowledge query（remote receipt）；
+- 活体验证：`change_records`/`version_records` 视图返回 400（已从枚举移除），`branch_files`/`project_knowledge` 正常返回；
+- web 编译产物确认页签为 `{分支文件, 项目资料, 项目知识, API 密钥}` 四项（语义总览面板中的"变更记录"文案属另一域，保留）。
+
+### 9.4 平台侧新发现
+
+- **guardian 负载 flake 恶化**：满负载下 export-local-cas 单独跑也 8/19、5/19 漂移失败（guardian powershell 冷启动 13-20s vs 30s testTimeout），与 harness 侧 §8.3 同类环境噪声签名。根治方向：guardian 进程池预热或该类测试单独提高 testTimeout（独立基础设施提交）；
+- **残留临时目录**：一次满负载运行后 `hunter-vitest-*` 临时目录累积 33 个（EBUSY rmdir 是 guardian 竞态，非孤儿进程锁定）；
+- **autoloop keep --commit 同款问题**：工作树有变更时偶发不建提交，平台侧同样改为手动 git commit + `autoloop eval` + `autoloop keep`。
+
+### 9.5 平台侧遗留事项
+
+- guardian 负载 flake 根治（进程池预热 / 单独 testTimeout）——独立基础设施提交；
+- §4.3 只读兼容层与 §6.4 渲染层增强——同 harness 侧，受 roadmap 管辖。
 
 ---
 
 ## 附录 A：关键文件索引
 
-平台侧：
+平台侧（2026-09-04 更新：标注删除的条目已随 §9 三批次移除）：
 
 - `apps/server/src/app.ts`（2638-3290, 4502-4516）——全部上传路由与注册点
 - `apps/server/src/archive/package-ingest.ts`（30-164, 835-1115）——core-v1 包 schema/白名单/入库
 - `apps/server/src/remote-sync-pg/http-service.ts` + `push-files.ts`——push commit → branch snapshots
-- `apps/server/src/change-records-query/pg-source.ts`（271-380）——变更记录 tab 消费
+- ~~`apps/server/src/change-records-query/pg-source.ts`（271-380）——变更记录 tab 消费~~ → 已删（`d7352be`）
 - `apps/server/src/project-materials/pg-source.ts`（200-290）——资料 tab = branch_snapshot_files 派生
 - `apps/server/src/knowledge-bridge/index.ts`——pipeline results → knowledge_ingest_entries
-- `apps/web/components/project-workspace-shell.tsx`（L9-15 sections）与 `project-workspace.tsx`（L917-1028 slots）
+- `apps/web/components/project-workspace-shell.tsx`（L9-15 sections）与 `project-workspace.tsx`（L917-1028 slots）——sections/slots 已收敛为四页签（`d7352be`）
 
 harness 侧：
 
@@ -330,8 +370,10 @@ harness 侧：
 
 ## 附录 B：遗留未验证项
 
-- `packages/contracts` 中 change_record/version_record schema 是否被 export 交叉引用（删除前 grep 复核）；
-- `apps/web/app/projects/[id]/` 下旧版页面文件是否仍被路由引用；
-- legacy `GET /changes/:changeKey/archive[/content]` 是否被 dashboard 调用；
-- 平台 `POST /knowledge/ingest` 是否有运维脚本调用；
-- branch-monitor / runs ingest 的外部真实调用方（推测为本地 harness events-sync，未在 Hunter-Harness 源码中逐行验证完整链路）。
+> 2026-09-04 更新：前四项已在平台 Batch 3 执行中逐条复核并处理；第五项随 Batch 2 监控链移除一并消解。
+
+- ~~`packages/contracts` 中 change_record/version_record schema 是否被 export 交叉引用（删除前 grep 复核）~~ → 已复核并删除（Batch 3，`d7352be`）；
+- ~~`apps/web/app/projects/[id]/` 下旧版页面文件是否仍被路由引用~~ → 已复核，无残留引用（Batch 3）；
+- ~~legacy `GET /changes/:changeKey/archive[/content]` 是否被 dashboard 调用~~ → 已随 Batch 2 删除（`bd3f8a2`）；
+- ~~平台 `POST /knowledge/ingest` 是否有运维脚本调用~~ → 知识管线整组保留（用户决策），端点仍在役；
+- ~~branch-monitor / runs ingest 的外部真实调用方（推测为本地 harness events-sync，未在 Hunter-Harness 源码中逐行验证完整链路）~~ → 本地侧已摘除（d255524），平台侧 runs/branch-monitor-query 已删（bd3f8a2），链路两端均已消解。
