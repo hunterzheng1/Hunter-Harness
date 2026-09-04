@@ -238,6 +238,27 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     expect(scenarios).toContain("- 关联任务:");
     expect(scenarios).not.toContain("- Coverage dimension:");
     expect(scenarios).not.toContain("- Task refs:");
+
+    // §6.4-2：引用清单折叠到文末引用附录，正文只留叙事与执行/分类要素
+    expect(plan).toContain("## 引用附录");
+    const planTasks = plan.split("## Tasks\n\n")[1]?.split("\n## 引用附录")[0] ?? "";
+    expect(planTasks).toContain("- 负责阶段:");
+    expect(planTasks).not.toContain("- 需求引用:");
+    expect(planTasks).not.toContain("- 决策引用:");
+    expect(planTasks).not.toContain("- 证据引用:");
+    expect(planTasks).not.toContain("- 归属文件:");
+    const planAppendix = plan.split("\n## 引用附录\n\n")[1] ?? "";
+    expect(planAppendix).toContain("### task:module");
+    expect(planAppendix).toContain("- 需求引用:");
+    expect(scenarios).toContain("## 引用附录");
+    const scenarioBodies = scenarios.split("\n## Coverage\n\n")[0] ?? "";
+    expect(scenarioBodies).toContain("- 优先级:");
+    expect(scenarioBodies).not.toContain("- 关联任务:");
+    expect(scenarioBodies).not.toContain("- 验证命令:");
+    const scenarioAppendix = scenarios.split("\n## 引用附录\n\n")[1] ?? "";
+    expect(scenarioAppendix).toContain("### scenario:normal");
+    expect(scenarioAppendix).toContain("- 关联任务:");
+    expect(scenarioAppendix).toContain("- 可执行测试 ID:");
   });
 
   it("binds the trusted change key and exact path authority before producing payloads", () => {

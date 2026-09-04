@@ -244,49 +244,70 @@ function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): stri
       `  - Approved scopes: ${scopeRefs(item.approved_scope_refs)}`).join("\n")}\n`;
 }
 
+/**
+ * 引用附录条目：`### <id>` + 引用清单。实体分节使正文保持叙事/执行要素，
+ * 查找型清单（决策/场景/需求/证据/归属、可执行测试三元）集中到文末。
+ */
+function appendixEntry(id: string, lines: readonly string[]): string {
+  return lines.length === 0 ? "" : [`### ${id}`, "", ...lines].join("\n");
+}
+
 function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
   lookup: RefLookup): string {
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Plan\n\n## Change key\n\n` +
-    `${artifact.content.change_key}\n\n## Tasks\n\n${artifact.content.tasks.map((task) => [
-      `### ${task.task_id}`,
-      "",
-      task.objective,
-      "",
+  const bodies: string[] = [];
+  const appendix: string[] = [];
+  for (const task of artifact.content.tasks) {
+    bodies.push([`### ${task.task_id}`, "", task.objective, "",
       `- 负责阶段: ${task.owner_phase}`,
       `- 影响路径: ${task.affected_paths.join(", ") || "无"}`,
-      `- 依赖任务: ${task.depends_on.join(", ") || "无"}`,
-      `- 决策引用: ${task.decision_refs.join(", ") || "无"}`,
-      `- 关联场景: ${task.scenario_refs.join(", ") || "无"}`,
+      `- 依赖任务: ${task.depends_on.join(", ") || "无"}`
+    ].join("\n"));
+    const entry = appendixEntry(task.task_id, [
+      task.decision_refs.length === 0 ? "" : `- 决策引用: ${task.decision_refs.join(", ")}`,
+      task.scenario_refs.length === 0 ? "" : `- 关联场景: ${task.scenario_refs.join(", ")}`,
       renderRequirementRefs(task.requirement_refs, lookup),
       renderEvidenceRefs(task.evidence_refs),
       renderOwnershipRefs(task.ownership_refs, lookup)
-    ].filter((line) => line !== "").join("\n")).join("\n\n")}\n`;
+    ].filter((line) => line !== ""));
+    if (entry !== "") appendix.push(entry);
+  }
+  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Plan\n\n## Change key\n\n` +
+    `${artifact.content.change_key}\n\n## Tasks\n\n${bodies.join("\n\n")}\n` +
+    (appendix.length === 0 ? "" :
+      `\n## 引用附录\n\n各任务的引用与证据绑定，正文仅保留执行要素。\n\n${appendix.join("\n\n")}\n`);
 }
 
 function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenarios"],
   lookup: RefLookup): string {
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Test Scenarios\n\n` +
-    artifact.content.scenarios.map((scenario) => [
-      `## ${scenario.scenario_id}: ${scenario.title}`,
-      "",
-      scenario.acceptance,
-      "",
+  const bodies: string[] = [];
+  const appendix: string[] = [];
+  for (const scenario of artifact.content.scenarios) {
+    bodies.push([`## ${scenario.scenario_id}: ${scenario.title}`, "", scenario.acceptance, "",
       `- 覆盖维度: ${scenario.coverage_dimension}`,
       `- 执行级别: ${scenario.execution_level}`,
       `- 风险等级: ${scenario.risk_level}`,
       `- 优先级: ${scenario.priority}`,
-      `- 负责阶段: ${scenario.owner_phase}`,
-      `- 证据要求: ${scenario.evidence_requirements.join(", ") || "无"}`,
-      `- 关联任务: ${scenario.task_refs.join(", ") || "无"}`,
+      `- 负责阶段: ${scenario.owner_phase}`
+    ].join("\n"));
+    const entry = appendixEntry(scenario.scenario_id, [
+      scenario.evidence_requirements.length === 0 ? "" :
+        `- 证据要求: ${scenario.evidence_requirements.join(", ")}`,
+      scenario.task_refs.length === 0 ? "" : `- 关联任务: ${scenario.task_refs.join(", ")}`,
       renderRequirementRefs(scenario.requirement_refs, lookup),
       ...(scenario.executable_test_id === undefined ? [] : [`- 可执行测试 ID: ${scenario.executable_test_id}`]),
       ...(scenario.test_file === undefined ? [] : [`- 测试文件: ${scenario.test_file}`]),
       ...(scenario.test_title === undefined ? [] : [`- 测试标题: ${scenario.test_title}`]),
       ...(scenario.verification_command === undefined ? [] : [`- 验证命令: ${scenario.verification_command}`])
-    ].filter((line) => line !== "").join("\n")).join("\n\n") +
+    ].filter((line) => line !== ""));
+    if (entry !== "") appendix.push(entry);
+  }
+  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Test Scenarios\n\n` +
+    bodies.join("\n\n") +
     `\n\n## Coverage\n\n${artifact.content.coverage.map((item) =>
       `- ${item.coverage_dimension}: ${item.applicability}; scenarios=${item.scenario_refs.join(",") || "none"}` +
-      (item.not_applicable_reason === undefined ? "" : `; reason=${item.not_applicable_reason}`)).join("\n")}\n`;
+      (item.not_applicable_reason === undefined ? "" : `; reason=${item.not_applicable_reason}`)).join("\n")}\n` +
+    (appendix.length === 0 ? "" :
+      `\n## 引用附录\n\n各场景的证据/任务/需求引用与可执行测试映射。\n\n${appendix.join("\n\n")}\n`);
 }
 
 function renderCompatibility(artifact: TrustedPlanArtifactSet["detail"]): string {
