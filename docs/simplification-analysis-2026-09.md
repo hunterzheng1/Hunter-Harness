@@ -197,7 +197,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 | `resources/skills/` | 6 月英文旧版 skill 镜像，含已删除的 harness-run/harness-test/harness-package 等，与 `harness/` 中文版严重漂移 |
 | `requirements/` | 2026-06 历史需求输入文档，与当前代码无接线，可归档 |
 | `dev/`（仅 `dev/null` 一个被跟踪文件） | 整目录可删 |
-| `docs/harness-improvement-roadmap/` | 现役路线图档案；已 RESOLVED 批次的旧 issue 文档可精简归档 |
+| `docs/harness-improvement-roadmap/` | 现役路线图档案；已 RESOLVED 批次的旧 issue 文档可精简归档 | → ✅ 已归档（2026-09-05，`aa3c864`：10 份已修复 issue 文档移入 `archive/`，登记 §8.3 竞态 issue） |
 | `CHANGELOG.md`、`CONTEXT.md`、`program.md`、`scripts/`、`docs/adr/` | 现役，保留 |
 | `tests/` vs `harness/scripts/tests/` | **不是重复**：前者 Vitest 测 TS/CLI 与仓库脚本，后者 unittest 测 Python harness；两套工具链不同，都保留 |
 
@@ -303,7 +303,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 - §4.3 只读兼容层（plan-finalization / product-candidate-ci / adoption_metrics）——受 roadmap 14 管辖，未动；
 - ~~§6.4-2/3（引用清单折叠、四件套收敛）——渲染层增强，未动~~ → §6.4-2 折叠已落地（`1b08c44`，§10.1）；四件套收敛（§6.4-3）仍未动；
-- §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；
+- §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；→ ✅ 已登记（2026-09-05，`aa3c864`：`docs/harness-improvement-roadmap/evaluator-infra-load-races-2026-09-04.md`）；
 - ~~平台侧全部条目（§2/§3/附录 B）——待平台仓库单独执行。~~ → 已执行，见 §9。
 
 ---
@@ -337,7 +337,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 ### 9.4 平台侧新发现
 
-- ~~**guardian 负载 flake 恶化**~~ → ✅ 已根治（2026-09-05，`a58fc16`，见 §10.3）；
+- ~~**guardian 负载 flake 恶化**~~ → ✅ 已根治（2026-09-05，`a58fc16`，见 §10.3）；同清单其余两项（external-skill-detail / bounded-rendering）✅ 已根治（`b664be1`，见 §10.4）——**§9.3 已知负载 flake 清单至此全部清零**；
 - **残留临时目录**：一次满负载运行后 `hunter-vitest-*` 临时目录累积 33 个（EBUSY rmdir 是 guardian 竞态，非孤儿进程锁定）；
 - autoloop keep --commit 同款问题：工作树有变更时偶发不建提交，平台侧同样改为手动 git commit + `autoloop eval` + `autoloop keep`。
 
@@ -378,6 +378,15 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 - **根因链**：guardian 按 `(path, role)` 冷启动 `powershell.exe`（`Add-Type` 内联 C# 编译实测仅 94-248ms，不是瓶颈）→ 负载下 powershell 进程启动本身 13-20s（CPU/磁盘争用）→ 用例各自新建根目录使 guardian 无法跨用例复用 → 一个用例串行拉起多个 guardian 撞 30s 默认 testTimeout（export-local-cas 曾 8/19、5/19 漂移）；
 - **修复**（纯测试基建，生产零改动）：① `tests/setup/powershell-warmup.ts` 注册 globalSetup，worker fork 前完成一次完整 powershell 启动把首次磁盘成本移出测试计时；② PDA / export-local-cas / remote-content-upload-pg 三文件 `vi.setConfig` 120s（全局 30s 不变）；③ PDA 测试内 guardian 就绪等待 15s→60s；
 - **验证**：typecheck/lint 全过；PDA+remote-content-upload 51 用例全绿；export-local-cas 在 2 CPU hog 满负载下**连续两轮 19/19**（最慢单例 55s——旧 30s 预算下必挂）。
+
+### 10.4 同日追加批次（2026-09-05 下午）：roadmap 归档 + web 侧 flake 清零
+
+| 项 | 内容 | 提交 |
+|---|---|---|
+| §5 收尾 + §8.3 登记（harness `aa3c864`） | 10 份已修复阶段 issue 文档（2026-08-30/31、09-02，均含修复状态与版本号）移入 `docs/harness-improvement-roadmap/archive/`，archive/README.md 记录归档标准与清单，主 README 补归档惯例；新增 `evaluator-infra-load-races-2026-09-04.md` 正式登记 §8.3 四个竞态（caee9e7/73aa530）与 flake 判别模式。`plan-v2-dogfood-findings-2026-08-17`（无修复状态标记）与两份 freeze proposal 保留主目录 | harness `aa3c864` |
+| §9.3 web 侧 flake（platform `b664be1`） | `external-skill-detail.test.tsx` 文件级 120s（jsdom 下 15 用例 × beforeEach 完整启动 fastify server）；`project-information-panels.test.tsx` 仅对刻意渲染 500 行的 bounded-rendering 用例单独放宽 120s。2 CPU hog 满负载下两文件 31/31 通过 | platform `b664be1` |
+
+**§9.3 已知负载 flake 清单（PDA / export-local-cas / remote-content-upload-pg / external-skill-detail / bounded-rendering）至此全部清零。** 剩余开放项仅：`hunter-vitest-*` 残留临时目录的 EBUSY 竞态（§9.4，预算放宽后爆发频率预计下降）、§4.3 与 §6.4-3（roadmap 14 管辖）。
 
 ---
 
