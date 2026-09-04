@@ -1,12 +1,12 @@
 # Hunter-Harness 与 Hunter-Platform 精简/解耦问题分析
 
-> 分析日期：2026-09-03；执行更新：2026-09-04
+> 分析日期：2026-09-03；执行更新：2026-09-04 / 2026-09-05
 > 覆盖仓库：
 > - `E:/MyProject/AI Related/Hunter-Harness`（harness 本体，分析基线 HEAD `1ffd714`）
 > - `E:/MyProject/AI Related/hunter-platform`（平台 server + web）
 >
 > 目的：评估"精简、解耦、移除冗余与过度复杂的中间产物，让 agent 专注任务"这一方向的合理性，逐条给出证据与建议。
-> **§8 记录了 2026-09-03/04 对 harness 侧可执行项的落地结果与新发现；§9 记录 2026-09-04 平台侧三批次的落地结果。两侧可执行项均已执行完毕。**
+> **§8 记录了 2026-09-03/04 对 harness 侧可执行项的落地结果与新发现；§9 记录 2026-09-04 平台侧三批次的落地结果；§10 记录 2026-09-05 第二轮（渲染层增强 + §7-5 负结果 + guardian flake 根治）。**
 
 ---
 
@@ -234,7 +234,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 渲染器集中在 `packages/core/src/plan-artifacts/publication/module.ts:127-310`（renderDesign/renderPlan/renderScenarios/renderCompatibility），改动局部；测试锚点 `packages/core/test/plan-artifact-publication.test.ts`（断言中文标签，改格式需同步）。
 
 1. ~~全空的引用行直接省略（现在渲染"决策引用：无"这类噪声行）~~ ✅ 已落地：空 refs 返回 `""` 并在 join 前 filter；已验证 `harness_knowledge_candidates.py` 解析器只读 `### ` 标题与 objective 文本，不受影响；
-2. 引用清单折叠或移至文末附录，正文恢复叙事段落（背景/动机/验证方式——旧手写模板有、派生版丢了）——未做；
+2. ~~引用清单折叠或移至文末附录，正文恢复叙事段落~~ → ✅ 折叠部分已落地（2026-09-05，`1b08c44`，详见 §10.1）。**纠错**："恢复叙事段落"字面不可执行——v2 结构化输入（`PlanTaskInput`/`TestScenarioInput`）没有背景/动机/验证方式字段，内容哈希绑定下渲染层不能凭空编造；实际落地为"正文回归 objective + 执行要素，引用清单移至文末附录"；
 3. 更进一步：四件套（design/plan/implementation-detail/test-scenarios）内容重叠高，可评估收敛为两件套——未做。
 
 ---
@@ -247,7 +247,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 2. ~~**砍监控链**：本地 events_sync 调用点（4 处）~~ ✅（d255524）+ 平台 runs/、branch-monitor-query/ + 对应 web 组件——平台侧 ✅（bd3f8a2）。
 3. ~~**砍 tab 按"视图分支"而非"目录"**：change-records-query 可整删；branch-version-query 只能裁 version_records；platform-information 裁 view；apiKeys 需先定鉴权方案（§2.3）。~~ 平台侧 ✅（d7352be；apiKeys 按用户决策保留）。
 4. **知识管线去留单独拍板**（§3.2）：平台最大精简空间，取决于知识 tab 是否保留自动沉淀。→ **用户决策：整组保留，不精简。**
-5. ~~**plan 文档改渲染器**，不回退格式~~ ✅ 第 1 步已落地（2949fef）；同步精简 skill 文档自身（13.5k 行，含大量 `<!-- @include -->` 与交叉引用，agent 每次加载都付 token 成本）——未动。
+5. ~~**plan 文档改渲染器**，不回退格式~~ ✅ 第 1 步已落地（2949fef）；~~同步精简 skill 文档自身（13.5k 行）~~ → **评估结论：不值得做**（2026-09-05，证据见 §10.2）——"agent 每次加载都付 13.5k 行 token"的前提不成立。
 
 ---
 
@@ -302,7 +302,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 ### 8.5 遗留事项
 
 - §4.3 只读兼容层（plan-finalization / product-candidate-ci / adoption_metrics）——受 roadmap 14 管辖，未动；
-- §6.4-2/3（引用清单折叠、四件套收敛）——渲染层增强，未动；
+- ~~§6.4-2/3（引用清单折叠、四件套收敛）——渲染层增强，未动~~ → §6.4-2 折叠已落地（`1b08c44`，§10.1）；四件套收敛（§6.4-3）仍未动；
 - §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；
 - ~~平台侧全部条目（§2/§3/附录 B）——待平台仓库单独执行。~~ → 已执行，见 §9。
 
@@ -337,14 +337,47 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 ### 9.4 平台侧新发现
 
-- **guardian 负载 flake 恶化**：满负载下 export-local-cas 单独跑也 8/19、5/19 漂移失败（guardian powershell 冷启动 13-20s vs 30s testTimeout），与 harness 侧 §8.3 同类环境噪声签名。根治方向：guardian 进程池预热或该类测试单独提高 testTimeout（独立基础设施提交）；
+- ~~**guardian 负载 flake 恶化**~~ → ✅ 已根治（2026-09-05，`a58fc16`，见 §10.3）；
 - **残留临时目录**：一次满负载运行后 `hunter-vitest-*` 临时目录累积 33 个（EBUSY rmdir 是 guardian 竞态，非孤儿进程锁定）；
-- **autoloop keep --commit 同款问题**：工作树有变更时偶发不建提交，平台侧同样改为手动 git commit + `autoloop eval` + `autoloop keep`。
+- autoloop keep --commit 同款问题：工作树有变更时偶发不建提交，平台侧同样改为手动 git commit + `autoloop eval` + `autoloop keep`。
 
 ### 9.5 平台侧遗留事项
 
-- guardian 负载 flake 根治（进程池预热 / 单独 testTimeout）——独立基础设施提交；
+- ~~guardian 负载 flake 根治（进程池预热 / 单独 testTimeout）~~ → ✅ 已落地（§10.3）；
 - §4.3 只读兼容层与 §6.4 渲染层增强——同 harness 侧，受 roadmap 管辖。
+
+---
+
+## 10. 执行结果（2026-09-05，第二轮）
+
+> AutoLoop 会话 `plan-render-appendix-simplification`（1 实验 kept / 0 discarded）+ hunter-platform 独立基础设施提交。
+
+### 10.1 §6.4-2 plan/scenarios 渲染层引用清单折叠 — ✅ kept（harness `1b08c44`）
+
+- **改动**：`renderPlan`/`renderScenarios`（`packages/core/src/plan-artifacts/publication/module.ts`）——任务/场景正文只留 objective + 执行要素（负责阶段/影响路径/依赖任务）与分类元数据（覆盖维度/执行级别/风险等级/优先级/负责阶段），全部引用清单（决策引用/关联场景/需求引用/证据引用/归属文件/证据要求/关联任务/可执行测试三元/验证命令）折叠至文末 `## 引用附录`（按实体 `### ` 分节，空清单整行省略）；
+- **机器契约保持**：逐消费方复核后确认唯一内容解析方是 `harness_knowledge_candidates.py`（`## Tasks` 内 `### id` + objective 先于 `- ` 条目；`## <id>: <title>` 标题），新布局实测解析不变（任务不重复采集、附录小节正确跳过）；`harness_plan_finalize.py` 的 C8/C9 表格解析是 legacy 只读路径（v2 渲染本就无表格）；Python v2 验收只做事务/journal/字节哈希校验；design.md 注册表未动（完整 ID 仍只出现一次）；
+- **验证**：publication 测试 9/9（新增附录布局断言）、typecheck/lint 全过、knowledge-candidates 22 + plan-finalize 26 用例全绿、全量安全档护栏通过（AutoLoop verdict keep）。
+
+### 10.2 §7-5 harness/ skill 文档精简 — ❌ 评估为"不值得做"（负结果，有证据）
+
+原始前提"13.5k 行，agent 每次加载都付 token 成本"经侦察不成立：
+
+| 事实 | 证据 |
+|---|---|
+| 加载是渐进披露，不是全量 | SKILL.md 入口仅 64-296 行；satellite（reference/checklist/pitfalls）按需 Read |
+| `<!-- @include -->`（34 处）是部署期 DRY 机制 | shared 块总计仅 62 行，`harness_deploy.py` 展开成自包含单文件——源头 DRY、运行时单文件是设计目标 |
+| base↔java overlay 重复（~4k 滑窗行）零加载成本 | 每个部署项目只装一个 profile，跨 profile 重复不进任何 agent 的上下文 |
+| profile 内逐字重复可忽略 | 8 行滑窗扫描：跨文件重复仅 ~200 行（coding-reference↔testing-reference 40 行等） |
+| 版本演进注记占 0.4% | 59/13,462 行，不是杠杆 |
+| 卫星文档是密集操作契约，不是赘肉 | coding-reference（918 行）是 TDD 决策表/迁移清单/安全矩阵；多处被合同测试内容断言（5 个 protocol 文档、doc-contract 全量校验命令引用） |
+
+**否决的结构性方案**：把 java 整文件覆盖改为块级 overlay delta（OVERRIDE/APPEND 锚点机制已存在）可省 ~2.4k 仓内行数——但收益只是仓库体积（非加载 token），代价是部署语义变更 + 活项目 blast radius + 块锚点脆弱性。属于"指标好看但认知成本上升"，不做。
+
+### 10.3 guardian 负载 flake 根治 — ✅（platform `a58fc16`，独立基础设施提交）
+
+- **根因链**：guardian 按 `(path, role)` 冷启动 `powershell.exe`（`Add-Type` 内联 C# 编译实测仅 94-248ms，不是瓶颈）→ 负载下 powershell 进程启动本身 13-20s（CPU/磁盘争用）→ 用例各自新建根目录使 guardian 无法跨用例复用 → 一个用例串行拉起多个 guardian 撞 30s 默认 testTimeout（export-local-cas 曾 8/19、5/19 漂移）；
+- **修复**（纯测试基建，生产零改动）：① `tests/setup/powershell-warmup.ts` 注册 globalSetup，worker fork 前完成一次完整 powershell 启动把首次磁盘成本移出测试计时；② PDA / export-local-cas / remote-content-upload-pg 三文件 `vi.setConfig` 120s（全局 30s 不变）；③ PDA 测试内 guardian 就绪等待 15s→60s；
+- **验证**：typecheck/lint 全过；PDA+remote-content-upload 51 用例全绿；export-local-cas 在 2 CPU hog 满负载下**连续两轮 19/19**（最慢单例 55s——旧 30s 预算下必挂）。
 
 ---
 
