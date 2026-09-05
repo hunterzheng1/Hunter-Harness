@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.16] — hunter-harness
+
+> plan 文档渲染层增强（workflow-harness 无源码变更，本版只发 CLI）：
+> packages/core 渲染器把 plan.md / test-scenarios.md 的引用清单折叠至文末
+> 「## 引用附录」，正文回归任务目标 + 执行要素。hunter-harness 0.4.15 → 0.4.16，
+> bundle 0.2.79 不变。
+> 验证：lint / typecheck 全过；publication 测试 9/9（含新增附录布局断言）；
+> 全量安全档护栏通过；knowledge-candidates 22 + plan-finalize 26 用例全绿。
+
+### Changed
+
+- **plan / test-scenarios 渲染布局**（§6.4-2，1b08c44）：任务正文只留 objective
+  与执行要素（负责阶段/影响路径/依赖任务），场景正文只留验收描述与分类元数据
+  （覆盖维度/执行级别/风险等级/优先级/负责阶段）；决策引用、关联场景、需求引用、
+  证据引用、归属文件、证据要求、关联任务与可执行测试三元全部折叠到文末
+  「## 引用附录」（按实体分节，空清单整行省略）。
+- **机器契约不变**：门禁/账本只读 meta/*.json；design.md 注册表完整 ID 仍只出现
+  一次；归档知识候选解析（`## Tasks` + objective、`## <id>: <title>`）实测解析
+  结果与旧格式一致；legacy 只读验收路径不受影响。
+
 ## [0.4.19] — workflow-harness
 
 > 精简执行轮（CLI 无代码变更，不发 hunter-harness）：按
