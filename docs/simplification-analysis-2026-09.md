@@ -338,7 +338,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 ### 9.4 平台侧新发现
 
 - ~~**guardian 负载 flake 恶化**~~ → ✅ 已根治（2026-09-05，`a58fc16`，见 §10.3）；同清单其余两项（external-skill-detail / bounded-rendering）✅ 已根治（`b664be1`，见 §10.4）——**§9.3 已知负载 flake 清单至此全部清零**；
-- **残留临时目录**：一次满负载运行后 `hunter-vitest-*` 临时目录累积 33 个（EBUSY rmdir 是 guardian 竞态，非孤儿进程锁定）；
+- ~~**残留临时目录**：一次满负载运行后 `hunter-vitest-*` 临时目录累积 33 个~~ → ✅ 已收敛（2026-09-05，platform `b073337`：临时根写 owner.json（PID），teardown 改三波耐心重试；下一次运行对"PID 已死"的残留根立即清扫、PID 存活视为并行运行跳过，标记缺失按 24h 年龄规则兜底）；
 - autoloop keep --commit 同款问题：工作树有变更时偶发不建提交，平台侧同样改为手动 git commit + `autoloop eval` + `autoloop keep`。
 
 ### 9.5 平台侧遗留事项
@@ -386,7 +386,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 | §5 收尾 + §8.3 登记（harness `aa3c864`） | 10 份已修复阶段 issue 文档（2026-08-30/31、09-02，均含修复状态与版本号）移入 `docs/harness-improvement-roadmap/archive/`，archive/README.md 记录归档标准与清单，主 README 补归档惯例；新增 `evaluator-infra-load-races-2026-09-04.md` 正式登记 §8.3 四个竞态（caee9e7/73aa530）与 flake 判别模式。`plan-v2-dogfood-findings-2026-08-17`（无修复状态标记）与两份 freeze proposal 保留主目录 | harness `aa3c864` |
 | §9.3 web 侧 flake（platform `b664be1`） | `external-skill-detail.test.tsx` 文件级 120s（jsdom 下 15 用例 × beforeEach 完整启动 fastify server）；`project-information-panels.test.tsx` 仅对刻意渲染 500 行的 bounded-rendering 用例单独放宽 120s。2 CPU hog 满负载下两文件 31/31 通过 | platform `b664be1` |
 
-**§9.3 已知负载 flake 清单（PDA / export-local-cas / remote-content-upload-pg / external-skill-detail / bounded-rendering）至此全部清零。** 剩余开放项仅：`hunter-vitest-*` 残留临时目录的 EBUSY 竞态（§9.4，预算放宽后爆发频率预计下降）、§4.3 与 §6.4-3（roadmap 14 管辖）。
+**§9.3 已知负载 flake 清单（PDA / export-local-cas / remote-content-upload-pg / external-skill-detail / bounded-rendering）至此全部清零。** 同日第三笔（platform `b073337`）：§9.4 的 `hunter-vitest-*` 残留根 EBUSY 竞态收敛（owner 标记 + PID 存活检测 + 耐心重试，端到端验证死 PID 立即清扫/活 PID 保留/自身根正常删除）。**至此分析文档内全部可执行项与开放尾巴均已关闭；剩余仅 §4.3 与 §6.4-3（roadmap 14 管辖）。**
 
 ---
 
