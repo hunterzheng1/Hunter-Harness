@@ -33,10 +33,14 @@ export interface PlanPublishOptions {
  *   2. 基线自动派生：扫描 meta/publication-journals 里 committed journal，
  *      取最大 generation 的 manifest 作为 expected_baseline；attempt 低于
  *      plan-events.ndjson 里已发布 attempt 时自动递增（显式给出更高值时尊重）；
- *   3. 评审处理：finalize 报 PLAN_REVIEW_REQUIRED 时给出指引退出；
+ *   3. B2-2 收据保全：input 未透传 adversarial_review 但重建前磁盘 pack 有
+ *      （编排方记录评审后忘写回输入的常见缺口）→ 旧收据写回新 pack 并自动
+ *      续签（findings 未变时重绑 input_hash）；续签失败报
+ *      PLAN_REVIEW_BINDING_FAILED 带恢复动作；
+ *   4. 评审处理：finalize 报 PLAN_REVIEW_REQUIRED 时给出指引退出；
  *      报 PLAN_REVIEW_BINDING_FAILED（收据因重建过期）且 --renew-review 时
  *      自动续签后重试一次；
- *   4. finalize。
+ *   5. finalize。
  * 中间产物（plan-evidence.json）仍落盘可审计，但编排方只拥有一份输入文件。
  * 门禁语义不变：所有质量门、fail-closed 行为都由原命令原样执行。
  */
@@ -107,6 +111,22 @@ export async function runPlanPublish(
     const packPath = options.output ?? join(dirname(inputPath), "plan-evidence.json");
     const steps: Record<string, unknown> = {};
 
+    // B2-2：收据保全——input 未透传 adversarial_review 但重建前磁盘 pack 有时，
+    // 旧收据在 evidence-pack 重建后必然失效（input_hash 绑定 pack 内容）。先捕获，
+    // 重建后写回并自动续签，编排方不再需要"记录评审后把收据抄回输入"的纯仪式。
+    const declaredReview = naturalInput.adversarial_review;
+    let rescuedReceipt: Record<string, unknown> | undefined;
+    if (declaredReview === undefined) {
+      try {
+        const previous = JSON.parse(await readFile(packPath, "utf8")) as Record<string, unknown>;
+        if (isRecord(previous.adversarial_review)) {
+          rescuedReceipt = previous.adversarial_review;
+        }
+      } catch {
+        // 磁盘无旧 pack（首发）或不可读——无收据可保全
+      }
+    }
+
     // 步骤 1：evidence-pack
     const packCapture = captureStdout(dependencies);
     const packExit = await runPlanEvidencePack(
@@ -148,6 +168,32 @@ export async function runPlanPublish(
         baseline: baselineAdjusted ? { state: "present", ...derivedBaseline } : "declared",
         attempt_adjusted: attemptAdjusted ?? null
       };
+    }
+
+    // B2-2：收据保全——重建后的 pack 缺 adversarial_review 但磁盘旧 pack 有。
+    // 写回旧收据（此时 input_hash 必然过期）并立即用 review-record --renew 续签：
+    // findings 未变时重绑 input_hash，findings 变化（语义门禁 blocking）时
+    // 续签 fail closed，报 PLAN_REVIEW_BINDING_FAILED 带恢复动作。
+    if (rescuedReceipt !== undefined && pack.adversarial_review === undefined) {
+      pack.adversarial_review = rescuedReceipt;
+      await writeFile(packPath, JSON.stringify(pack));
+      const renewCapture = captureStdout(dependencies);
+      const renewExit = await runPlanReviewRecord(
+        { input: packPath, renew: true }, renewCapture.deps);
+      const renewResult = renewCapture.read();
+      steps.review_rescue = renewResult;
+      if (renewExit !== 0) {
+        dependencies.stdout(JSON.stringify({
+          ok: false,
+          code: "PLAN_REVIEW_BINDING_FAILED",
+          failed_step: "review-rescue",
+          steps,
+          recovery_action: "磁盘旧 pack 的评审收据因内容变化无法续签（findings 已变或收据不自洽）；" +
+            "用 plan review-record --input <pack> --receipt <draft> 重新评审，" +
+            "或把最新收据写回 --input 的 adversarial_review 字段后重跑 publish"
+        }) + "\n");
+        return 1;
+      }
     }
 
     // 步骤 3+4：finalize；收据过期且允许续签时自动续签后重试一次

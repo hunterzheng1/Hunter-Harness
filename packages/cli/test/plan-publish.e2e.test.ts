@@ -260,4 +260,83 @@ describe("HP-18：plan publish 编排收口（P3）", () => {
     expect(exit).toBe(1);
     expect(JSON.parse(out.join("")).code).toBe("PLAN_PUBLISH_USAGE");
   });
+
+  it("B2-2 收据保全：input 未透传收据但磁盘 pack 有 → 写回 + 自动续签，发布成功", async () => {
+    // 第一次：高风险发布停在 PLAN_REVIEW_REQUIRED，编排方在 pack 上记录收据
+    await writeInput(naturalInput({ assurance: true }));
+    const firstOut: string[] = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(firstOut))).toBe(1);
+
+    const packPath = join(root, "plan-evidence.json");
+    const draftPath = join(root, "draft.json");
+    await fs.writeFile(draftPath, JSON.stringify({ reviewer_identity: "inline:main-session" }));
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord(
+      { input: packPath, receipt: draftPath }, deps(recordOut))).toBe(0);
+
+    // B2-2 场景：编排方忘把收据写回输入，直接重跑 publish（无 --renew-review）
+    const secondOut: string[] = [];
+    const exit = await runPlanPublish({ input: inputPath }, deps(secondOut));
+    if (exit !== 0) console.error("RESCUE-OUT:", secondOut.join(""));
+    expect(exit).toBe(0);
+    const result = JSON.parse(secondOut.join("")) as {
+      code: string;
+      steps: { review_rescue: { code: string; renewed: boolean } };
+    };
+    expect(result.code).toBe("PLAN_PUBLISHED");
+    expect(result.steps.review_rescue.code).toBe("PLAN_REVIEW_RECEIPT_RENEWED");
+    expect(result.steps.review_rescue.renewed).toBe(true);
+    // 保全的收据落在新 pack 上（input_hash 已重绑）
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as {
+      adversarial_review: { input_hash: string };
+    };
+    expect(pack.adversarial_review.input_hash).toBe(result.steps.review_rescue.input_hash);
+  });
+
+  it("B2-2 收据保全：内容修订引入语义 blocking → 续签 fail closed，报 BINDING_FAILED 带恢复动作", async () => {
+    await writeInput(naturalInput({ assurance: true }));
+    const firstOut: string[] = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(firstOut))).toBe(1);
+
+    const packPath = join(root, "plan-evidence.json");
+    const draftPath = join(root, "draft.json");
+    await fs.writeFile(draftPath, JSON.stringify({ reviewer_identity: "inline:main-session" }));
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord(
+      { input: packPath, receipt: draftPath }, deps(recordOut))).toBe(0);
+
+    // 内容修订：新增用户已拒绝的决策节点且被任务引用 → 重建后语义投影带
+    // semantic.rejected.* blocking finding（原评审未覆盖），续签必须被拒
+    const revised = naturalInput({ assurance: true, goal: "编排收口端到端验证 v2" });
+    const rejectedNode = {
+      schema_version: 1,
+      decision_id: "decision:rejected-alt",
+      decision_version: 1,
+      type: "product_decision",
+      depends_on: [],
+      status: "resolved",
+      tradeoffs: [],
+      affected_behaviors: [],
+      evidence_refs: [],
+      resolution: "rejected",
+      resolved_by: "user",
+      resolved_at: "2026-09-10T00:00:00Z"
+    };
+    (revised as { decision_nodes?: unknown[] }).decision_nodes = [rejectedNode];
+    (revised.structured_input.tasks[0] as { decision_refs: string[] }).decision_refs =
+      ["decision:rejected-alt"];
+    await writeInput(revised);
+
+    const secondOut: string[] = [];
+    const exit = await runPlanPublish({ input: inputPath }, deps(secondOut));
+    expect(exit).toBe(1);
+    const result = JSON.parse(secondOut.join("")) as {
+      code: string; failed_step: string; recovery_action?: string;
+      steps: { review_rescue: { code: string } };
+    };
+    expect(result.code).toBe("PLAN_REVIEW_BINDING_FAILED");
+    expect(result.failed_step).toBe("review-rescue");
+    expect(result.steps.review_rescue.code).toBe("PLAN_REVIEW_RENEW_SEMANTIC_BLOCKED");
+    expect(result.recovery_action).toContain("review-record");
+  });
 });
