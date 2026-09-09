@@ -491,7 +491,12 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     });
     expect(exit).toBe(0);
     const stdout = JSON.parse(out.join("")) as { warnings?: string[] };
-    expect(stdout.warnings).toContain("phase_set_required_retained");
+    // B2-5 止血：告警带保留阶段明细（不再是无定位的裸码）
+    const retainedWarning = stdout.warnings?.find((item) =>
+      item.startsWith("phase_set_required_retained:"));
+    expect(retainedWarning).toBeDefined();
+    expect(retainedWarning).toContain("review");
+    expect(retainedWarning).toContain("configure-plan");
   });
 
   it("provenance 标注进 pack.context 且不进 stdout 之外的身份区", async () => {

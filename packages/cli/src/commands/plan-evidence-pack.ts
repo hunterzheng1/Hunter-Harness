@@ -1319,7 +1319,12 @@ export async function runPlanEvidencePack(
     await writeFile(options.output, JSON.stringify(pack));
     const warnings: string[] = [
       ...(fullFanout ? ["graph_density_full_fanout"] : []),
-      ...(requiredRetained.length > 0 ? ["phase_set_required_retained"] : []),
+      // B2-5 stopgap: WI-1 落地后移除（tier/mode 单一权威消除双轨后，
+      // configure-plan 的阶段省略不会再被 assurance 信号静默覆盖）
+      ...(requiredRetained.length > 0
+        ? [`phase_set_required_retained:${requiredRetained.join(",")}` +
+          `（configure-plan 省略的 ${requiredRetained.join("/")} 因 assurance 信号被保留）`]
+        : []),
       ...(scopeInherited.length > 0 ? [`approval_scope_inherited:${scopeInherited.join(",")}`] : []),
       ...(goalInherited.length > 0 ? [`approval_goal_inherited:${goalInherited.join(",")}`] : [])
     ];

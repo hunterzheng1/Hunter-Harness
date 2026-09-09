@@ -346,7 +346,7 @@ status: approved
 **派生视图的两条前置缺陷已接通**（2026-08，接通 ≠ 门禁权威切换，权威仍是 Python gate-policy）：
 
 1. `risk_signals` 不再是纯手填。`plan evidence-pack` 按 `structured_input.tasks[].affected_paths`（主源）与 `git status --porcelain --untracked-files=all`（次源）经 marker 表推断信号（与 `harness_gate.py` classify 同一张表），**与手填取并集**——推断是安全地板，手填不能删除推断项；逐条信号在 `pack.context.signal_provenance` 标注 `declared / inferred / declared+inferred`。
-2. `capabilities` 由命令真实探测：`is_git`（`rev-parse --is-inside-work-tree`）、`has_remote`（`git remote` 非空）、`uses_worktree`（`--git-dir` ≠ `--git-common-dir`，或 `machine.worktree_policy=required`）；探针不可用（非 git 目录/无 git）则全 false 并标注 `provenance: "unavailable"`。阶段 0.6 `configure-plan` 落的 `meta/gate-policy.json` `plannedPhases` 也会被读取（顶层 `plannedPhases` 为字符串数组才视为权威形状，v2 包装体/坏 JSON 一律回退派生），可选阶段照它取舍，required 阶段缺失时保留并在 stdout 告警 `phase_set_required_retained`，来源标注 `phase_set_source: gate-policy | derived`。
+2. `capabilities` 由命令真实探测：`is_git`（`rev-parse --is-inside-work-tree`）、`has_remote`（`git remote` 非空）、`uses_worktree`（`--git-dir` ≠ `--git-common-dir`，或 `machine.worktree_policy=required`）；探针不可用（非 git 目录/无 git）则全 false 并标注 `provenance: "unavailable"`。阶段 0.6 `configure-plan` 落的 `meta/gate-policy.json` `plannedPhases` 也会被读取（顶层 `plannedPhases` 为字符串数组才视为权威形状，v2 包装体/坏 JSON 一律回退派生），可选阶段照它取舍，required 阶段缺失时保留并在 stdout 告警 `phase_set_required_retained:<阶段列表>`（B2-5 止血：告警带保留阶段明细，说明 configure-plan 省略的阶段因 assurance 信号被保留），来源标注 `phase_set_source: gate-policy | derived`。
 
 **可推导字段省略（WI-4b，2026-09）**：`machine.capabilities`、`context.attempt`、`expected_baseline` 与 `risk_signals` 同法——省略即推荐写法，命令推导并回显：
 
