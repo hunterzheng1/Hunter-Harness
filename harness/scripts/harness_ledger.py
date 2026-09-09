@@ -3294,8 +3294,9 @@ def cmd_record_from_receipt(args: argparse.Namespace) -> int:
         diff_hash=None,
         applicability=None,
         applicability_reason=None,
-        scenario_ids=None,
-        scenario_receipt_file=None,
+        # B2-1：场景绑定透传（收据路径 + 场景绑定一次完成）。
+        scenario_ids=getattr(args, "scenario_ids", None),
+        scenario_receipt_file=getattr(args, "scenario_receipt_file", None),
         verbose=bool(getattr(args, "verbose", False)),
         json=as_json,
     )
@@ -4387,6 +4388,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--files",
         default=None,
         help="comma-separated explicit file paths (targeted runs; bypasses --profile-input)",
+    )
+    p_rfr.add_argument(
+        "--scenario-ids",
+        default=None,
+        help="comma-separated scenario IDs from scenario-manifest.json to bind to this entry (B2-1)",
+    )
+    p_rfr.add_argument(
+        "--scenario-receipt-file",
+        default=None,
+        help="UTF-8 JSON runner receipt proving declared/selected/collected/executed tests (B2-1)",
     )
     p_rfr.add_argument(
         "--verbose",

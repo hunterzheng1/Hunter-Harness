@@ -2637,6 +2637,8 @@ class RecordFromReceiptTests(unittest.TestCase):
         *,
         files: str | None = None,
         project: Path | None = None,
+        scenario_ids: str | None = None,
+        scenario_receipt_file: Path | None = None,
     ) -> tuple[int, dict | None, str]:
         from io import StringIO
 
@@ -2654,6 +2656,10 @@ class RecordFromReceiptTests(unittest.TestCase):
             argv += ["--files", files]
         if project:
             argv += ["--project", str(project)]
+        if scenario_ids:
+            argv += ["--scenario-ids", scenario_ids]
+        if scenario_receipt_file:
+            argv += ["--scenario-receipt-file", str(scenario_receipt_file)]
         buf = StringIO()
         err = io.StringIO()
         with redirect_stdout(buf), redirect_stderr(err):
@@ -2933,6 +2939,169 @@ class RecordFromReceiptTests(unittest.TestCase):
                 key for key, value in targets.items() if value.get("verification") == "unitTest"
             ]
             self.assertEqual(len(unit_targets), 1)
+
+    def test_scenario_ids_passthrough_binds_in_one_command(self) -> None:
+        """B2-1：收据路径 + 场景绑定一次完成（不再被迫二次 record）。
+
+        schemaVersion 1 manifest（试点 T4' 的实际形态）：--scenario-ids
+        透传进 cmd_record 的 C9 绑定路径，scenarioIds 落入 ledger 条目。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            project, change, src = self._setup_change(tmp)
+            (change / "meta").mkdir()
+            (change / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "scenarios": [
+                            {"id": "UT-001"},
+                            {"id": "UT-002"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            receipt_path = change / "evidence" / "receipts" / "unitTest.json"
+            receipt_path.write_text(
+                json.dumps(self._receipt_payload()), encoding="utf-8"
+            )
+
+            code, payload, _ = self._record_from_receipt(
+                change,
+                receipt_path,
+                files=str(src),
+                project=project,
+                scenario_ids="UT-001,UT-002",
+            )
+            self.assertEqual(code, 0, msg=payload)
+            entry = self._load_entry(change, "unitTest")
+            self.assertEqual(entry["scenarioIds"], ["UT-001", "UT-002"])
+            # v1 manifest 不要求 scenario receipt → 不写 scenarioReceipt
+            self.assertNotIn("scenarioReceipt", entry)
+
+    def test_scenario_receipt_file_passthrough_v2_manifest(self) -> None:
+        """B2-1：schemaVersion 2 manifest 时 receipt 强制校验语义不变。
+
+        --scenario-receipt-file 透传后走 validate_scenario_execution_receipt
+        全量校验（declared/selected/collected/executed 对账 + 覆盖推导），
+        与手工 record 完全同一份代码路径。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            project, change, src = self._setup_change(tmp)
+            (change / "meta").mkdir()
+            (change / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "scenarios": [
+                            {
+                                "id": "UT-001",
+                                "priority": "P1",
+                                "ownerPhase": "execute",
+                                "requiredEvidenceKind": "ledger",
+                                "executableTestId": "unit::ut1",
+                                "testFile": "tests/unit.spec.ts",
+                                "testTitle": "ut1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scenario_receipt = change / "runtime" / "scenario-receipt.json"
+            scenario_receipt.parent.mkdir(parents=True)
+            scenario_receipt.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "runner": {"name": "vitest"},
+                        "attempt": 1,
+                        "declared": ["unit::ut1"],
+                        "selected": ["unit::ut1"],
+                        "collected": [
+                            {
+                                "testId": "unit::ut1",
+                                "file": "tests/unit.spec.ts",
+                                "title": "ut1",
+                            }
+                        ],
+                        "executed": [
+                            {
+                                "testId": "unit::ut1",
+                                "file": "tests/unit.spec.ts",
+                                "title": "ut1",
+                                "attempt": 1,
+                                "status": "PASSED",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            receipt_path = change / "evidence" / "receipts" / "unitTest.json"
+            receipt_path.write_text(
+                json.dumps(self._receipt_payload()), encoding="utf-8"
+            )
+
+            code, payload, _ = self._record_from_receipt(
+                change,
+                receipt_path,
+                files=str(src),
+                project=project,
+                scenario_ids="UT-001",
+                scenario_receipt_file=scenario_receipt,
+            )
+            self.assertEqual(code, 0, msg=payload)
+            entry = self._load_entry(change, "unitTest")
+            self.assertEqual(entry["scenarioIds"], ["UT-001"])
+            self.assertEqual(entry["scenarioReceipt"]["runner"]["name"], "vitest")
+            self.assertEqual(entry["scenarioCoverage"]["passed"], ["UT-001"])
+
+    def test_v2_manifest_without_scenario_receipt_still_fails_closed(self) -> None:
+        """B2-1 透传不放松 fail-closed：v2 manifest + --scenario-ids 但缺
+        --scenario-receipt-file → SCENARIO_RECEIPT_REQUIRED，且不写 ledger。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            project, change, src = self._setup_change(tmp)
+            (change / "meta").mkdir()
+            (change / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "scenarios": [
+                            {
+                                "id": "UT-001",
+                                "priority": "P1",
+                                "ownerPhase": "execute",
+                                "requiredEvidenceKind": "ledger",
+                                "executableTestId": "unit::ut1",
+                                "testFile": "tests/unit.spec.ts",
+                                "testTitle": "ut1",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            receipt_path = change / "evidence" / "receipts" / "unitTest.json"
+            receipt_path.write_text(
+                json.dumps(self._receipt_payload()), encoding="utf-8"
+            )
+
+            code, payload, err = self._record_from_receipt(
+                change,
+                receipt_path,
+                files=str(src),
+                project=project,
+                scenario_ids="UT-001",
+            )
+            self.assertEqual(code, 1)
+            # cmd_record 的错误信封经 stderr 透传（record-from-receipt 契约）
+            envelope = json.loads(err)
+            self.assertEqual(envelope["code"], "SCENARIO_RECEIPT_REQUIRED")
+            self.assertFalse(
+                (change / "evidence" / "verification-ledger.json").is_file()
+            )
 
 
 class RenderReportTests(unittest.TestCase):
