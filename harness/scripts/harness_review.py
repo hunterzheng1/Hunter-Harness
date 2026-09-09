@@ -147,9 +147,21 @@ def validate_findings(doc: Any, *, require_ids: bool = False) -> list[str]:
 
 
 def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
+    # B2-6：缺 runId 时自动取当前 review run（events 里最近一轮 phase.start），
+    # 不再让调用方为拿 runId 被迫读 events 原文。显式给出的 runId 始终优先。
+    auto_filled_run_id = False
+    if not isinstance(doc.get("runId"), str) or not doc["runId"].strip():
+        current = _latest_review_run_id(change_dir)
+        if current is not None:
+            doc = {**doc, "runId": current}
+            auto_filled_run_id = True
     problems = validate_findings(doc)
     if problems:
-        return {"ok": False, "code": "FINDINGS_INVALID", "problems": problems}
+        result = {"ok": False, "code": "FINDINGS_INVALID", "problems": problems}
+        current = _latest_review_run_id(change_dir)
+        if current is not None:
+            result["currentRunId"] = current
+        return result
     run_id = doc["runId"]
     assigned: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -187,6 +199,8 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
     _write_json_atomic(out, payload)
     result = {"ok": True, "code": "FINDINGS_WRITTEN", "path": str(out),
               "count": len(assigned)}
+    if auto_filled_run_id:
+        result["runIdAutoFilled"] = run_id
     if directory_paths:
         result["warnings"] = [
             "以下 finding 的 path 是目录而非文件，知识候选生成时会整条跳过"

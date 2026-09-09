@@ -2633,6 +2633,8 @@ def validate_review_outputs_for_close(
             "code": "REVIEW_OUTPUTS_INVALID",
             "message": "评审结构化记录不完整或与当前轮次不一致。",
             "problems": problems,
+            # B2-6：当前轮 runId 随信封下发，恢复路径不再被迫读 events 原文
+            "currentRunId": run_id,
         }
     return {
         "ok": True,

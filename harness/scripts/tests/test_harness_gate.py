@@ -608,6 +608,8 @@ class HarnessGateTests(unittest.TestCase):
         self.assertTrue(
             any("id" in problem for problem in invalid["problems"]), invalid
         )
+        # B2-6：当前轮 runId 随信封下发，恢复路径不再被迫读 events 原文
+        self.assertEqual(invalid["currentRunId"], "review-run-1")
 
     def test_risk_classification_uses_change_worktree_root(self) -> None:
         worktree = self.project / ".worktrees" / "demo"

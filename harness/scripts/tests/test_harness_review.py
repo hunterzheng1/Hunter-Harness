@@ -227,6 +227,59 @@ class FindingsWriteTests(ReviewFixture):
         out_path = self.state_dir / "reports" / "review" / "review-findings.json"
         self.assertFalse(out_path.exists())
 
+    def test_write_findings_auto_fills_run_id_from_events(self) -> None:
+        """B2-6：缺 runId 时自动取当前 review run（events 最近一轮 phase.start）。"""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "events.ndjson").write_text(
+            json.dumps({
+                "type": "phase.start", "phase": "review", "run_id": "review-run-77",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        doc = self.sample_findings()
+        del doc["runId"]
+        result = review.write_findings(self.change_dir, doc)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["runIdAutoFilled"], "review-run-77")
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        written = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["runId"], "review-run-77")
+
+    def test_write_findings_explicit_run_id_wins_over_events(self) -> None:
+        """显式给出的 runId 始终优先，自动回填不覆盖。"""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "events.ndjson").write_text(
+            json.dumps({
+                "type": "phase.start", "phase": "review", "run_id": "review-run-77",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        result = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("runIdAutoFilled", result)
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        written = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["runId"], "review-run-1")
+
+    def test_write_findings_invalid_without_run_id_reports_current_run(self) -> None:
+        """B2-6：无 events 可回填且文档无效时，错误信封带 currentRunId（如有）。"""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "events.ndjson").write_text(
+            json.dumps({
+                "type": "phase.start", "phase": "review", "run_id": "review-run-88",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        doc = self.sample_findings()
+        del doc["runId"]
+        doc["findings"][0]["severity"] = "BOGUS"
+        result = review.write_findings(self.change_dir, doc)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "FINDINGS_INVALID")
+        self.assertEqual(result["currentRunId"], "review-run-88")
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        self.assertFalse(out_path.exists())
+
 
 class DispositionsTests(ReviewFixture):
     def _write_findings(self) -> dict:
