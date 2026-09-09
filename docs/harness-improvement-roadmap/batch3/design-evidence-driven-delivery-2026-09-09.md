@@ -81,6 +81,22 @@ scratch change 上验证 `harness_ledger.py record --verification apiTest
 要回答的问题中最独立于档位权威的一个——5 分钟探针替代整轮试点才能
 拿到的早发现价值。若路径缺失，记录为 B3-1 进待办池，不现场发明机制。
 
+**探针结果（2026-09-10，B3-1 已立项）**：路径半存在。
+① record 侧完整：`--applicability NOT_APPLICABLE` 被接受，落盘条目
+带嵌套 `applicability: {applicability, reason}` 且 v2 必填字段齐全
+（inputsHash/coverage/algorithmVersion 等）。
+② gate close 侧不认：`validate_ledger_entry_v2`
+（harness_gate.py:688）对 NOT_RUN 条目只认 evidence 以 `DEGRADED:`
+开头的降级路径，**完全不读 applicability 字段**——NOT_APPLICABLE
+记账在 phase_status=OK 下被 `VALIDATION_NOT_OK` 挡住（scratch 探针
+实证：missing 含 "status=NOT_RUN requires evidence starting with
+'DEGRADED: <reason>'"）。
+**B3-1（待办池）**：gate close 的 ledger 校验把 `applicability:
+NOT_APPLICABLE`（带 reason）纳入合法的关门形态——语义上 NOT_APPLICABLE
+比 DEGRADED 更强（声明验证不适用 vs 承认没跑），不应被迫伪装成降级。
+设计时需与 WI-1 的档位权威联动（apiTest 是否 required 由 tier 决定）。
+T5 补测时 apiTest 记账走 `DEGRADED: <reason>` 或真实执行，不依赖 B3-1。
+
 ### WI-1：tier/mode 单一权威（B2-5 结构性修复）
 
 **现状**：Python `harness_gate.py classify`（tier: fast/standard/full，
