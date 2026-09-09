@@ -3026,6 +3026,12 @@ def check_status(
                 {
                     "code": "unpushed-commits",
                     "message": f"unpushed commits:\n{out}",
+                    # B2-4：本地试点/无推送意图场景的文档化出路
+                    "recoveryAction": (
+                        "推送后重试：git push；"
+                        "或本地试点/无推送意图时解除上游绑定："
+                        "git branch --unset-upstream"
+                    ),
                 }
             )
             checks["commit_pushed"] = False

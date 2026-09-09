@@ -977,6 +977,69 @@ class StatusTests(unittest.TestCase):
             {item["code"] for item in result["warnings"]},
         )
 
+    def test_unpushed_commits_blocker_carries_unset_upstream_recovery_action(self) -> None:
+        """B2-4：unpushed-commits 阻断必须带文档化出路（推送或解除上游绑定）。"""
+        import os
+        import subprocess
+
+        project = self.tmp / "proj-unpushed"
+        change = project / ".harness" / "changes" / "unpushed-change"
+        change.mkdir(parents=True)
+        _seed_change_dir(change)
+        _write_json(change / "meta" / "worktree.json", {"requested": True, "created": True})
+        subprocess.run(["git", "init", "-q"], cwd=str(project), check=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        _write(project / "f.txt", "0\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=str(project), env=env, check=True)
+        base_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(project),
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # 假 upstream：先克隆 base（remote 只见 base），本地再前进 → @{u}..HEAD 非空
+        remote = self.tmp / "proj-remote.git"
+        subprocess.run(
+            ["git", "clone", "-q", "--bare", str(project), str(remote)], check=True
+        )
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(remote)], cwd=str(project), check=True
+        )
+        subprocess.run(
+            ["git", "fetch", "-q", "origin"], cwd=str(project), check=True
+        )
+        subprocess.run(
+            ["git", "branch", "--set-upstream-to=origin/master"],
+            cwd=str(project), check=True,
+        )
+        _write(project / "f.txt", "1\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=str(project), env=env, check=True)
+        change_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(project),
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        ledger = change / "evidence" / "verification-ledger.json"
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+        data["baseCommit"] = base_hash
+        data["mergeFinalHash"] = change_hash
+        ledger.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        result = ha.check_status(change, archive_intent="record-only")
+
+        unpushed = [
+            item for item in result["blockers"] if item["code"] == "unpushed-commits"
+        ]
+        self.assertEqual(len(unpushed), 1, msg=json.dumps(result["blockers"], ensure_ascii=False))
+        self.assertIn("git push", unpushed[0]["recoveryAction"])
+        self.assertIn("git branch --unset-upstream", unpushed[0]["recoveryAction"])
+        self.assertFalse(result["archivable"])
+
 
 class ManifestCompareExcludeTests(unittest.TestCase):
     def test_excludes_execution_log_and_events(self) -> None:
