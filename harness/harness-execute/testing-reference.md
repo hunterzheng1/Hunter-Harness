@@ -454,6 +454,11 @@ $results | ConvertTo-Json -Depth 4
 
 通用命令通过 `harness_test_runner.py exec` 托管；Python `unittest` 测试库通过 `harness_test_runner.py unittest` 逐文件执行。不得把“完整验证”解释为单解释器的裸 discovery，也不得同时启动两套同项目测试。
 
+**exec 超时与嵌套约束（B2-3）**：
+
+- `exec` 默认超时 300s（`DEFAULT_TIMEOUT_SECONDS`）。全量测试套件（数百用例级）通常超过该值，必须显式传 `--timeout-seconds 900`；超时返回 `TEST_COMMAND_TIMEOUT`，不得以裸命令重试。
+- `exec` 内部执行 Python 测试时直接调用 `python -m unittest discover`（或逐文件 `python -m unittest <module>`），**禁止嵌套调用 `harness_test_runner.py unittest`**——runner 持有基于项目绝对路径的单实例锁，嵌套调用必然触发 `TEST_RUN_ALREADY_ACTIVE` 自锁。
+
 ### 资源边界
 
 - `HARNESS_TEST_MAX_WORKERS` 默认且最高为 `2`，环境变量只能进一步调低。
