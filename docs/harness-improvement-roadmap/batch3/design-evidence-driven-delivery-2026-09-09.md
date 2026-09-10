@@ -131,6 +131,16 @@ ASSURANCE_SIGNALS）是两套独立裁决，信号表已对齐（risk-signal-inf
 
 ### WI-2：T5 补测（full 档完整流程）
 
+> **状态：已完成（2026-09-10）**。任务定义
+> `tasks/T5-workflow-policy-review-cadence.md`（workflow-policy riskTiers
+> reviewCadence 字段演进，shared-state marker 双端命中），采集报告
+> `collected/t5-full-tier-2026-09-10.md`。五门槛全部达成：流程维护 0.51 min
+> （对照 T4' 0.87 min）；apiTest DEGRADED 记账路径可用；WI-1 单一权威在
+> full 档真实计划上端到端验证（tier_source=mode-derived:assurance）。
+> 新发现 **B3-2（高）**：full 档阶段集权威链断裂（v2 快照缺 gate 字段 →
+> 回退 standard 工作副本 → review 被跳过），与 B3-1/B3-3 同属「full 档
+> 阶段与验证的权威链」设计主题。B2-5 stopgap 告警建议保留至 B3-2 修复。
+
 **前置**：WI-1 完成（full 档声明有单一权威后补测才对最终形态有效）。
 
 **任务定义**（沿 batch0 T5 模板改写）：
