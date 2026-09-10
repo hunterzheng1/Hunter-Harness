@@ -99,6 +99,15 @@ T5 补测时 apiTest 记账走 `DEGRADED: <reason>` 或真实执行，不依赖 
 
 ### WI-1：tier/mode 单一权威（B2-5 结构性修复）
 
+> **状态：已完成（2026-09-10）**。独立设计文档
+> `design-wi1-tier-mode-single-authority-2026-09-10.md`（含四项裁决记录），
+> 六步实施全部合入 main：①risk-signals.json 共享契约（a193123）②Python
+> 加载器 + fail-closed 回退（bbdf1d0）③sync 生成 TS 常量（a34a7fa）④
+> evidence-pack mode→tier 派生写回 + 工作副本同步（6eff029）⑤tier-mode-parity
+> 跨语言契约测试（c07eebd）⑥文档更新（本提交）。已知语义差异冻结在契约
+> 测试：docs-only Python 不降档 / contract-schema 仅 Python 侧。stopgap
+> 告警保留（移除条件：WI-2 验证 full 档完整流程后）。
+
 **现状**：Python `harness_gate.py classify`（tier: fast/standard/full，
 marker 表 full_markers）与 CLI `classifyPlan`（mode: quick/standard/assurance，
 ASSURANCE_SIGNALS）是两套独立裁决，信号表已对齐（risk-signal-inference.ts

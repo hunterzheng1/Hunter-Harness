@@ -2,8 +2,13 @@
 
 > 日期：2026-09-10
 >
-> 状态：**已裁决（2026-09-10）**。§0 四项建议经用户确认全部采纳，
-> 按 §4 六步实施（每步独立提交）。
+> 状态：**已完成（2026-09-10）**。§4 六步全部合入 main：
+> ①risk-signals.json（a193123）②Python 加载器（bbdf1d0）③sync 生成
+> TS 常量（a34a7fa）④mode→tier 派生写回（6eff029）⑤parity 契约测试
+> （c07eebd）⑥文档（本提交）。实施期发现（设计未预见）：
+> tierModeMap 需要反转视图（MODE_TIER_MAP）供 mode→tier 查表；
+> docs-only 在 Python 侧不降档（起步 standard 单调升级）是语义差异
+> 而非缺陷，契约测试冻结为已知差异①。
 >
 > 输入：batch3 设计 §2 WI-1 边界、B2-5 试点发现（T6' 实证
 > requiredRetained 静默覆盖）、快车道 B2-5 止血告警（61178f4）。
