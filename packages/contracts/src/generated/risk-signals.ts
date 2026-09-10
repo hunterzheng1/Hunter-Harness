@@ -55,6 +55,13 @@ export const TIER_MODE_MAP: Readonly<Record<string, string>> = {
   "full": "assurance"
 };
 
+/** TIER_MODE_MAP 的反转（mode → tier）。WI-1 方案 A：evidence-pack 由 mode 派生 tier。 */
+export const MODE_TIER_MAP: Readonly<Record<string, string>> = {
+  "quick": "fast",
+  "standard": "standard",
+  "assurance": "full"
+};
+
 /** 契约 schema 路径：改这些文件 = 契约变更，应升 full 档评审。 */
 export const CONTRACT_SCHEMA_PATHS: readonly string[] = [
   "harness/scripts/harness_archive.py", "harness/scripts/harness_change.py", "harness/scripts/harness_efficiency.py", "harness/scripts/harness_events.py", "harness/scripts/harness_fixback.py", "harness/scripts/harness_gate.py", "harness/scripts/harness_ledger.py", "harness/scripts/harness_state.py"

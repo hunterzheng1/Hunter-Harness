@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson, isValidPlanRunId, LEGACY_PLAN_PHASE_ALIASES } from "@hunter-harness/contracts";
+import { canonicalJson, isValidPlanRunId, LEGACY_PLAN_PHASE_ALIASES, MODE_TIER_MAP } from "@hunter-harness/contracts";
 
 import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
 import { readFile, writeFile } from "node:fs/promises";
@@ -1221,27 +1221,41 @@ export async function runPlanEvidencePack(
       approval_package, approval_package_input, approval_receipt, structured_input
     } as unknown as HumanArtifactBuildInput;
     const human = model.buildHumanArtifacts(human_input);
-    // 门禁权威快照：classify 在 0.5 落的 DAG/tier/source 与 0.6 计划一并并入
+    // WI-1（方案 A）：tier 由 profile.mode 经共享 tierModeMap 派生——单一权威
+    // 是 mode（classifyPlan），tier 不再取 classify 工作副本的独立裁决。
+    // 例外：工作副本带 tierOverride（classify --tier 的人工升档）时透传
+    // override tier，人工裁决优先于派生（设计 §3.4）。
+    const tierOverride = gateSnapshot !== undefined && isRecord(gateSnapshot.document.tierOverride)
+      ? gateSnapshot.document.tierOverride
+      : undefined;
+    const overrideTier = tierOverride !== undefined && typeof tierOverride.tier === "string"
+      ? tierOverride.tier
+      : undefined;
+    const derivedTier = MODE_TIER_MAP[profile.mode];
+    const effectiveTier = overrideTier ?? derivedTier;
+    const tierSource = overrideTier !== undefined
+      ? "override"
+      : `mode-derived:${profile.mode}`;
+    // 门禁权威快照：classify 在 0.5 落的 DAG 与 0.6 计划一并并入
     // v2 gate_policy content（白名单键，哈希绑定）——gate 侧由此可优先读
     // plan-profile.json，工作副本（meta/gate-policy.json）降级为回退。
-    const gatePolicyOverlay = gateSnapshot === undefined
-      ? undefined
-      : {
-          ...(typeof gateSnapshot.document.tier === "string"
-            ? { tier: gateSnapshot.document.tier } : {}),
-          ...(typeof gateSnapshot.document.source === "string"
-            ? { source: gateSnapshot.document.source } : {}),
-          ...(gateSnapshot.document.requiredGateDag !== undefined
-            ? { required_gate_dag: gateSnapshot.document.requiredGateDag } : {}),
-          ...(canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) !== undefined
-            ? { required_validations_by_phase:
-                canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) }
-            : {}),
-          phase_set_source: phaseSetSource
-        };
+    // tier/source 始终由 mode 派生写入（WI-1 前只在快照存在时透传 classify 的
+    // 独立 tier——双轨矛盾的根源）。
+    const gatePolicyOverlay = {
+      tier: effectiveTier,
+      source: tierSource,
+      ...(gateSnapshot !== undefined && gateSnapshot.document.requiredGateDag !== undefined
+        ? { required_gate_dag: gateSnapshot.document.requiredGateDag } : {}),
+      ...(gateSnapshot !== undefined
+        && canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) !== undefined
+        ? { required_validations_by_phase:
+            canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) }
+        : {}),
+      phase_set_source: phaseSetSource
+    };
     const machine_input = { schema_version: 2 as const, profile, phase_set,
       capabilities: effectiveCapabilities as never, worktree_policy: input.machine.worktree_policy as never,
-      ...(gatePolicyOverlay === undefined ? {} : { gate_policy_overlay: gatePolicyOverlay }) };
+      gate_policy_overlay: gatePolicyOverlay };
     const machine = model.deriveMachineArtifacts({ ...machine_input, human_input, human });
     const detail = model.deriveImplementationDetail({
       // HP-06：detail mode 唯一事实源是 profile.mode（分类结果）；自然输入的 mode 字段已弃用
@@ -1317,6 +1331,44 @@ export async function runPlanEvidencePack(
         : { adversarial_review: input.adversarial_review })
     };
     await writeFile(options.output, JSON.stringify(pack));
+    // WI-1 §3.1 工作副本同步：把 mode 派生的 tier/source 写回
+    // meta/gate-policy.json（仅当文件存在且 change 未发布——已发布的
+    // plan-profile.json 是权威，工作副本改写本身就是异常，P1-1 同语义）。
+    // 同步消除 B2-5 实证的矛盾并存：工作副本 tier=standard 与 v2 快照
+    // tier=full 不再可能同时出现。
+    let workingCopySynced = false;
+    const workingPolicyPath = join(
+      dependencies.cwd, ".harness", "changes", input.change_key, "meta", "gate-policy.json");
+    const publishedProfilePath = join(
+      dependencies.cwd, ".harness", "changes", input.change_key, "meta", "plan-profile.json");
+    let workingPolicyExists = false;
+    try {
+      await readFile(workingPolicyPath, "utf8");
+      workingPolicyExists = true;
+    } catch {
+      workingPolicyExists = false;
+    }
+    let published = false;
+    try {
+      await readFile(publishedProfilePath, "utf8");
+      published = true;
+    } catch {
+      published = false;
+    }
+    if (workingPolicyExists && !published) {
+      try {
+        const working = JSON.parse(await readFile(workingPolicyPath, "utf8")) as Record<string, unknown>;
+        if (isRecord(working)) {
+          working.tier = effectiveTier;
+          working.source = tierSource;
+          await writeFile(workingPolicyPath, JSON.stringify(working, null, 2) + "\n");
+          workingCopySynced = true;
+        }
+      } catch {
+        // 工作副本不可读/不可写：不阻塞 pack 构建（staged 快照已带 tier），
+        // 矛盾窗口由 stopgap 告警兜底。
+      }
+    }
     const warnings: string[] = [
       ...(fullFanout ? ["graph_density_full_fanout"] : []),
       // B2-5 stopgap: WI-1 落地后移除（tier/mode 单一权威消除双轨后，
@@ -1350,6 +1402,10 @@ export async function runPlanEvidencePack(
       publication_intent_id: plan.publication_intent_id,
       approval_receipt_id: approval_receipt.receipt_id,
       phase_set_source: phaseSetSource,
+      // WI-1：mode→tier 派生结果与来源（审计可见；override 透传时 source=override）
+      tier: effectiveTier,
+      tier_source: tierSource,
+      working_copy_synced: workingCopySynced,
       capabilities_provenance: capabilitiesProvenance,
       signal_provenance: signalInference.provenance,
       capability_provenance: capabilityInference.provenance,

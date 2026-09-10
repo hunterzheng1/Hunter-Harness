@@ -527,9 +527,11 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     const gatePolicy = (pack.trusted as unknown as {
       machine: { gate_policy: { content: Record<string, unknown> } }
     }).machine.gate_policy;
-    // 权威切换（2026-08）：v2 产物自带门禁字段，gate 无需再读工作副本
+    // 权威切换（2026-08）：v2 产物自带门禁字段，gate 无需再读工作副本。
+    // WI-1（方案 A）：tier 由 mode 派生（不再透传 classify 的独立裁决），
+    // source 标注派生来源——classify 工作副本的 source 语义已被取代。
     expect(gatePolicy.content.tier).toBe("standard");
-    expect(gatePolicy.content.source).toBe("default-standard");
+    expect(gatePolicy.content.source).toBe("mode-derived:standard");
     expect(gatePolicy.content.required_gate_dag).toEqual(pythonPolicy.requiredGateDag);
     expect(gatePolicy.content.required_validations_by_phase)
       .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
@@ -549,5 +551,83 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     }).machine.gate_policy;
     expect(gatePolicy.content.required_validations_by_phase)
       .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+  });
+
+  it("WI-1：无 gate-policy.json 时 tier 仍由 mode 派生写入 v2 快照", async () => {
+    const { pack } = await packWithGatePolicy(undefined);
+    const gatePolicy = (pack.trusted as unknown as {
+      machine: { gate_policy: { content: Record<string, unknown> } }
+    }).machine.gate_policy;
+    // naturalInput 的信号（production_code/cross_file）→ standard mode → standard tier
+    expect(gatePolicy.content.tier).toBe("standard");
+    expect(gatePolicy.content.source).toBe("mode-derived:standard");
+  });
+
+  it("WI-1：assurance 信号 → tier=full（mode 派生，与 classify 独立裁决无关）", async () => {
+    const natural = naturalInput() as { risk_signals: string[] };
+    natural.risk_signals = ["security"];
+    const inputPath = join(root, "natural-full.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "p.json") }, {
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(join(root, "p.json"), "utf8")) as {
+      trusted: { machine: { gate_policy: { content: Record<string, unknown> } } };
+    };
+    expect(pack.trusted.machine.gate_policy.content.tier).toBe("full");
+    expect(pack.trusted.machine.gate_policy.content.source).toBe("mode-derived:assurance");
+  });
+
+  it("WI-1：tierOverride（classify --tier 人工升档）透传不覆盖", async () => {
+    const { pack } = await packWithGatePolicy({
+      schemaVersion: 1,
+      tier: "full",
+      source: "override",
+      plannedPhases: ["plan", "execute", "submit", "archive"],
+      tierOverride: { tier: "full", by: "user", at: "2026-09-10T00:00:00+08:00" }
+    });
+    const gatePolicy = (pack.trusted as unknown as {
+      machine: { gate_policy: { content: Record<string, unknown> } }
+    }).machine.gate_policy;
+    // naturalInput 信号是 standard 档，但 override full 优先于 mode 派生
+    expect(gatePolicy.content.tier).toBe("full");
+    expect(gatePolicy.content.source).toBe("override");
+  });
+
+  it("WI-1：工作副本同步——未发布时 tier/source 写回 meta/gate-policy.json", async () => {
+    await packWithGatePolicy({
+      schemaVersion: 1,
+      tier: "standard",
+      source: "default-standard",
+      plannedPhases: ["plan", "execute", "submit", "archive"]
+    });
+    const working = JSON.parse(await fs.readFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"), "utf8"
+    )) as Record<string, unknown>;
+    expect(working.tier).toBe("standard");
+    expect(working.source).toBe("mode-derived:standard");
+    // 其余字段（plannedPhases 等）不被触碰
+    expect(working.plannedPhases).toEqual(["plan", "execute", "submit", "archive"]);
+  });
+
+  it("WI-1：已发布 change 的工作副本不被改写（P1-1 同语义）", async () => {
+    await fs.writeFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "plan-profile.json"),
+      JSON.stringify({ artifact_type: "gate_policy", content: {} })
+    );
+    const { stdout } = await packWithGatePolicy({
+      schemaVersion: 1,
+      tier: "standard",
+      source: "default-standard",
+      plannedPhases: ["plan", "execute", "submit", "archive"]
+    });
+    const working = JSON.parse(await fs.readFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"), "utf8"
+    )) as Record<string, unknown>;
+    // plan-profile.json 存在 = 已发布：工作副本保持 classify 原样
+    expect(working.source).toBe("default-standard");
+    expect(stdout.working_copy_synced).toBe(false);
   });
 });

@@ -162,6 +162,11 @@ export const TIER_MODE_MAP: Readonly<Record<string, string>> = {
 ${tierModeEntries.join(",\n")}
 };
 
+/** TIER_MODE_MAP 的反转（mode → tier）。WI-1 方案 A：evidence-pack 由 mode 派生 tier。 */
+export const MODE_TIER_MAP: Readonly<Record<string, string>> = {
+${Object.entries(contract.tierModeMap).map(([tier, mode]) => `  ${JSON.stringify(mode)}: ${JSON.stringify(tier)}`).join(",\n")}
+};
+
 /** 契约 schema 路径：改这些文件 = 契约变更，应升 full 档评审。 */
 export const CONTRACT_SCHEMA_PATHS: readonly string[] = [
   ${schemaPaths}
