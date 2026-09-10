@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 
+import {
+  ASSURANCE_RISK_SIGNALS,
+  QUICK_RISK_SIGNALS,
+  STANDARD_RISK_SIGNALS
+} from "@hunter-harness/contracts";
+
 import type {
   OmittedPlanPhase,
   PlanMode,
@@ -31,17 +37,11 @@ export function stableHash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(json).digest("hex")}`;
 }
 
-const ASSURANCE_SIGNALS = new Set<PlanRiskSignal>([
-  "artifact_protocol", "auth", "breaking_contract", "concurrency", "delete",
-  "irreversible_operation", "migration", "payment", "permission", "security",
-  "shared_state"
-]);
-
-const STANDARD_SIGNALS = new Set<PlanRiskSignal>([
-  "api_change", "cross_file", "production_code", "user_visible_behavior"
-]);
-
-const QUICK_SIGNALS = new Set<PlanRiskSignal>(["docs_only", "narrow_fix"]);
+// WI-1：信号集单一权威是 harness/contracts/risk-signals.json，经 sync 生成
+// @hunter-harness/contracts 的常量导入（消除与 Python 侧的移植漂移面）。
+const ASSURANCE_SIGNALS: ReadonlySet<PlanRiskSignal> = new Set(ASSURANCE_RISK_SIGNALS);
+const STANDARD_SIGNALS: ReadonlySet<PlanRiskSignal> = new Set(STANDARD_RISK_SIGNALS);
+const QUICK_SIGNALS: ReadonlySet<PlanRiskSignal> = new Set(QUICK_RISK_SIGNALS);
 
 export interface PlanModePolicy {
   readonly mode: PlanMode;

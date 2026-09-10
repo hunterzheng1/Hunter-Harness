@@ -7,6 +7,7 @@ export * from "./errors.js";
 export * from "./execution.js";
 export * from "./external-skill.js";
 export * from "./file-policy.js";
+export * from "./generated/risk-signals.js";
 export * from "./fix.js";
 export * from "./knowledge.js";
 export * from "./knowledge-query-http.js";

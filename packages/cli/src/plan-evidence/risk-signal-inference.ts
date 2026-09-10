@@ -14,6 +14,8 @@
 
 import type { PlanRiskSignal } from "@hunter-harness/core";
 
+import { FULL_RISK_MARKERS } from "@hunter-harness/contracts";
+
 export interface SignalProvenance {
   readonly signal: PlanRiskSignal;
   readonly source: "declared" | "inferred" | "declared+inferred";
@@ -23,17 +25,6 @@ export interface InferredRiskSignals {
   readonly effective: readonly PlanRiskSignal[];
   readonly provenance: readonly SignalProvenance[];
 }
-
-/** 与 harness_gate.py:1468-1476 同一 marker 表（TS 枚举为 snake_case）。 */
-const FULL_MARKERS: Partial<Record<PlanRiskSignal, readonly string[]>> = {
-  auth: ["auth", "token", "credential", "permission"],
-  security: ["security", "secret", "crypto"],
-  migration: ["migration", "migrate", "/sql/", ".sql"],
-  concurrency: ["concurr", "lock", "lease", "transaction"],
-  artifact_protocol: ["artifact", "protocol", "manifest", "baseline"],
-  shared_state: ["shared", "state/", "workflow-policy"],
-  delete: ["delete", "purge", "archive"]
-};
 
 const DOC_SUFFIXES = [".md", ".txt", ".rst"] as const;
 
@@ -57,7 +48,7 @@ export function parsePorcelainPaths(output: string): string[] {
 function inferFromPaths(paths: readonly string[]): PlanRiskSignal[] {
   const lowered = paths.map((path) => path.toLowerCase()).join("\n");
   const signals: PlanRiskSignal[] = [];
-  for (const [signal, markers] of Object.entries(FULL_MARKERS)) {
+  for (const [signal, markers] of Object.entries(FULL_RISK_MARKERS)) {
     if (markers !== undefined && markers.some((marker) => lowered.includes(marker))) {
       signals.push(signal as PlanRiskSignal);
     }

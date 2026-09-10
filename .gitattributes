@@ -19,3 +19,6 @@ packages/contracts/openapi/hunter-harness-v1.yaml.sha256 text eol=lf
 packages/contracts/src/content-sync.ts text eol=lf
 packages/contracts/test/fixtures/content-sync-v0-legacy.json text eol=lf
 packages/contracts/test/fixtures/content-sync-v1-current.json text eol=lf
+
+# WI-1 generated risk-signals projection must stay byte-stable across platforms.
+packages/contracts/src/generated/** text eol=lf
