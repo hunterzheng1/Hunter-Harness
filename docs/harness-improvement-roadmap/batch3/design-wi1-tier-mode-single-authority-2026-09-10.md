@@ -2,9 +2,8 @@
 
 > 日期：2026-09-10
 >
-> 状态：**设计草案，待用户裁决**。本文是 batch3 设计
-> （`design-evidence-driven-delivery-2026-09-09.md` §2 WI-1）的展开，
-> 不构成实施授权。
+> 状态：**已裁决（2026-09-10）**。§0 四项建议经用户确认全部采纳，
+> 按 §4 六步实施（每步独立提交）。
 >
 > 输入：batch3 设计 §2 WI-1 边界、B2-5 试点发现（T6' 实证
 > requiredRetained 静默覆盖）、快车道 B2-5 止血告警（61178f4）。
@@ -18,6 +17,11 @@
 | 2 | 共享信号表放哪：harness/contracts/ 新 JSON vs packages/contracts/src/ 新 TS 常量 | **harness/contracts/risk-signals.json（Python 侧权威位置，TS 经 sync 生成** | 见 §3.2——marker 表的原始权威在 Python（harness_gate.py:1518），TS 是移植方（risk-signal-inference.ts 注释自认）；JSON 放 Python 权威位置 + sync 生成 TS，与 workflow-data-harness 的既有 sync 链路同构 |
 | 3 | 历史在途 change 的 gate-policy 是否回写 | **不回写（读时兼容）** | batch3 设计 §2 WI-1 边界已定；回写会让 P1-1 写保护（classify 拒写已发布 change）复杂化 |
 | 4 | tier→mode 映射表是否进共享 JSON | **进（tier_mode_map 键）** | 映射与信号表同属「双端必须一致」的分类契约，分开存放会再造一个漂移面 |
+
+**裁决记录**：2026-09-10 用户确认四项建议值（①方案 A：evidence-pack
+由 mode 派生 tier 写回；②共享表放 harness/contracts/risk-signals.json，
+TS 经 sync 生成；③历史在途 change 不回写，读时兼容；④tier_mode_map
+进共享 JSON）。自本记录起按 §4 实施。
 
 ## 1. 现状：双轨的精确形状
 

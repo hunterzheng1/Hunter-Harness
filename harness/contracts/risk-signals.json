@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "description": "风险信号与档位映射的单一权威（WI-1）。双端（Python harness_gate.py / TS plan-classification）从此文件加载，消除移植漂移面。键名统一 kebab-case（Python 侧现形）；TS 经 sync 生成 snake_case 常量。内容冻结自 2026-09 现状：fullMarkers 与 contractSchemaPaths 冻结自 harness_gate.py:1518-1526/:1409-1418，assurance/standard/quick 信号集冻结自 packages/core/src/plan-classification/stable.ts:34-44（snake_case 转 kebab-case）。改本文件 = 契约变更（Python 侧命中 contractSchemaPaths 语义应升 full 档评审）。",
+  "fullMarkers": {
+    "auth": ["auth", "token", "credential", "permission"],
+    "security": ["security", "secret", "crypto"],
+    "migration": ["migration", "migrate", "/sql/", ".sql"],
+    "concurrency": ["concurr", "lock", "lease", "transaction"],
+    "artifact-protocol": ["artifact", "protocol", "manifest", "baseline"],
+    "shared-state": ["shared", "state/", "workflow-policy"],
+    "delete": ["delete", "purge", "archive"]
+  },
+  "assuranceSignals": [
+    "artifact-protocol",
+    "auth",
+    "breaking-contract",
+    "concurrency",
+    "delete",
+    "irreversible-operation",
+    "migration",
+    "payment",
+    "permission",
+    "security",
+    "shared-state"
+  ],
+  "standardSignals": [
+    "api-change",
+    "cross-file",
+    "production-code",
+    "user-visible-behavior"
+  ],
+  "quickSignals": ["docs-only", "narrow-fix"],
+  "tierModeMap": {
+    "fast": "quick",
+    "standard": "standard",
+    "full": "assurance"
+  },
+  "contractSchemaPaths": [
+    "harness/scripts/harness_archive.py",
+    "harness/scripts/harness_change.py",
+    "harness/scripts/harness_efficiency.py",
+    "harness/scripts/harness_events.py",
+    "harness/scripts/harness_fixback.py",
+    "harness/scripts/harness_gate.py",
+    "harness/scripts/harness_ledger.py",
+    "harness/scripts/harness_state.py"
+  ]
+}
