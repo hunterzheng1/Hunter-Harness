@@ -64,14 +64,10 @@ TASK_REL = Path("meta") / "task.json"
 TASK_PHASE = "task"
 # 轻任务入口接受的档位；full 必须走完整流程（用户确认 2026-09-07）。
 ACCEPTED_TIERS = ("fast", "standard")
+# WI-1：触发 full 档拒绝的信号集从共享契约派生（risk-signals.json 的
+# fullMarkers 键集 + gate 侧独立追加的 contract-schema），消除第三份漂移面。
 FULL_MARKERS = (
-    "auth",
-    "security",
-    "migration",
-    "concurrency",
-    "artifact-protocol",
-    "shared-state",
-    "delete",
+    *tuple(sorted(hg._load_risk_signals_contract()["fullMarkers"])),
     "contract-schema",
 )
 # 档位严格度排序：begin --tier 声明的下限（floor）语义用——声明的档位

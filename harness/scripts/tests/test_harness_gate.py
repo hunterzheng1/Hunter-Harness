@@ -35,6 +35,70 @@ policy = load_module("harness_workflow_policy", "harness_workflow_policy.py")
 hpf = gate.hpf
 
 
+class RiskSignalsContractTests(unittest.TestCase):
+    """WI-1 步骤 2：共享契约加载器（risk-signals.json）的行为冻结。"""
+
+    def test_contract_loads_from_json_without_fallback(self) -> None:
+        contract = gate._load_risk_signals_contract()
+        self.assertFalse(contract["fallback"])
+        self.assertEqual(
+            sorted(contract["fullMarkers"]),
+            ["artifact-protocol", "auth", "concurrency", "delete",
+             "migration", "security", "shared-state"],
+        )
+        self.assertIn(
+            "harness/scripts/harness_gate.py", contract["contractSchemaPaths"]
+        )
+        self.assertEqual(gate.CONTRACT_SCHEMA_PATHS, contract["contractSchemaPaths"])
+
+    def test_missing_file_falls_back_to_builtin_copy(self) -> None:
+        original_path = gate._RISK_SIGNALS_CONTRACT_PATH
+        original_cache = gate._risk_signals_contract_cache
+        gate._RISK_SIGNALS_CONTRACT_PATH = (
+            Path(tempfile.gettempdir()) / "nonexistent-risk-signals.json"
+        )
+        gate._risk_signals_contract_cache = None
+        try:
+            contract = gate._load_risk_signals_contract()
+            self.assertTrue(contract["fallback"])
+            self.assertEqual(
+                contract["fullMarkers"], gate._FALLBACK_FULL_MARKERS
+            )
+            self.assertEqual(
+                contract["contractSchemaPaths"],
+                gate._FALLBACK_CONTRACT_SCHEMA_PATHS,
+            )
+        finally:
+            gate._RISK_SIGNALS_CONTRACT_PATH = original_path
+            gate._risk_signals_contract_cache = original_cache
+
+    def test_bad_json_falls_back_to_builtin_copy(self) -> None:
+        original_path = gate._RISK_SIGNALS_CONTRACT_PATH
+        original_cache = gate._risk_signals_contract_cache
+        bad = Path(tempfile.mktemp(suffix=".json"))
+        bad.write_text("{not json", encoding="utf-8")
+        gate._RISK_SIGNALS_CONTRACT_PATH = bad
+        gate._risk_signals_contract_cache = None
+        try:
+            contract = gate._load_risk_signals_contract()
+            self.assertTrue(contract["fallback"])
+        finally:
+            bad.unlink(missing_ok=True)
+            gate._RISK_SIGNALS_CONTRACT_PATH = original_path
+            gate._risk_signals_contract_cache = original_cache
+
+    def test_builtin_fallback_matches_json_content(self) -> None:
+        """内置副本与 JSON 逐值一致（漂移在测试期暴露，不静默）。"""
+        contract = gate._load_risk_signals_contract()
+        self.assertEqual(
+            {k: list(v) for k, v in gate._FALLBACK_FULL_MARKERS.items()},
+            {k: list(v) for k, v in contract["fullMarkers"].items()},
+        )
+        self.assertEqual(
+            gate._FALLBACK_CONTRACT_SCHEMA_PATHS, contract["contractSchemaPaths"]
+        )
+
+
 class HarnessGateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.project = Path(tempfile.mkdtemp(prefix="harness-gate-project-"))

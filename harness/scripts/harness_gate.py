@@ -1402,11 +1402,24 @@ def _apply_required_gate_contract(
     return result
 
 
-# P12 契约文件清单：这些文件的输出 schema 被跨语言/跨模块消费（TS CLI、
-# 其他 harness 脚本），变更它们 = 契约变更，必须升 full 档。精确路径匹配
-# （非子串），文件改名/迁移时需同步维护本清单（同
-# PYTHON_TEST_MODULES_BY_SOURCE 约定）。权威来源是这里，不是 workflow-policy。
-CONTRACT_SCHEMA_PATHS = frozenset({
+# WI-1：风险信号契约的单一权威是 harness/contracts/risk-signals.json
+# （fullMarkers/assurance/standard/quick 信号集/tierModeMap/contractSchemaPaths）。
+# 加载失败（缺失/坏 JSON/schema 不符）时 fail-closed 回退内置副本——副本与
+# JSON 的一致性由契约测试校验（tier-mode-parity），漂移会在测试期暴露而不是
+# 运行期静默。改 JSON = 契约变更（JSON 自身的 description 声明了这一点）。
+_RISK_SIGNALS_CONTRACT_PATH = SCRIPTS_DIR.parent / "contracts" / "risk-signals.json"
+
+# 内置副本（冻结自 risk-signals.json schemaVersion 1；fail-closed 回退用）
+_FALLBACK_FULL_MARKERS: dict[str, tuple[str, ...]] = {
+    "auth": ("auth", "token", "credential", "permission"),
+    "security": ("security", "secret", "crypto"),
+    "migration": ("migration", "migrate", "/sql/", ".sql"),
+    "concurrency": ("concurr", "lock", "lease", "transaction"),
+    "artifact-protocol": ("artifact", "protocol", "manifest", "baseline"),
+    "shared-state": ("shared", "state/", "workflow-policy"),
+    "delete": ("delete", "purge", "archive"),
+}
+_FALLBACK_CONTRACT_SCHEMA_PATHS = frozenset({
     "harness/scripts/harness_archive.py",
     "harness/scripts/harness_change.py",
     "harness/scripts/harness_efficiency.py",
@@ -1416,6 +1429,66 @@ CONTRACT_SCHEMA_PATHS = frozenset({
     "harness/scripts/harness_ledger.py",
     "harness/scripts/harness_state.py",
 })
+
+_risk_signals_contract_cache: dict[str, Any] | None = None
+
+
+def _load_risk_signals_contract() -> dict[str, Any]:
+    """加载共享风险信号契约（模块级缓存）。
+
+    返回 {"fullMarkers": {...}, "contractSchemaPaths": frozenset, ...}；
+    任何读取/解析/形状问题都回退内置副本并标注 fallback=True。
+    """
+    global _risk_signals_contract_cache
+    if _risk_signals_contract_cache is not None:
+        return _risk_signals_contract_cache
+    contract: dict[str, Any] | None = None
+    try:
+        raw = json.loads(
+            _RISK_SIGNALS_CONTRACT_PATH.read_text(encoding="utf-8")
+        )
+        if (
+            isinstance(raw, dict)
+            and raw.get("schemaVersion") == 1
+            and isinstance(raw.get("fullMarkers"), dict)
+            and isinstance(raw.get("contractSchemaPaths"), list)
+            and all(isinstance(p, str) for p in raw["contractSchemaPaths"])
+        ):
+            markers: dict[str, tuple[str, ...]] = {}
+            valid = True
+            for signal, marker_list in raw["fullMarkers"].items():
+                if (
+                    not isinstance(signal, str)
+                    or not isinstance(marker_list, list)
+                    or not all(isinstance(m, str) for m in marker_list)
+                ):
+                    valid = False
+                    break
+                markers[signal] = tuple(marker_list)
+            if valid:
+                contract = {
+                    "fullMarkers": markers,
+                    "contractSchemaPaths": frozenset(raw["contractSchemaPaths"]),
+                    "fallback": False,
+                }
+    except (OSError, json.JSONDecodeError):
+        contract = None
+    if contract is None:
+        contract = {
+            "fullMarkers": _FALLBACK_FULL_MARKERS,
+            "contractSchemaPaths": _FALLBACK_CONTRACT_SCHEMA_PATHS,
+            "fallback": True,
+        }
+    _risk_signals_contract_cache = contract
+    return contract
+
+
+# P12 契约文件清单：这些文件的输出 schema 被跨语言/跨模块消费（TS CLI、
+# 其他 harness 脚本），变更它们 = 契约变更，必须升 full 档。精确路径匹配
+# （非子串），文件改名/迁移时需同步维护（同
+# PYTHON_TEST_MODULES_BY_SOURCE 约定）。权威来源是
+# harness/contracts/risk-signals.json（WI-1 起双端共享），不再是本文件字面量。
+CONTRACT_SCHEMA_PATHS = _load_risk_signals_contract()["contractSchemaPaths"]
 
 
 def classify_risk(
@@ -1515,15 +1588,8 @@ def classify_risk(
             set(capabilities) | set(_diff_capabilities(product_paths))
         )
         lowered = "\n".join(product_paths).lower()
-        full_markers = {
-            "auth": ("auth", "token", "credential", "permission"),
-            "security": ("security", "secret", "crypto"),
-            "migration": ("migration", "migrate", "/sql/", ".sql"),
-            "concurrency": ("concurr", "lock", "lease", "transaction"),
-            "artifact-protocol": ("artifact", "protocol", "manifest", "baseline"),
-            "shared-state": ("shared", "state/", "workflow-policy"),
-            "delete": ("delete", "purge", "archive"),
-        }
+        # WI-1：marker 表从共享契约加载（risk-signals.json），消除双端移植漂移面
+        full_markers = _load_risk_signals_contract()["fullMarkers"]
         for signal, markers in full_markers.items():
             if any(marker in lowered for marker in markers):
                 signals.append(signal)
