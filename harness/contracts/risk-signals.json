@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "风险信号与档位映射的单一权威（WI-1）。双端（Python harness_gate.py / TS plan-classification）从此文件加载，消除移植漂移面。键名统一 kebab-case（Python 侧现形）；TS 经 sync 生成 snake_case 常量。内容冻结自 2026-09 现状：fullMarkers 与 contractSchemaPaths 冻结自 harness_gate.py:1518-1526/:1409-1418，assurance/standard/quick 信号集冻结自 packages/core/src/plan-classification/stable.ts:34-44（snake_case 转 kebab-case）。改本文件 = 契约变更（Python 侧命中 contractSchemaPaths 语义应升 full 档评审）。",
+  "description": "风险信号与档位映射的单一权威（WI-1）。双端（Python harness_gate.py / TS plan-classification）从此文件加载，消除移植漂移面。键名统一 kebab-case（Python 侧现形）；TS 经 sync 生成 snake_case 常量。内容冻结自 2026-09 现状：fullMarkers 与 contractSchemaPaths 冻结自 harness_gate.py:1518-1526/:1409-1418，assurance/standard/quick 信号集冻结自 packages/core/src/plan-classification/stable.ts:34-44（snake_case 转 kebab-case）。B3-2 起扩展：riskTiers/validationPhases/validationDependencies 是档位派生字段（阶段集/验证集/by_phase/DAG）的投影源——evidence-pack 按 tier 重算 gate overlay 时从这里取数（与 Python _apply_required_gate_contract 同源），值冻结自 workflow-policy.json riskTiers 与 harness_gate.py VALIDATION_DEPENDENCIES/validationPhases。改本文件 = 契约变更（Python 侧命中 contractSchemaPaths 语义应升 full 档评审）。",
   "fullMarkers": {
     "auth": ["auth", "token", "credential", "permission"],
     "security": ["security", "secret", "crypto"],
@@ -44,5 +44,37 @@
     "harness/scripts/harness_gate.py",
     "harness/scripts/harness_ledger.py",
     "harness/scripts/harness_state.py"
-  ]
+  ],
+  "riskTiers": {
+    "fast": {
+      "defaultPhases": ["plan", "execute", "archive"],
+      "requiredValidations": ["unitTest"]
+    },
+    "standard": {
+      "defaultPhases": ["plan", "execute", "submit", "archive"],
+      "requiredValidations": ["compile", "unitTest", "unitTestFull"]
+    },
+    "full": {
+      "defaultPhases": ["plan", "execute", "review", "submit", "archive"],
+      "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"]
+    }
+  },
+  "validationPhases": {
+    "compile": "execute",
+    "unitTest": "execute",
+    "unitTestFull": "execute",
+    "apiTest": "execute",
+    "browserTest": "execute",
+    "dbCompatibility": "execute",
+    "package": "package"
+  },
+  "validationDependencies": {
+    "compile": [],
+    "unitTest": ["compile"],
+    "unitTestFull": ["unitTest"],
+    "apiTest": ["unitTest"],
+    "browserTest": ["unitTest"],
+    "dbCompatibility": ["unitTest"],
+    "package": ["unitTestFull", "apiTest", "dbCompatibility"]
+  }
 }

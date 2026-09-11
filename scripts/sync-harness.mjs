@@ -112,6 +112,32 @@ function riskSignalsContractValidation(contract) {
   }
   if (contract.tierModeMap === undefined) problems.push("missing key: tierModeMap");
   if (contract.contractSchemaPaths === undefined) problems.push("missing key: contractSchemaPaths");
+  // B3-2：档位派生字段投影（evidence-pack 重算 gate overlay 的输入）
+  if (contract.riskTiers === undefined) problems.push("missing key: riskTiers");
+  if (contract.validationPhases === undefined) problems.push("missing key: validationPhases");
+  if (contract.validationDependencies === undefined) problems.push("missing key: validationDependencies");
+  if (Array.isArray(contract.riskTiers)) {
+    problems.push("riskTiers must be an object");
+  } else if (contract.riskTiers !== undefined) {
+    for (const [tier, policy] of Object.entries(contract.riskTiers)) {
+      if (typeof policy !== "object" || policy === null) {
+        problems.push(`riskTiers.${tier} must be an object`);
+        continue;
+      }
+      if (!Array.isArray(policy.defaultPhases)) problems.push(`riskTiers.${tier}.defaultPhases must be an array`);
+      if (!Array.isArray(policy.requiredValidations)) problems.push(`riskTiers.${tier}.requiredValidations must be an array`);
+    }
+    const tiers = Object.keys(contract.riskTiers);
+    for (const [tier, mode] of Object.entries(contract.tierModeMap ?? {})) {
+      if (!tiers.includes(tier)) problems.push(`tierModeMap references unknown tier: ${tier}`);
+    }
+  }
+  if (contract.validationPhases !== undefined && typeof contract.validationPhases !== "object") {
+    problems.push("validationPhases must be an object");
+  }
+  if (contract.validationDependencies !== undefined && typeof contract.validationDependencies !== "object") {
+    problems.push("validationDependencies must be an object");
+  }
   return problems;
 }
 
@@ -171,6 +197,26 @@ ${Object.entries(contract.tierModeMap).map(([tier, mode]) => `  ${JSON.stringify
 export const CONTRACT_SCHEMA_PATHS: readonly string[] = [
   ${schemaPaths}
 ];
+
+/** 档位政策投影（B3-2）：evidence-pack 按 tier 重算 gate overlay 的输入。
+ *  值冻结自 workflow-policy.json riskTiers（defaultPhases/requiredValidations）。 */
+export const RISK_TIERS: Readonly<Record<string, {
+  readonly defaultPhases: readonly string[];
+  readonly requiredValidations: readonly string[];
+}>> = {
+${Object.entries(contract.riskTiers).map(([tier, policy]) =>
+    `  ${JSON.stringify(tier)}: {\n    defaultPhases: [${policy.defaultPhases.map((p) => JSON.stringify(p)).join(", ")}],\n    requiredValidations: [${policy.requiredValidations.map((v) => JSON.stringify(v)).join(", ")}]\n  }`).join(",\n")}
+};
+
+/** 验证 → 阶段映射（B3-2）：required_validations_by_phase 的构建输入。 */
+export const VALIDATION_PHASES: Readonly<Record<string, string>> = {
+${Object.entries(contract.validationPhases).map(([v, phase]) => `  ${JSON.stringify(v)}: ${JSON.stringify(phase)}`).join(",\n")}
+};
+
+/** 验证依赖表（B3-2）：required_gate_dag 的边构建输入。 */
+export const VALIDATION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+${Object.entries(contract.validationDependencies).map(([v, deps]) => `  ${JSON.stringify(v)}: [${deps.map((d) => JSON.stringify(d)).join(", ")}]`).join(",\n")}
+};
 `;
   await mkdir(dirname(riskSignalsGeneratedPath), { recursive: true });
   // 内容比对写入：无变化时不触碰 mtime，避免无关 churn。

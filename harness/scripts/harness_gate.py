@@ -685,11 +685,33 @@ def is_degraded_ledger_entry(entry: dict[str, Any]) -> bool:
     return bool(reason)
 
 
+def is_not_applicable_entry(entry: dict[str, Any]) -> bool:
+    """NOT_RUN + applicability.NOT_APPLICABLE（带非空 reason）（B3-1/§3.6）。
+
+    声明验证对本变更不适用是比 DEGRADED 更强的合法「诚实未跑」形态；
+    close 语义并入 CLOSED_DEGRADED（phase ≤ WARN），审计区分靠
+    applicability 嵌套字段留痕，不引入新 close code。
+    """
+    if entry.get("status") != "NOT_RUN":
+        return False
+    applicability = entry.get("applicability")
+    if not isinstance(applicability, dict):
+        return False
+    reason = applicability.get("reason")
+    return (
+        applicability.get("applicability") == "NOT_APPLICABLE"
+        and isinstance(reason, str)
+        and bool(reason.strip())
+    )
+
+
 def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[list[str], bool]:
     """Internal helper for ledger close validation (not a public API).
 
-    Returns ``(missing_fields, degraded_ok)`` where ``degraded_ok`` is True only when
-    the entry is a valid DEGRADED NOT_RUN record with no other missing fields.
+    Returns ``(missing_fields, honest_not_run_ok)`` where ``honest_not_run_ok``
+    is True only when the entry is a valid honest-not-run record (DEGRADED
+    evidence or NOT_APPLICABLE applicability, B3-1) with no other missing
+    fields.
 
     Retro §5.14: ``status=OK``/``status=NOT_RUN``/``status=FAIL`` in the
     missing list is a *status value* hint, not a field-completeness defect.
@@ -699,6 +721,7 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
     """
     missing: list[str] = []
     degraded = is_degraded_ledger_entry(entry)
+    not_applicable = is_not_applicable_entry(entry)
     for field in LEDGER_V2_REQUIRED_ENTRY_FIELDS:
         value = entry.get(field)
         if field == "inputsFiles":
@@ -707,14 +730,17 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
             elif verification == "unitTestFull" and not value:
                 missing.append("inputsFiles(non-empty)")
         elif field == "status":
-            if value != "OK" and not degraded:
+            if value != "OK" and not degraded and not not_applicable:
                 if str(value).upper() == "NOT_RUN":
                     # 2026-09 dogfood: 此前提示 "missing: [status=NOT_RUN]"，
                     # 而条目状态明明就是 NOT_RUN——真实缺口是 evidence 缺
                     # DEGRADED: 前缀。直说，别让调用方对着状态值猜。
+                    # B3-1：合法形态扩为 DEGRADED / NOT_APPLICABLE 两种。
                     missing.append(
                         "status=NOT_RUN requires evidence starting with "
-                        "'DEGRADED: <reason>' (is_degraded_ledger_entry)"
+                        "'DEGRADED: <reason>' (is_degraded_ledger_entry) or "
+                        "applicability NOT_APPLICABLE with a scope reason "
+                        "(is_not_applicable_entry)"
                     )
                 else:
                     missing.append(f"status={value}")
@@ -724,7 +750,9 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
             missing.append("coverage(valid)")
         elif field == "algorithmVersion" and str(value).strip() != hl.LEDGER_VERSION:
             missing.append("algorithmVersion(harness-ledger-2)")
-    return missing, degraded and not missing
+    # B3-1：NOT_APPLICABLE 与 DEGRADED 同走 degraded 通道（CLOSED_DEGRADED），
+    # 审计区分度由条目的 applicability 嵌套字段提供。
+    return missing, (degraded or not_applicable) and not missing
 
 
 def validate_ledger_for_phase_close(
@@ -901,7 +929,8 @@ def validate_ledger_for_phase_close(
             else:
                 hint = (
                     ["status=NOT_RUN requires evidence starting with "
-                     "'DEGRADED: <reason>'"]
+                     "'DEGRADED: <reason>' or applicability NOT_APPLICABLE "
+                     "with a scope reason"]
                     if entry_status == "NOT_RUN" else [f"status={entry_status}"]
                 )
                 problems.append({

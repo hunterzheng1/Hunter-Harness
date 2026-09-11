@@ -66,3 +66,45 @@ export const MODE_TIER_MAP: Readonly<Record<string, string>> = {
 export const CONTRACT_SCHEMA_PATHS: readonly string[] = [
   "harness/scripts/harness_archive.py", "harness/scripts/harness_change.py", "harness/scripts/harness_efficiency.py", "harness/scripts/harness_events.py", "harness/scripts/harness_fixback.py", "harness/scripts/harness_gate.py", "harness/scripts/harness_ledger.py", "harness/scripts/harness_state.py"
 ];
+
+/** 档位政策投影（B3-2）：evidence-pack 按 tier 重算 gate overlay 的输入。
+ *  值冻结自 workflow-policy.json riskTiers（defaultPhases/requiredValidations）。 */
+export const RISK_TIERS: Readonly<Record<string, {
+  readonly defaultPhases: readonly string[];
+  readonly requiredValidations: readonly string[];
+}>> = {
+  "fast": {
+    defaultPhases: ["plan", "execute", "archive"],
+    requiredValidations: ["unitTest"]
+  },
+  "standard": {
+    defaultPhases: ["plan", "execute", "submit", "archive"],
+    requiredValidations: ["compile", "unitTest", "unitTestFull"]
+  },
+  "full": {
+    defaultPhases: ["plan", "execute", "review", "submit", "archive"],
+    requiredValidations: ["compile", "unitTest", "unitTestFull", "apiTest"]
+  }
+};
+
+/** 验证 → 阶段映射（B3-2）：required_validations_by_phase 的构建输入。 */
+export const VALIDATION_PHASES: Readonly<Record<string, string>> = {
+  "compile": "execute",
+  "unitTest": "execute",
+  "unitTestFull": "execute",
+  "apiTest": "execute",
+  "browserTest": "execute",
+  "dbCompatibility": "execute",
+  "package": "package"
+};
+
+/** 验证依赖表（B3-2）：required_gate_dag 的边构建输入。 */
+export const VALIDATION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+  "compile": [],
+  "unitTest": ["compile"],
+  "unitTestFull": ["unitTest"],
+  "apiTest": ["unitTest"],
+  "browserTest": ["unitTest"],
+  "dbCompatibility": ["unitTest"],
+  "package": ["unitTestFull", "apiTest", "dbCompatibility"]
+};

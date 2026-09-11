@@ -17,6 +17,7 @@ import {
 } from "@hunter-harness/contracts";
 import { classifyPlan } from "@hunter-harness/core";
 
+import { buildTierGateOverlayFields } from "../src/commands/plan-evidence-pack.js";
 import { inferRiskSignals } from "../src/plan-evidence/risk-signal-inference.js";
 
 // WI-1 §3.3 跨语言契约测试：同一 affected_paths 输入下，TS（inferRiskSignals +
@@ -247,5 +248,105 @@ describe("WI-1 tier-mode-parity：双端分类契约", () => {
     // 改它们必须升 full 档评审（JSON description 的语义）。
     expect(CONTRACT_SCHEMA_PATHS).toContain("harness/scripts/harness_gate.py");
     expect(CONTRACT_SCHEMA_PATHS).toContain("harness/scripts/harness_archive.py");
+  });
+});
+
+// ── B3-2 §4 步骤 4：跨语言重算契约 ─────────────────────────────────────
+// TS buildTierGateOverlayFields（publish 时按 effectiveTier 全量重算 gate
+// 字段）必须与 Python _apply_required_gate_contract（bootstrap 时按
+// tier+capabilities 展开）在同一输入下产出相同的三元组
+//（defaultPhases/requiredValidations/requiredValidationsByPhase）与 DAG。
+// 双端漂移会让 v2 快照与 gate 验收口径分叉（B3-2 §6 风险表第一行）。
+
+interface PythonGateContractResult {
+  defaultPhases: string[];
+  requiredValidations: string[];
+  requiredValidationsByPhase: Record<string, string[]>;
+  requiredGateDag: { schemaVersion: number; nodes: unknown[]; edges: unknown[] };
+  /** 可直接作为 buildTierGateOverlayFields snapshotDoc 输入的工作副本形态。 */
+  snapshot: Record<string, unknown>;
+}
+
+/** 在临时仓库里跑真实 _apply_required_gate_contract（只需 workflow-policy.json）。 */
+async function pythonGateContract(
+  tier: string,
+  signals: readonly string[],
+  capabilities: readonly string[]
+): Promise<PythonGateContractResult> {
+  const root = await fs.mkdtemp(join(tmpdir(), "gate-contract-"));
+  try {
+    await fs.mkdir(join(root, "harness", "contracts"), { recursive: true });
+    await fs.copyFile(
+      join(repoContracts, "workflow-policy.json"),
+      join(root, "harness", "contracts", "workflow-policy.json")
+    );
+    const probe = [
+      "import importlib.util, json, sys",
+      `sys.path.insert(0, ${JSON.stringify(scriptsDir)})`,
+      `spec = importlib.util.spec_from_file_location('hg', ${JSON.stringify(join(scriptsDir, "harness_gate.py"))})`,
+      "m = importlib.util.module_from_spec(spec); sys.modules['hg'] = m; spec.loader.exec_module(m)",
+      "import harness_workflow_policy as pol",
+      "from pathlib import Path",
+      `workflow = pol.load_policy(Path(${JSON.stringify(root)}))`,
+      `payload = {'tier': ${JSON.stringify(tier)}, 'signals': ${JSON.stringify(signals)}}`,
+      `result = m._apply_required_gate_contract(payload, workflow, ${JSON.stringify(capabilities)})`,
+      "print(json.dumps({",
+      "  'defaultPhases': workflow['riskTiers'][result['tier']]['defaultPhases'],",
+      "  'requiredValidations': result['requiredValidations'],",
+      "  'requiredValidationsByPhase': result['requiredValidationsByPhase'],",
+      "  'requiredGateDag': result['requiredGateDag'],",
+      "  'snapshot': {",
+      "    'schemaVersion': 1, 'tier': result['tier'], 'signals': result['signals'],",
+      "    'capabilities': result['capabilities'],",
+      "    'requiredValidations': result['requiredValidations'],",
+      "    'requiredValidationsByPhase': result['requiredValidationsByPhase'],",
+      "    'requiredGateDag': result['requiredGateDag'],",
+      "    'stageDecisions': result['stageDecisions'],",
+      "  },",
+      "}))",
+    ].join("\n");
+    const run = spawnSync("python", ["-c", probe], { cwd: root, encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+    return JSON.parse(run.stdout) as PythonGateContractResult;
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+describe("B3-2 跨语言重算契约：overlay 重算 == _apply_required_gate_contract", () => {
+  const GATE_CONTRACT_CASES = [
+    { name: "standard 档（无信号无 capability）", tier: "standard", signals: [], capabilities: [] },
+    { name: "full 档（review 为 tier-default）", tier: "full", signals: [], capabilities: [] },
+    { name: "standard + security 信号（review 被信号触发）", tier: "standard", signals: ["security"], capabilities: [] },
+  ] as const;
+
+  for (const testCase of GATE_CONTRACT_CASES) {
+    it(`三元组与 DAG 一致：${testCase.name}`, async () => {
+      const python = await pythonGateContract(
+        testCase.tier, testCase.signals, testCase.capabilities
+      );
+      // TS 输入即 Python bootstrap 落盘的工作副本（真实数据流形态）
+      const ts = buildTierGateOverlayFields(testCase.tier, python.snapshot);
+      expect(ts, `tier=${testCase.tier} 应在 TS 契约中已知`).toBeDefined();
+      expect(ts?.defaultPhases).toEqual(python.defaultPhases);
+      expect(ts?.requiredValidations).toEqual(python.requiredValidations);
+      expect(ts?.requiredValidationsByPhase).toEqual(python.requiredValidationsByPhase);
+      expect(ts?.requiredGateDag).toEqual(python.requiredGateDag);
+    });
+  }
+
+  it("capability 合并：bootstrap standard+capabilities 升 full == Python 直接 full+capabilities（§5-2）", async () => {
+    // T5' 数据流：classify 在 standard 档展开 capabilities 落工作副本，
+    // publish 升 full 后 TS 反解 capability 集合并入——必须等价于
+    // Python 一开始就用 full+capabilities 展开。
+    const capabilities = ["database", "deployment"];
+    const bootstrap = await pythonGateContract("standard", [], capabilities);
+    const direct = await pythonGateContract("full", [], capabilities);
+    const ts = buildTierGateOverlayFields("full", bootstrap.snapshot);
+    expect(ts).toBeDefined();
+    expect(ts?.defaultPhases).toEqual(direct.defaultPhases);
+    expect(ts?.requiredValidations).toEqual(direct.requiredValidations);
+    expect(ts?.requiredValidationsByPhase).toEqual(direct.requiredValidationsByPhase);
+    expect(ts?.requiredGateDag).toEqual(direct.requiredGateDag);
   });
 });

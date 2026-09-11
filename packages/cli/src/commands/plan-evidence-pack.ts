@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson, isValidPlanRunId, LEGACY_PLAN_PHASE_ALIASES, MODE_TIER_MAP } from "@hunter-harness/contracts";
+import {
+  canonicalJson,
+  isValidPlanRunId,
+  LEGACY_PLAN_PHASE_ALIASES,
+  MODE_TIER_MAP,
+  RISK_TIERS,
+  VALIDATION_DEPENDENCIES,
+  VALIDATION_PHASES
+} from "@hunter-harness/contracts";
 
 import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
 import { readFile, writeFile } from "node:fs/promises";
@@ -776,7 +784,12 @@ const stableId = (prefix: string, body: unknown): string =>
  * requiredValidationsByPhase 等由调用方按白名单并入 v2 gate_policy。
  */
 interface GatePolicySnapshot {
-  readonly plannedPhases: readonly PlanPhase[];
+  /**
+   * B3-2 §3.2：plannedPhases 缺失/为 null 时快照仍可用——undefined 表示未知，
+   * 阶段集退回推导（与快照整份缺失行为一致），其余档位派生字段照常参与重算。
+   * 形状非法（非字符串数组/含未知阶段名）时仍判整份快照不可用（fail-safe）。
+   */
+  readonly plannedPhases: readonly PlanPhase[] | undefined;
   readonly document: Record<string, unknown>;
 }
 
@@ -794,6 +807,9 @@ async function readGatePolicySnapshot(
   }
   if (!isRecord(raw)) return undefined;
   const planned: unknown = raw.plannedPhases;
+  if (planned === undefined || planned === null) {
+    return { plannedPhases: undefined, document: raw };
+  }
   if (!Array.isArray(planned) || !planned.every((item) => typeof item === "string")) {
     return undefined;
   }
@@ -825,6 +841,136 @@ function canonicalValidationsByPhase(
     merged[canonical] = bucket;
   }
   return merged;
+}
+
+// ── B3-2 §3.1：按 effectiveTier 从共享契约全量重算档位派生字段 ──────────────
+// 契约投影：harness/contracts/risk-signals.json 的 riskTiers/validationPhases/
+// validationDependencies（Python harness_gate.py 唯一权威，sync 校验一致）。
+// 算法与 harness_gate.py:_apply_required_gate_contract 对齐：
+//   - required = tier 验证集 ∪ snapshot 的 capability 验证集——契约不投影
+//     capabilityGates（能力展开保留在 Python classify），capability 部分从
+//     snapshot 反解：snapshot 验证集 − snapshot 记录档位的 tier 集（B3-2 §5-2）；
+//   - by_phase/DAG 按 VALIDATION_PHASES/VALIDATION_DEPENDENCIES 重建；
+//   - stage 节点 required = 阶段 ∈ tier defaultPhases 或 snapshot.stageDecisions
+//     标记 required（signal/capability 触发在 bootstrap 时已冻结进 snapshot），
+//     依赖规则同 Python：package ← 全部 execute 阶段验证，apidoc ← apiTest；
+//   - 非 validation/stage 节点（如 finalSequence 的 sequence 节点）原样保留，
+//     悬空边（端点已不存在）丢弃。
+// 未知 tier（契约前向兼容）返回 undefined，调用方退回 bootstrap 透传。
+export interface TierGateOverlayFields {
+  readonly defaultPhases: readonly string[];
+  readonly requiredValidations: readonly string[];
+  readonly requiredValidationsByPhase: Record<string, readonly string[]>;
+  readonly requiredGateDag: {
+    readonly schemaVersion: 1;
+    readonly nodes: readonly Record<string, unknown>[];
+    readonly edges: readonly Record<string, unknown>[];
+  };
+}
+
+const VALIDATION_PHASE_MAP = VALIDATION_PHASES as Readonly<Record<string, string>>;
+const VALIDATION_DEP_MAP =
+  VALIDATION_DEPENDENCIES as Readonly<Record<string, readonly string[]>>;
+
+export function buildTierGateOverlayFields(
+  tier: string | undefined,
+  snapshotDoc: Record<string, unknown> | undefined
+): TierGateOverlayFields | undefined {
+  const tierPolicy = tier === undefined ? undefined : RISK_TIERS[tier];
+  if (tierPolicy === undefined) return undefined;
+
+  const snapshotTier = typeof snapshotDoc?.tier === "string" ? snapshotDoc.tier : undefined;
+  const snapshotTierValidations = new Set<string>(
+    snapshotTier !== undefined ? [...(RISK_TIERS[snapshotTier]?.requiredValidations ?? [])] : []
+  );
+  const snapshotValidations: string[] = [];
+  if (Array.isArray(snapshotDoc?.requiredValidations)) {
+    for (const item of snapshotDoc.requiredValidations) {
+      if (typeof item === "string") snapshotValidations.push(item);
+    }
+  }
+  const snapshotByPhase = canonicalValidationsByPhase(snapshotDoc?.requiredValidationsByPhase);
+  if (snapshotByPhase !== undefined) {
+    for (const list of Object.values(snapshotByPhase)) snapshotValidations.push(...list);
+  }
+  const capabilityValidations = snapshotValidations.filter((v) => !snapshotTierValidations.has(v));
+
+  const required = [...new Set<string>([...tierPolicy.requiredValidations, ...capabilityValidations])];
+  const requiredSet = new Set(required);
+
+  const byPhase: Record<string, string[]> = {};
+  for (const validation of required) {
+    const phase = VALIDATION_PHASE_MAP[validation];
+    if (phase === undefined) continue; // 与 Python 对齐：未知阶段的验证不进 by_phase
+    (byPhase[phase] ??= []).push(validation);
+  }
+
+  const nodes: Record<string, unknown>[] = [];
+  const edges: Record<string, unknown>[] = [];
+  for (const validation of required) {
+    const deps = (VALIDATION_DEP_MAP[validation] ?? []).filter((d) => requiredSet.has(d));
+    nodes.push({
+      id: `validation:${validation}`,
+      kind: "validation",
+      phase: VALIDATION_PHASE_MAP[validation] ?? null,
+      dependsOn: deps.map((d) => `validation:${d}`)
+    });
+    for (const d of deps) edges.push({ from: `validation:${d}`, to: `validation:${validation}` });
+  }
+
+  const snapshotStageDecisions = isRecord(snapshotDoc?.stageDecisions) ? snapshotDoc.stageDecisions : {};
+  const snapshotDag = isRecord(snapshotDoc?.requiredGateDag) ? snapshotDoc.requiredGateDag : undefined;
+  const snapshotNodes = Array.isArray(snapshotDag?.nodes) ? snapshotDag.nodes : [];
+  const stageNames = new Set<string>(Object.keys(snapshotStageDecisions));
+  for (const node of snapshotNodes) {
+    if (isRecord(node) && node.kind === "stage" && typeof node.phase === "string") {
+      stageNames.add(node.phase);
+    }
+  }
+  for (const stageName of [...stageNames].sort()) {
+    const decision = snapshotStageDecisions[stageName];
+    const stageRequired =
+      (tierPolicy.defaultPhases as readonly string[]).includes(stageName)
+      || (isRecord(decision) && decision.required === true);
+    if (!stageRequired) continue;
+    let deps: string[] = [];
+    if (stageName === "package") {
+      // 与 Python _apply_required_gate_contract 对齐：package 阶段依赖全部
+      // execute 阶段验证（打包前须过执行期验证），按 required 声明顺序。
+      deps = required
+        .filter((v) => VALIDATION_PHASE_MAP[v] === "execute")
+        .map((v) => `validation:${v}`);
+    } else if (stageName === "apidoc") {
+      deps = requiredSet.has("apiTest") ? ["validation:apiTest"] : [];
+    }
+    nodes.push({ id: `stage:${stageName}`, kind: "stage", phase: stageName, dependsOn: deps });
+    for (const d of deps) edges.push({ from: d, to: `stage:${stageName}` });
+  }
+
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
+  for (const node of snapshotNodes) {
+    if (!isRecord(node) || typeof node.id !== "string") continue;
+    if (node.kind === "validation" || node.kind === "stage") continue;
+    if (nodeIds.has(node.id)) continue;
+    const deps = Array.isArray(node.dependsOn)
+      ? node.dependsOn.filter((d): d is string => typeof d === "string" && nodeIds.has(d))
+      : [];
+    nodes.push({
+      id: node.id,
+      kind: typeof node.kind === "string" ? node.kind : "unknown",
+      phase: typeof node.phase === "string" ? node.phase : null,
+      dependsOn: deps
+    });
+    nodeIds.add(node.id);
+    for (const d of deps) edges.push({ from: d, to: node.id });
+  }
+
+  return {
+    defaultPhases: [...tierPolicy.defaultPhases],
+    requiredValidations: required,
+    requiredValidationsByPhase: byPhase,
+    requiredGateDag: { schemaVersion: 1, nodes, edges }
+  };
 }
 
 
@@ -1043,7 +1189,8 @@ export async function runPlanEvidencePack(
 
     // 阶段 0.6 接缝：configure-plan 落的 plannedPhases 不再被忽略。
     // 可选阶段取 planned ∩ optional；optional − planned 记为显式省略（绝不含 required，
-    // 否则 outcome 翻 not_publishable）；planned 缺 required 时 required 仍保留并告警。
+    // 否则 outcome 翻 not_publishable）；planned 缺 required 时 required 仍保留
+    // （B3-2 §3.7 起静默保留——v2 快照显式重算，stopgap 告警已移除）。
     const gateSnapshot = await readGatePolicySnapshot(dependencies.cwd, input.change_key);
     const gatePlanned = gateSnapshot?.plannedPhases;
     const phaseSetSource = gatePlanned === undefined ? "derived" : "gate-policy";
@@ -1053,9 +1200,6 @@ export async function runPlanEvidencePack(
     const requestedOmissions = gatePlanned === undefined
       ? []
       : profile.optional_phases.filter((phase) => !gatePlanned.includes(phase));
-    const requiredRetained = gatePlanned === undefined
-      ? []
-      : profile.required_phases.filter((phase) => !gatePlanned.includes(phase));
 
     const phase_set = configurePlannedPhases(profile, { schema_version: 1,
       is_git: probe.is_git, has_remote: probe.has_remote,
@@ -1236,21 +1380,32 @@ export async function runPlanEvidencePack(
     const tierSource = overrideTier !== undefined
       ? "override"
       : `mode-derived:${profile.mode}`;
-    // 门禁权威快照：classify 在 0.5 落的 DAG 与 0.6 计划一并并入
-    // v2 gate_policy content（白名单键，哈希绑定）——gate 侧由此可优先读
-    // plan-profile.json，工作副本（meta/gate-policy.json）降级为回退。
-    // tier/source 始终由 mode 派生写入（WI-1 前只在快照存在时透传 classify 的
-    // 独立 tier——双轨矛盾的根源）。
+    // B3-2 §3.1：档位派生字段不再透传 bootstrap 冻结值，按 effectiveTier 从
+    // 共享契约（riskTiers/validationPhases/validationDependencies）全量重算，
+    // capability 验证集从 snapshot 反解并入（§5-2）。v2 gate_policy content
+    // 由此携带完整的 mode/planned_phases/required_gate_dag/
+    // required_validations_by_phase，gate 侧 v2 权威路径（harness_paths.
+    // load_change_gate_policy）对五阶段计划可用；未知 tier 退回快照透传（fail-safe）。
+    const tierGateFields = buildTierGateOverlayFields(effectiveTier, gateSnapshot?.document);
     const gatePolicyOverlay = {
       tier: effectiveTier,
       source: tierSource,
-      ...(gateSnapshot !== undefined && gateSnapshot.document.requiredGateDag !== undefined
-        ? { required_gate_dag: gateSnapshot.document.requiredGateDag } : {}),
-      ...(gateSnapshot !== undefined
-        && canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) !== undefined
-        ? { required_validations_by_phase:
-            canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) }
-        : {}),
+      ...(tierGateFields !== undefined
+        ? {
+            default_phases: [...tierGateFields.defaultPhases],
+            required_validations: [...tierGateFields.requiredValidations],
+            required_validations_by_phase: tierGateFields.requiredValidationsByPhase,
+            required_gate_dag: tierGateFields.requiredGateDag
+          }
+        : {
+            ...(gateSnapshot !== undefined && gateSnapshot.document.requiredGateDag !== undefined
+              ? { required_gate_dag: gateSnapshot.document.requiredGateDag } : {}),
+            ...(gateSnapshot !== undefined
+              && canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) !== undefined
+              ? { required_validations_by_phase:
+                  canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) }
+              : {})
+          }),
       phase_set_source: phaseSetSource
     };
     const machine_input = { schema_version: 2 as const, profile, phase_set,
@@ -1331,11 +1486,12 @@ export async function runPlanEvidencePack(
         : { adversarial_review: input.adversarial_review })
     };
     await writeFile(options.output, JSON.stringify(pack));
-    // WI-1 §3.1 工作副本同步：把 mode 派生的 tier/source 写回
-    // meta/gate-policy.json（仅当文件存在且 change 未发布——已发布的
-    // plan-profile.json 是权威，工作副本改写本身就是异常，P1-1 同语义）。
-    // 同步消除 B2-5 实证的矛盾并存：工作副本 tier=standard 与 v2 快照
-    // tier=full 不再可能同时出现。
+    // 工作副本同步：把重算后的档位派生字段写回 meta/gate-policy.json（仅当
+    // 文件存在且 change 未发布——已发布的 plan-profile.json 是权威，工作副本
+    // 改写本身就是异常，P1-1 同语义）。WI-1 同步 tier/source；B3-2 §3.4 起
+    // 扩展为 defaultPhases/requiredValidations/requiredValidationsByPhase/
+    // requiredGateDag 全量同步——迟到的 harness_gate begin/close 读工作副本
+    // 回退路径时与 v2 权威一致（execute 阶段 evidence-pack 重发场景）。
     let workingCopySynced = false;
     const workingPolicyPath = join(
       dependencies.cwd, ".harness", "changes", input.change_key, "meta", "gate-policy.json");
@@ -1361,6 +1517,12 @@ export async function runPlanEvidencePack(
         if (isRecord(working)) {
           working.tier = effectiveTier;
           working.source = tierSource;
+          if (tierGateFields !== undefined) {
+            working.defaultPhases = [...tierGateFields.defaultPhases];
+            working.requiredValidations = [...tierGateFields.requiredValidations];
+            working.requiredValidationsByPhase = tierGateFields.requiredValidationsByPhase;
+            working.requiredGateDag = tierGateFields.requiredGateDag;
+          }
           await writeFile(workingPolicyPath, JSON.stringify(working, null, 2) + "\n");
           workingCopySynced = true;
         }
@@ -1369,14 +1531,11 @@ export async function runPlanEvidencePack(
         // 矛盾窗口由 stopgap 告警兜底。
       }
     }
+    // B3-2 §3.7：B2-5 stopgap 告警已移除——档位派生字段现按 effectiveTier
+    // 全量重算（§3.1）且四字段恒完整，「configure-plan 省略 + tier 重算保留」
+    // 的静默覆盖窗口随 v2 权威显式重算而闭合，告警触发条件消失。
     const warnings: string[] = [
       ...(fullFanout ? ["graph_density_full_fanout"] : []),
-      // B2-5 stopgap: WI-1 落地后移除（tier/mode 单一权威消除双轨后，
-      // configure-plan 的阶段省略不会再被 assurance 信号静默覆盖）
-      ...(requiredRetained.length > 0
-        ? [`phase_set_required_retained:${requiredRetained.join(",")}` +
-          `（configure-plan 省略的 ${requiredRetained.join("/")} 因 assurance 信号被保留）`]
-        : []),
       ...(scopeInherited.length > 0 ? [`approval_scope_inherited:${scopeInherited.join(",")}`] : []),
       ...(goalInherited.length > 0 ? [`approval_goal_inherited:${goalInherited.join(",")}`] : [])
     ];

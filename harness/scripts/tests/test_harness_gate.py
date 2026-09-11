@@ -752,8 +752,9 @@ class HarnessGateTests(unittest.TestCase):
         evidence: str = "evidence/unit.log",
         coverage: str = "module",
         command: str = "python -m unittest",
+        applicability: dict | None = None,
     ) -> dict:
-        return {
+        entry = {
             "algorithmVersion": "harness-ledger-2",
             "coverage": coverage,
             "inputsHash": "sha256:" + "c" * 64,
@@ -762,8 +763,17 @@ class HarnessGateTests(unittest.TestCase):
             "command": command,
             "evidence": evidence,
         }
+        if applicability is not None:
+            entry["applicability"] = applicability
+        return entry
 
-    def _write_v2_ledger(self, *, unit_status: str = "OK", unit_evidence: str = "evidence/unit.log") -> None:
+    def _write_v2_ledger(
+        self,
+        *,
+        unit_status: str = "OK",
+        unit_evidence: str = "evidence/unit.log",
+        unit_applicability: dict | None = None,
+    ) -> None:
         ledger = {
             "changeName": "demo",
             "validations": {
@@ -772,7 +782,11 @@ class HarnessGateTests(unittest.TestCase):
                     evidence="evidence/compile.log",
                     command="python -m compileall",
                 ),
-                "unitTest": self._v2_entry(status=unit_status, evidence=unit_evidence),
+                "unitTest": self._v2_entry(
+                    status=unit_status,
+                    evidence=unit_evidence,
+                    applicability=unit_applicability,
+                ),
                 # execute 合并后关门要求 run∪test 并集；unitTestFull 不在本组
                 # 用例的考察面内，给一条常态 OK 记录。
                 "unitTestFull": self._v2_entry(
@@ -2264,6 +2278,73 @@ class HarnessGateTests(unittest.TestCase):
         payload = json.loads(written)
         self.assertEqual(payload["status"], "WARN")
         self.assertEqual(payload["code"], "CLOSED_DEGRADED")
+
+    # --- UT-315..317 NOT_APPLICABLE ledger close（B3-1/§3.6） ---
+
+    def test_not_applicable_ledger_close_ut315(self) -> None:
+        self._write_v2_ledger(
+            unit_status="NOT_RUN",
+            unit_evidence="evidence/not-applicable.md",
+            unit_applicability={
+                "applicability": "NOT_APPLICABLE",
+                "reason": "本变更仅改文档，单元测试不适用",
+            },
+        )
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
+        self.assertTrue(result["ok"], result)
+        # §5-1：并入 CLOSED_DEGRADED 通道，不引入新 code
+        self.assertEqual(result["code"], "LEDGER_OK_DEGRADED")
+        self.assertIn("unitTest", result["degraded"])
+
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "execute", "--change", "demo",
+            "--status", "OK", "--run-id", "run-na", "--task", "1", "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-na", "phase": "execute"}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch("sys.stdout") as stdout:
+            self.assertEqual(gate.cmd_close(args), 0)
+        written = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(written)
+        self.assertEqual(payload["code"], "CLOSED_DEGRADED")
+        self.assertEqual(payload["status"], "WARN")
+        self.assertIn("unitTest", payload["ledger"]["degraded"])
+
+    def test_not_applicable_without_reason_rejected_ut316(self) -> None:
+        self._write_v2_ledger(
+            unit_status="NOT_RUN",
+            unit_evidence="evidence/not-applicable.md",
+            unit_applicability={"applicability": "NOT_APPLICABLE"},
+        )
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
+        self.assertFalse(result["ok"], result)
+        problems = result.get("problems") or []
+        unit = next(p for p in problems if p["verification"] == "unitTest")
+        self.assertTrue(any(m.startswith("status=") for m in unit["missing"]))
+
+    def test_not_applicable_does_not_mask_fail_ut317(self) -> None:
+        # applicability 豁免只在 status=NOT_RUN 时成立；FAIL 不能伪装成不适用
+        self._write_v2_ledger(
+            unit_status="FAIL",
+            unit_evidence="evidence/failed.log",
+            unit_applicability={
+                "applicability": "NOT_APPLICABLE",
+                "reason": "试图用不适用掩盖失败",
+            },
+        )
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
+        self.assertFalse(result["ok"], result)
+        problems = result.get("problems") or []
+        unit = next(p for p in problems if p["verification"] == "unitTest")
+        self.assertIn("status=FAIL", unit["missing"])
 
 
 class ScenarioCoverageTests(unittest.TestCase):

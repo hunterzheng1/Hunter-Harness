@@ -498,10 +498,11 @@ function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput):
     !same(input.phase_set, input.human_input.phase_set)) return fail("PLAN_ARTIFACT_INPUT_INVALID");
   const human = expectedHuman;
   const caps = sortedUnique(input.capabilities);
-  // overlay 白名单：只并门禁权威所需键（Python classify 产物快照），
-  // 其余字段不得混入哈希身份内容。
+  // overlay 白名单：只并门禁权威所需键（B3-2 §3.1 起为按 effectiveTier 全量
+  // 重算的档位派生字段），其余字段不得混入哈希身份内容。
   const GATE_POLICY_OVERLAY_KEYS = [
-    "tier", "source", "required_gate_dag", "required_validations_by_phase",
+    "tier", "source", "default_phases", "required_validations",
+    "required_gate_dag", "required_validations_by_phase",
     "planned_phases_source", "capabilities_provenance", "phase_set_source"
   ] as const;
   const overlay = input.gate_policy_overlay === undefined

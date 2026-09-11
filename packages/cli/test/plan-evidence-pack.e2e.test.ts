@@ -476,7 +476,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     expect(pack.context.phase_set_source).toBe("derived");
   });
 
-  it("plannedPhases 缺 required（assurance 砍 review）→ required 保留并告警", async () => {
+  it("plannedPhases 缺 required（assurance 砍 review）→ required 静默保留（B3-2 §3.7 stopgap 告警已移除）", async () => {
     const natural = naturalInput() as { risk_signals: string[] };
     natural.risk_signals = ["security", "payment"];
     const inputPath = join(root, "natural-assurance.json");
@@ -491,12 +491,14 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     });
     expect(exit).toBe(0);
     const stdout = JSON.parse(out.join("")) as { warnings?: string[] };
-    // B2-5 止血：告警带保留阶段明细（不再是无定位的裸码）
-    const retainedWarning = stdout.warnings?.find((item) =>
-      item.startsWith("phase_set_required_retained:"));
-    expect(retainedWarning).toBeDefined();
-    expect(retainedWarning).toContain("review");
-    expect(retainedWarning).toContain("configure-plan");
+    // B3-2 §3.7：档位派生字段按 effectiveTier 显式重算后静默覆盖窗口闭合，
+    // phase_set_required_retained 告警移除；保留行为本身不变。
+    expect((stdout.warnings ?? []).some((item) => item.startsWith("phase_set_required_retained:")))
+      .toBe(false);
+    const pack = JSON.parse(await fs.readFile(join(root, "p.json"), "utf8")) as {
+      trusted: { human_input: { phase_set: { planned_phases: string[] } } };
+    };
+    expect(pack.trusted.human_input.phase_set.planned_phases).toContain("review");
   });
 
   it("provenance 标注进 pack.context 且不进 stdout 之外的身份区", async () => {
@@ -509,7 +511,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     expect(sources).toContainEqual({ signal: "production_code", source: "declared+inferred" });
   });
 
-  it("门禁权威快照：工作副本的 DAG/validations 并入 v2 gate_policy content", async () => {
+  it("门禁权威快照：B3-2 §3.1 起按 effectiveTier 全量重算 DAG/by_phase（不再透传 bootstrap 冻结值）", async () => {
     const pythonPolicy = {
       schemaVersion: 1,
       tier: "standard",
@@ -517,6 +519,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
       plannedPhases: ["plan", "execute", "submit", "archive"],
       requiredValidations: ["compile", "unitTest", "unitTestFull"],
       requiredValidationsByPhase: { execute: ["compile", "unitTest", "unitTestFull"] },
+      // bootstrap 冻结的 DAG（缺 phase 字段、缺依赖边）——重算后应被契约依赖表版本替换
       requiredGateDag: {
         schemaVersion: 1,
         nodes: [{ id: "validation:compile", kind: "validation", dependsOn: [] }],
@@ -532,9 +535,24 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     // source 标注派生来源——classify 工作副本的 source 语义已被取代。
     expect(gatePolicy.content.tier).toBe("standard");
     expect(gatePolicy.content.source).toBe("mode-derived:standard");
-    expect(gatePolicy.content.required_gate_dag).toEqual(pythonPolicy.requiredGateDag);
+    // B3-2 §3.1：DAG 按契约 VALIDATION_DEPENDENCIES 重算（补全节点 phase 与依赖边）
+    expect(gatePolicy.content.required_gate_dag).toEqual({
+      schemaVersion: 1,
+      nodes: [
+        { id: "validation:compile", kind: "validation", phase: "execute", dependsOn: [] },
+        { id: "validation:unitTest", kind: "validation", phase: "execute", dependsOn: ["validation:compile"] },
+        { id: "validation:unitTestFull", kind: "validation", phase: "execute", dependsOn: ["validation:unitTest"] }
+      ],
+      edges: [
+        { from: "validation:compile", to: "validation:unitTest" },
+        { from: "validation:unitTest", to: "validation:unitTestFull" }
+      ]
+    });
     expect(gatePolicy.content.required_validations_by_phase)
       .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+    // B3-2 新增并入键：default_phases / required_validations
+    expect(gatePolicy.content.default_phases).toEqual(["plan", "execute", "submit", "archive"]);
+    expect(gatePolicy.content.required_validations).toEqual(["compile", "unitTest", "unitTestFull"]);
     expect(gatePolicy.content.phase_set_source).toBe("gate-policy");
     // 白名单之外的 Python 字段不得混入身份内容
     expect(gatePolicy.content).not.toHaveProperty("classifiedAt");
@@ -596,7 +614,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     expect(gatePolicy.content.source).toBe("override");
   });
 
-  it("WI-1：工作副本同步——未发布时 tier/source 写回 meta/gate-policy.json", async () => {
+  it("B3-2 §3.4：工作副本同步——未发布时档位派生字段全量写回 meta/gate-policy.json", async () => {
     await packWithGatePolicy({
       schemaVersion: 1,
       tier: "standard",
@@ -608,7 +626,19 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     )) as Record<string, unknown>;
     expect(working.tier).toBe("standard");
     expect(working.source).toBe("mode-derived:standard");
-    // 其余字段（plannedPhases 等）不被触碰
+    // WI-1 只同步 tier/source；B3-2 §3.4 扩展为档位派生字段全量同步
+    expect(working.defaultPhases).toEqual(["plan", "execute", "submit", "archive"]);
+    expect(working.requiredValidations).toEqual(["compile", "unitTest", "unitTestFull"]);
+    expect(working.requiredValidationsByPhase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+    const dag = working.requiredGateDag as {
+      schemaVersion: number;
+      nodes: { id: string; kind: string; phase: string | null; dependsOn: string[] }[];
+    };
+    expect(dag.schemaVersion).toBe(1);
+    expect(dag.nodes.map((node) => node.id))
+      .toEqual(["validation:compile", "validation:unitTest", "validation:unitTestFull"]);
+    // 阶段计划字段不被触碰（0.6 权威不归本命令管）
     expect(working.plannedPhases).toEqual(["plan", "execute", "submit", "archive"]);
   });
 
@@ -629,5 +659,146 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     // plan-profile.json 存在 = 已发布：工作副本保持 classify 原样
     expect(working.source).toBe("default-standard");
     expect(stdout.working_copy_synced).toBe(false);
+  });
+
+  it("B3-2 §3.1：standard/bootstrap + assurance/publish → overlay 按 full 档重算三元组", async () => {
+    // bootstrap（classify）落 standard 档工作副本（T5' 前置形态）
+    await fs.writeFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tier: "standard",
+        source: "default-standard",
+        plannedPhases: ["plan", "execute", "submit", "archive"],
+        requiredValidations: ["compile", "unitTest", "unitTestFull"],
+        requiredValidationsByPhase: { execute: ["compile", "unitTest", "unitTestFull"] },
+        requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] },
+        stageDecisions: {
+          review: { required: false, reason: "no matching signals" },
+          package: { required: false, reason: "no matching signals" },
+          apidoc: { required: false, reason: "no matching signals" }
+        }
+      })
+    );
+    const natural = naturalInput() as { risk_signals: string[] };
+    natural.risk_signals = ["security"];
+    const inputPath = join(root, "natural-assurance-recompute.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "p.json") }, {
+      cwd: root, gitExec: stubGitExec, stdout: () => true, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(join(root, "p.json"), "utf8")) as {
+      trusted: { machine: { gate_policy: { content: Record<string, unknown> } } };
+    };
+    const content = pack.trusted.machine.gate_policy.content;
+    expect(content.tier).toBe("full");
+    expect(content.default_phases).toEqual(["plan", "execute", "review", "submit", "archive"]);
+    expect(content.required_validations)
+      .toEqual(["compile", "unitTest", "unitTestFull", "apiTest"]);
+    expect(content.required_validations_by_phase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull", "apiTest"] });
+    const dag = content.required_gate_dag as {
+      nodes: { id: string; phase: string | null; dependsOn: string[] }[];
+    };
+    const apiTestNode = dag.nodes.find((node) => node.id === "validation:apiTest");
+    expect(apiTestNode).toMatchObject({ phase: "execute", dependsOn: ["validation:unitTest"] });
+    // full 档 review ∈ defaultPhases → stage:review 节点重算出现（T5' 形态）
+    expect(dag.nodes.some((node) => node.id === "stage:review")).toBe(true);
+    // bootstrap 时未触发的 package/apidoc（非 tier 默认成员）不得出现
+    expect(dag.nodes.some((node) => node.id === "stage:package")).toBe(false);
+  });
+
+  it("B3-2 §3.2：snapshot 缺 plannedPhases → 快照仍可用，v2 四字段完整", async () => {
+    await fs.writeFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tier: "standard",
+        source: "default-standard",
+        requiredValidations: ["compile", "unitTest", "unitTestFull"],
+        requiredValidationsByPhase: { execute: ["compile", "unitTest", "unitTestFull"] },
+        requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] }
+      })
+    );
+    const inputPath = join(root, "natural.json");
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "p.json") }, {
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const stdout = JSON.parse(out.join("")) as { phase_set_source?: string };
+    // plannedPhases 未知 → 阶段集回退推导（与快照整份缺失行为一致）
+    expect(stdout.phase_set_source).toBe("derived");
+    const pack = JSON.parse(await fs.readFile(join(root, "p.json"), "utf8")) as {
+      trusted: { machine: { gate_policy: { content: Record<string, unknown> } } };
+    };
+    const content = pack.trusted.machine.gate_policy.content;
+    // v2 完整性四字段（_unpack_v2_gate_policy 必需键）齐备
+    expect(typeof content.mode).toBe("string");
+    expect(Array.isArray(content.planned_phases)).toBe(true);
+    expect(content.required_gate_dag).toMatchObject({ schemaVersion: 1 });
+    expect(content.required_validations_by_phase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+  });
+
+  it("B3-2 §5-2：capability 验证集从 snapshot 反解并入，升档不丢能力门禁", async () => {
+    // bootstrap standard + database capability：requiredValidations 含 dbCompatibility，
+    // deployment capability 触发 stage:package
+    await fs.writeFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tier: "standard",
+        source: "default-standard",
+        plannedPhases: ["plan", "execute", "submit", "archive"],
+        capabilities: ["database", "deployment"],
+        requiredValidations: ["compile", "unitTest", "unitTestFull", "dbCompatibility"],
+        requiredValidationsByPhase:
+          { execute: ["compile", "unitTest", "unitTestFull", "dbCompatibility"] },
+        requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] },
+        stageDecisions: {
+          review: { required: false, reason: "no matching signals" },
+          package: { required: true, reason: "capability:deployment" },
+          apidoc: { required: false, reason: "no matching signals" }
+        }
+      })
+    );
+    const natural = naturalInput() as { risk_signals: string[] };
+    natural.risk_signals = ["security"];
+    const inputPath = join(root, "natural-assurance-capability.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "p.json") }, {
+      cwd: root, gitExec: stubGitExec, stdout: () => true, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(join(root, "p.json"), "utf8")) as {
+      trusted: { machine: { gate_policy: { content: Record<string, unknown> } } };
+    };
+    const content = pack.trusted.machine.gate_policy.content;
+    // full 重算后 dbCompatibility（capability 部分）仍在——并集而非覆盖
+    expect(content.required_validations)
+      .toEqual(["compile", "unitTest", "unitTestFull", "apiTest", "dbCompatibility"]);
+    expect(content.required_validations_by_phase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull", "apiTest", "dbCompatibility"] });
+    const dag = content.required_gate_dag as {
+      nodes: { id: string; kind: string; phase: string | null; dependsOn: string[] }[];
+    };
+    // capability 触发的 stage:package 节点保留（依赖规则同 Python：
+    // package 阶段依赖全部 execute 阶段验证，按 required 声明顺序）
+    expect(dag.nodes).toContainEqual({
+      id: "stage:package",
+      kind: "stage",
+      phase: "package",
+      dependsOn: [
+        "validation:compile",
+        "validation:unitTest",
+        "validation:unitTestFull",
+        "validation:apiTest",
+        "validation:dbCompatibility"
+      ]
+    });
+    expect(dag.nodes.some((node) => node.id === "validation:dbCompatibility")).toBe(true);
   });
 });
