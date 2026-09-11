@@ -1,7 +1,8 @@
 # B3-2 设计：full 档阶段与验证的权威链（合并 B3-1/B3-3）
 
 > 日期：2026-09-10
-> 状态：**待裁决**（§5 三项需用户定稿后实施）
+> 状态：**已实施**（2026-09-12，commit `5a353fa`；§5 三项按建议值裁决，
+> §4 六步骤全绿，T5' pilot 复验 18/18）
 > 输入：`collected/t5-full-tier-2026-09-10.md` §4（B3-2/B3-3 实证）、
 > batch3 设计 §2 apiTest 探针结果（B3-1 实证）、
 > `design-wi1-tier-mode-single-authority-2026-09-10.md`（前置权威统一）。
@@ -232,13 +233,29 @@ def is_not_applicable_entry(entry) -> bool:
 步骤 1-2 是 B3-2 主体；3 独立可先行（B3-1 不依赖 1-2）；4 是防漂移
 契约；6 是收口门槛。
 
-## 5. 待裁决项
+## 5. 待裁决项（已裁决，2026-09-12）
 
-| # | 问题 | 建议 | 理由 |
+| # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
-| 1 | NOT_APPLICABLE 的 close 语义：并入 CLOSED_DEGRADED vs 新增 CLOSED_NOT_APPLICABLE | **并入 CLOSED_DEGRADED** | 两者都是「诚实未跑」；新增 code 动 archive/fixback 的消费面（_ledger_api_tests、fixback 的 public-contract 集合等），收益只有审计区分度——而 applicability 嵌套字段已提供区分度 |
-| 2 | overlay 重算是否覆盖 capabilityGates 展开的验证（bootstrap 时 capabilities 可能加验证进 by_phase） | **合并（∪）** | capability 触发的验证（如 remote-attestation）是 classify 输入的正当来源；覆盖会静默丢能力门禁。合并规则：tier 验证集 ∪ snapshot capability 验证集，DAG 依赖表取并 |
-| 3 | 历史在途 change（v2 快照不完整 + 工作副本 standard）是否回写修复 | **不回写**（读时兼容） | 与 WI-1 边界一致：历史 change 的 gate-policy 不回写；B3-2 修复只对新 publish 生效。在途 change 用 configure-plan 显式声明（T5' 已验证的恢复路径） |
+| 1 | NOT_APPLICABLE 的 close 语义：并入 CLOSED_DEGRADED vs 新增 CLOSED_NOT_APPLICABLE | **并入 CLOSED_DEGRADED**（按建议实施） | 两者都是「诚实未跑」；新增 code 动 archive/fixback 的消费面（_ledger_api_tests、fixback 的 public-contract 集合等），收益只有审计区分度——而 applicability 嵌套字段已提供区分度 |
+| 2 | overlay 重算是否覆盖 capabilityGates 展开的验证（bootstrap 时 capabilities 可能加验证进 by_phase） | **合并（∪）**（按建议实施） | capability 触发的验证（如 remote-attestation）是 classify 输入的正当来源；覆盖会静默丢能力门禁。合并规则：tier 验证集 ∪ snapshot capability 验证集，DAG 依赖表取并 |
+| 3 | 历史在途 change（v2 快照不完整 + 工作副本 standard）是否回写修复 | **不回写**（读时兼容，按建议实施） | 与 WI-1 边界一致：历史 change 的 gate-policy 不回写；B3-2 修复只对新 publish 生效。在途 change 用 configure-plan 显式声明（T5' 已验证的恢复路径） |
+
+## 5.1 实施记录（2026-09-12，commit `5a353fa`）
+
+- 步骤 4 契约测试抓出并修复一处真实漂移：TS 侧 `stage:package` 依赖误用
+  「package 阶段验证 + sort」，已对齐 Python `_apply_required_gate_contract`
+  的「execute 阶段验证全集、按 required 声明顺序」。这正是跨语言契约测试
+  的存在价值。
+- T5' pilot 复验（18/18）：bootstrap(standard) → publish(full 重算) →
+  close execute 真实链路，`derivedToPhase=review`、apiTest 在
+  degraded+validated 列表、`CLOSED_DEGRADED`。五阶段生效无需
+  configure-plan 干预。
+- 复验确认一处**非缺陷**行为：submit 是 optional 阶段，仅 `is_git &&
+  has_remote` 时适用（`configuration.ts`），pilot 无 remote 时
+  `planned_phases` 缺 submit 是合法省略，不构成权威链断裂。
+- 回归基线：fast 1694 / integration 38 / python 1528 全绿；TS 构建通过；
+  `sync-harness.mjs --check` 一致；10 个 bundle 已重建。
 
 ## 6. 风险与回退
 
