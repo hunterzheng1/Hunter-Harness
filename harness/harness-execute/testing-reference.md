@@ -770,7 +770,10 @@ python <skills-root>/scripts/harness_ledger.py record-from-receipt --change-dir 
 # 定向验证（只测部分文件）用 --files 显式声明输入集，不用 profile 输入集冒充：
 python <skills-root>/scripts/harness_ledger.py record-from-receipt --change-dir <dir> --receipt "<change-dir>/evidence/receipts/<verification>.json" --verification unitTest --files "<变更源文件,测试文件>" --project <project>
 # 手工 record 仅两种场景：收据校验失败（RECEIPT_INVALID，按 recoveryAction 重跑 exec 或回退此路）；
-# 无收据的受控例外（如宿主 CI 导入证据）。两者都要在事件 note 里说明原因。
+# 无收据的受控例外。两者都要在事件 note 里说明原因。
+# 宿主 CI 证据导入（WI-3.2）：CI 收据 artifact 落地后导入，校验链 fail-closed
+# （完整性→conclusion→headTree→repository→verification 集合），详见 ../protocols/ledger-protocol.md 第十一节。
+python <skills-root>/scripts/harness_ledger.py import-ci-evidence --change-dir <dir> --receipt "<下载的 ci-evidence-receipt.json>" --verification unitTestFull --job check-linux --step "Run full check" --project <project>
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: N, Failures: 0" --coverage full --files "packages/core/src/index.ts"
 python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
 

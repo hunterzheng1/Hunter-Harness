@@ -363,3 +363,35 @@ Reader 继续读取当前 v3 与前一支持窗口 v2（并保守识别无 schem
 - 版本超出支持窗口、仓库/ownership/diff 无法确认、或 evidence identity 漂移时不写文件，返回 `LEDGER_MIGRATION_REQUIRED` 与参数数组形式的 `rerecordCommand`。
 
 submit/review/test/archive 只能通过 `harness_ledger.py` 读取/写入，禁止各自实现 schema 猜测或手工改 ledger。
+
+## 十一、CI 证据导入（WI-3.2，2026-09 起）
+
+宿主 CI 验证证据可以导入为 ledger 条目（提案 §4.6：导入必须校验来源、代码版本和完整性，不能接受模型口述「已通过」）。入口是独立子命令 `import-ci-evidence`，与手工 `record`（执行者自证）的信任路径分离。
+
+### 11.1 收据与校验链
+
+CI workflow 末尾步骤生成 `ci-evidence-receipt.json` 并 upload-artifact（`scripts/ci/generate-evidence-receipt.mjs`；check.yml 的 check-linux 与 test-windows job 已接线）。字段：`schemaVersion/repository(host/owner/repo)/runId/runAttempt/workflow/runUrl/headSha/headTree/toolchain/conclusion/jobs[].steps[]/concludedAt/receiptHash`。
+
+`receiptHash` = 除自身外全字段 deep-sort 规范化 JSON 的 sha256，与 `harness_ledger._ci_receipt_hash` 同口径；生成器（Node）与校验器（Python）两端同源，端到端验证过。
+
+导入校验链（任一失败即拒绝，fail-closed，错误码见下）：
+
+| 顺序 | 校验 | 失败错误码 |
+|------|------|-----------|
+| 1 | 收据 schema 完整 + receiptHash 重算一致 | `RECEIPT_INVALID` / `RECEIPT_HASH_MISMATCH` |
+| 2 | 收据与目标 job/step `conclusion == "success"` | `RECEIPT_CONCLUSION_NOT_SUCCESS` |
+| 3 | `headTree == product_tree_hash()`（git rev-parse HEAD^{tree}，内容身份；commit SHA 相同但工作区脏时 tree 不同，必须拒绝） | `RECEIPT_TREE_MISMATCH` |
+| 4 | `repository == 本地 origin`（`_normalize_remote` 归一化比较） | `RECEIPT_REPOSITORY_MISMATCH` |
+| 5 | `--verification ∈ {compile, unitTestFull}`（CI 跑全量；增量 unitTest 的 scope 语义无法从收据建立） | `RECEIPT_VERIFICATION_NOT_IMPORTABLE` |
+
+### 11.2 导入条目形态与失效语义
+
+落账为 v2 完整条目：`imported=true`、`inputsFiles=[]`、`inputsHash=headTree`、`coverage=full`、`algorithmVersion=harness-ledger-2`，`importedFrom` 记录 `importVersion/repository/runId/runUrl/headSha/headTree/job/step/concludedAt`。同 runId 幂等覆盖；跨 runId 覆盖时在 `importedFrom.supersededRunId` 记录被覆盖者。
+
+失效语义：imported 条目绑定整个产品 tree——fixback `affected()` 对 `imported=true` 条目在任何非空变更集下即失效（CI 跑的是旧代码），失效后 close 走 `EVIDENCE_INVALIDATED` 精准报错。gate close 对 imported 条目零特殊分支（满足 v2 契约即通过）。
+
+### 11.3 边界
+
+- can-reuse 不接入（P14 封存不变）；导入是落账，不是复用判定。
+- 宿主本地执行证据不导入（与 record 信任模型相同），沿用 `record`。
+- 收据不做签名：篡改需仓库写权限，在威胁模型内；`receiptHash` 防传输损坏与事后手改。
