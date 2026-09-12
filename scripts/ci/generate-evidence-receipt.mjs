@@ -6,9 +6,12 @@
 // 注意：headTree 的 "sha256:" 前缀沿用 harness_ledger.product_tree_hash 的
 // 既有口径（git 默认对象格式下实际内容是 SHA-1 十六进制）；两端同源
 // （同一 git rev-parse 命令），闭环一致，不单独换算。
+import console from "node:console";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import process from "node:process";
+import { URL } from "node:url";
 
 function arg(name) {
   const flag = `--${name}`;
