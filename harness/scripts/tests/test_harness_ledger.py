@@ -1428,7 +1428,11 @@ class CiEvidenceShardTests(unittest.TestCase):
             import subprocess
 
             (root / "tracked.txt").write_text("v2\n", encoding="utf-8")
-            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            # 只提交产品文件：add -A 会把未跟踪的 .harness/ 一并入库，
+            # 使 HEAD 树含 .harness，破坏「productTree 排除 .harness」约定。
+            subprocess.run(
+                ["git", "add", "--", "tracked.txt"], cwd=root, check=True
+            )
             subprocess.run(
                 ["git", "commit", "-q", "-m", "v2"], cwd=root, check=True
             )

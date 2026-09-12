@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -242,6 +243,61 @@ def product_tree_hash(project_root: Path | None) -> str | None:
         return None
     tree = _git_text(project_root, "rev-parse", "--verify", "HEAD^{tree}")
     return "sha256:" + tree if _nonempty_str(tree) else None
+
+
+def worktree_product_tree_hash(project_root: Path | None) -> str | None:
+    """当前工作区产品内容的 git tree 哈希（R4：绑定候选实际内容）。
+
+    与 product_tree_hash（HEAD^{tree}）的区别：本函数经由临时索引
+    （GIT_INDEX_FILE，不触碰真实索引）把工作区实际内容写成树对象——
+    未提交的被跟踪文件修改与未跟踪的非 .harness 文件都会改变结果；
+    .harness/ 状态目录始终排除。无产品变更时与 HEAD^{tree} 同值，
+    因此空提交/纯 .harness 漂移不会误拒既有收据。
+    """
+    if project_root is None:
+        return None
+    head = _git_text(project_root, "rev-parse", "--verify", "HEAD^{tree}")
+    if not _nonempty_str(head):
+        return None
+    # 调用方可能传入仓库内任意子目录（如 change_dir）；pathspec
+    # （.harness）与 add -A 的工作区语义都必须以仓库根为 cwd 解析。
+    top = _git_text(project_root, "rev-parse", "--show-toplevel")
+    work_dir = Path(top) if _nonempty_str(top) else project_root
+    fd, tmp = tempfile.mkstemp(prefix="harness-ledger-idx-")
+    os.close(fd)
+    env = {**os.environ, "GIT_INDEX_FILE": tmp}
+
+    def _run(*args: str) -> str | None:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(work_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    try:
+        if _run("read-tree", "HEAD") is None:
+            return None
+        if _run("add", "-A") is None:
+            return None
+        # .harness/ 是 harness 状态目录，不计入产品内容（未被 gitignore
+        # 的仓库里它是未跟踪文件，会被 add -A 纳入，必须显式剔除）。
+        _run("rm", "-r", "--cached", "-f", "--ignore-unmatch", "--quiet", "--",
+             ".harness")
+        tree = _run("write-tree")
+        return "sha256:" + tree if _nonempty_str(tree) else None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def lock_hash(project_root: Path | None) -> str | None:
@@ -3404,6 +3460,7 @@ def _validate_ci_evidence_receipt(
     verification: str,
     job_name: str,
     step_name: str,
+    shard: str | None = None,
 ) -> tuple[dict[str, Any] | None, str, str, dict[str, Any] | None]:
     """语义校验链：结果/代码版本/来源/verification 集合。
 
@@ -3453,6 +3510,37 @@ def _validate_ci_evidence_receipt(
                 "请在当前代码上重新触发 CI 并导入新收据。"
             ),
         }
+    # R4：productTree 必须绑定候选实际内容（含未提交漂移、未跟踪产品文件，
+    # 排除 .harness/）——只比对 HEAD^{tree} 时工作区漂移不可见。旧收据无
+    # productTree 字段时回退 headTree（二者在清洁工作区同值）。
+    bound_tree = receipt.get("productTree") or receipt.get("headTree")
+    worktree_tree = worktree_product_tree_hash(project_root)
+    if not worktree_tree or bound_tree != worktree_tree:
+        return None, "productTree", "RECEIPT_TREE_MISMATCH", {
+            "receipt": bound_tree,
+            "local": worktree_tree,
+            "hint": (
+                "收据绑定的是 CI 运行时的产品内容；当前工作区存在未提交的"
+                "产品漂移（修改或未跟踪文件）。请先提交/还原漂移，或在当前"
+                "内容上重新触发 CI 并导入新收据。"
+            ),
+        }
+    # R5：声明了分片身份的收据必须与本次导入的分片一致（错分片/重复导入
+    # 同一分片以外的串扰直接拒绝）。
+    receipt_shard = receipt.get("shard")
+    if isinstance(receipt_shard, dict):
+        expected_shard = (
+            f"{receipt_shard.get('index')}/{receipt_shard.get('total')}"
+        )
+        if shard != expected_shard:
+            return None, "shard", "RECEIPT_SHARD_MISMATCH", {
+                "receipt": expected_shard,
+                "actual": shard,
+                "hint": (
+                    "收据声明的分片与 --shard 不一致；请按收据实际分片导入，"
+                    "或重新生成分片收据。"
+                ),
+            }
     local_repo = harness_paths._primary_remote_url(project_root)
     if local_repo is None:
         return None, "repository", "RECEIPT_REPOSITORY_MISMATCH", {
@@ -3503,12 +3591,26 @@ def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
         )
     job_name = args.job
     step_name = args.step
+    shard = str(args.shard).strip() if getattr(args, "shard", None) else None
+    if shard:
+        match = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", shard)
+        if match is None or int(match.group(1)) > int(match.group(2)):
+            return emit_error(
+                f"invalid --shard {shard!r}: 期望 I/N（1<=I<=N）",
+                as_json=as_json,
+                error_code="SHARD_INVALID",
+                extra={
+                    "fieldPath": "shard",
+                    "recoveryAction": "按收据实际分片传 --shard I/N（如 1/3）",
+                },
+            )
     step, field_path, code, detail = _validate_ci_evidence_receipt(
         receipt,
         project_root=Path(str(getattr(args, "project", None) or change_dir)),
         verification=args.verification,
         job_name=job_name,
         step_name=step_name,
+        shard=shard,
     )
     if field_path is not None:
         return emit_error(
@@ -3522,6 +3624,61 @@ def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
     head_tree = receipt["headTree"]
     ci_command = str(step.get("command") or f"{job_name}/{step_name}")
     status = "OK"
+    # R5：分片聚合——只有与本次收据同 runId 且同 productTree 的分片可以
+    # 聚合；内容分叉或旧 run 的碎片记入 supersededShards（不再贡献 full
+    # 覆盖判定）。无 --shard 时维持整单收据语义（coverage=full）。
+    coverage = "full"
+    shard_records: dict[str, dict[str, Any]] | None = None
+    superseded_shards: list[dict[str, Any]] = []
+    if shard is not None:
+        bound_tree = receipt.get("productTree") or head_tree
+        current_run = str(receipt.get("runId") or "")
+        shard_total = int(shard.split("/", 1)[1])
+        prev_entry: dict[str, Any] | None = None
+        try:
+            prev_ledger, _ = load_ledger(change_dir)
+            if isinstance(prev_ledger, dict):
+                prev_validations = prev_ledger.get("validations")
+                if isinstance(prev_validations, dict):
+                    candidate = prev_validations.get(args.verification)
+                    if isinstance(candidate, dict):
+                        prev_entry = candidate
+        except (OSError, ValueError, json.JSONDecodeError):
+            prev_entry = None
+        active: dict[str, dict[str, Any]] = {}
+        if prev_entry is not None:
+            prev_superseded = prev_entry.get("supersededShards")
+            if isinstance(prev_superseded, list):
+                superseded_shards.extend(
+                    item for item in prev_superseded if isinstance(item, dict)
+                )
+            prev_shards = prev_entry.get("shards")
+            if isinstance(prev_shards, dict):
+                for key, record in prev_shards.items():
+                    if not isinstance(record, dict):
+                        continue
+                    same_run = str(record.get("runId") or "") == current_run
+                    same_tree = (
+                        str(record.get("productTree") or "") == bound_tree
+                    )
+                    same_total = str(key).endswith(f"/{shard_total}")
+                    if same_run and same_tree and same_total:
+                        active[str(key)] = record
+                    else:
+                        superseded_shards.append(record)
+        active[shard] = {
+            "runId": receipt.get("runId"),
+            "runAttempt": receipt.get("runAttempt"),
+            "productTree": bound_tree,
+            "job": job_name,
+            "step": step_name,
+            "importedAt": now_iso(),
+        }
+        have = {
+            int(key.split("/", 1)[0]) for key in active if "/" in key
+        }
+        coverage = "full" if len(have) >= shard_total else "incremental"
+        shard_records = active
     entry = {
         "status": status,
         "command": ci_command,
@@ -3531,7 +3688,7 @@ def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
         "durationMs": 0,
         "inputsHash": head_tree,
         "inputsFiles": [],
-        "coverage": "full",
+        "coverage": coverage,
         "algorithmVersion": LEDGER_VERSION,
         "finishedAt": now_iso(),
         "imported": True,
@@ -3548,6 +3705,10 @@ def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
             "concludedAt": receipt["concludedAt"],
         },
     }
+    if shard_records is not None:
+        entry["shards"] = shard_records
+        if superseded_shards:
+            entry["supersededShards"] = superseded_shards
     try:
         ledger, existing_path = load_ledger(change_dir)
         if ledger is None:
@@ -3613,10 +3774,14 @@ def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
         "action": "import-ci-evidence",
         "verification": args.verification,
         "status": status,
+        "coverage": coverage,
         "inputsHash": head_tree,
         "receiptPath": str(receipt_path),
         "importedFrom": entry["importedFrom"],
     }
+    if shard_records is not None:
+        payload["aggregatedShards"] = sorted(shard_records)
+        payload["supersededShards"] = len(superseded_shards)
     emit_json(payload, as_json=as_json)
     return 0
 
@@ -4707,6 +4872,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_imp.add_argument(
         "--step", required=True, help="CI step name inside the job"
+    )
+    p_imp.add_argument(
+        "--shard",
+        default=None,
+        help=(
+            "shard identity I/N (e.g. 1/3); shards aggregate to full coverage "
+            "only when all share runId+productTree, else incremental (R5)"
+        ),
     )
     p_imp.add_argument(
         "--project",

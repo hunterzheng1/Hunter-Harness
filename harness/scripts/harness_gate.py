@@ -751,6 +751,30 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
             missing.append(field)
         elif field == "coverage" and str(value).strip() not in hl.COVERAGE_RANK:
             missing.append("coverage(valid)")
+        elif (
+            field == "coverage"
+            and not degraded
+            and not not_applicable
+            and entry.get("status") == "OK"
+        ):
+            # R5：覆盖档位充分性——分片/incremental 证据不得满足更高档位
+            # 要求（unitTestFull 要求 ≥ module）；账本侧可把同 run+同 tree
+            # 的齐集分片聚合为 full，单分片保持 incremental 时门禁拒绝。
+            coverage_value = str(value).strip()
+            required_rank = hl.REQUIRED_COVERAGE.get(verification, 1)
+            if hl.COVERAGE_RANK[coverage_value] < required_rank:
+                required_name = next(
+                    (
+                        name
+                        for name, rank in hl.COVERAGE_RANK.items()
+                        if rank == required_rank
+                    ),
+                    "module",
+                )
+                missing.append(
+                    "coverage(insufficient: "
+                    f"{coverage_value} < {required_name} for {verification})"
+                )
         elif field == "algorithmVersion" and str(value).strip() != hl.LEDGER_VERSION:
             missing.append("algorithmVersion(harness-ledger-2)")
     # B3-1：NOT_APPLICABLE 与 DEGRADED 同走 degraded 通道（CLOSED_DEGRADED），
@@ -943,6 +967,7 @@ def validate_ledger_for_phase_close(
                         "coverage(valid)",
                     )
                 )
+                or any(m.startswith("coverage(insufficient") for m in missing)
                 else "MISSING_FIELDS"
             )
             problems.append(
