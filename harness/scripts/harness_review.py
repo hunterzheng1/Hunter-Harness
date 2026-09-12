@@ -111,6 +111,25 @@ def stable_finding_id(
 ANCHOR_CONTEXT_RADIUS = 2
 
 
+def _load_carryover_receipt(change_dir: Path) -> dict[str, Any] | None:
+    """读最近的评审携带回执（fixback 批次判定产物）；无/损坏返回 None。"""
+    base = (
+        Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+        / "runtime"
+        / "invalidations"
+    )
+    if not base.is_dir():
+        return None
+    receipts = sorted(base.glob("review-carryover-*.json"))
+    if not receipts:
+        return None
+    try:
+        data = json.loads(receipts[-1].read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def compute_finding_anchor(repo_root: Path, path: Any, line: Any) -> dict[str, Any]:
     """WI-3.1 锚点：finding 行 ±2 行规范化文本（去行尾空白）的 sha256。
 
@@ -247,6 +266,24 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
             repo_root, finding.get("path"), finding.get("line")
         )
         assigned.append(entry)
+    # WI-3.1 步骤③：重评审轮（存在携带回执）时，回执判定为携带、但模型
+    # 未重新上报的 finding 从上一轮 sidecar 合并回来。fail-closed 防丢失：
+    # 携带项若静默消失，其处置也随之蒸发，关门校验会因缺处置而拒绝。
+    carryover_receipt = _load_carryover_receipt(change_dir)
+    if carryover_receipt is not None:
+        previous_by_id = {
+            str(old.get("id")): old
+            for old in (previous or {}).get("findings", [])
+            if isinstance(old, dict) and old.get("id")
+        }
+        for carried_id in carryover_receipt.get("carriedOverIds", []):
+            if carried_id in seen or carried_id not in previous_by_id:
+                continue
+            merged = dict(previous_by_id[carried_id])
+            merged["carriedOver"] = True
+            merged["lastSeenRunId"] = merged.get("firstSeenRunId", run_id)
+            assigned.append(merged)
+            seen.add(carried_id)
     payload = {
         "schemaVersion": 2,
         "runId": run_id,
@@ -343,10 +380,40 @@ def write_dispositions(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
     )
     if problems:
         return {"ok": False, "code": "DISPOSITIONS_INVALID", "problems": problems}
+    # WI-3.1 步骤③：携带项的处置自动继承上一轮（模型只处置新发现/失效重生）。
+    # 继承条目标 inheritedFromRunId，关门校验（gate）会验签其必须属于携带回执。
+    inherited: list[dict[str, Any]] = []
+    submitted_ids = {
+        item.get("findingId")
+        for item in doc["dispositions"]
+        if isinstance(item, dict)
+    }
+    carryover_receipt = _load_carryover_receipt(change_dir)
+    if carryover_receipt is not None:
+        previous: dict[str, Any] | None = None
+        dpath = dispositions_path(change_dir)
+        if dpath.is_file():
+            try:
+                loaded = _read_json(dpath)
+                if isinstance(loaded, dict):
+                    previous = loaded
+            except (OSError, json.JSONDecodeError):
+                previous = None
+        prev_by_id = {
+            item.get("findingId"): item
+            for item in (previous or {}).get("dispositions", [])
+            if isinstance(item, dict)
+        }
+        for carried_id in carryover_receipt.get("carriedOverIds", []):
+            if carried_id in submitted_ids or carried_id not in prev_by_id:
+                continue
+            entry = dict(prev_by_id[carried_id])
+            entry["inheritedFromRunId"] = (previous or {}).get("runId")
+            inherited.append(entry)
     payload = {
         "schemaVersion": 1,
         "runId": doc["runId"],
-        "dispositions": doc["dispositions"],
+        "dispositions": [*doc["dispositions"], *inherited],
     }
     out = dispositions_path(change_dir)
     _write_json_atomic(out, payload)

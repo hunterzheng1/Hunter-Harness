@@ -675,6 +675,93 @@ class HarnessGateTests(unittest.TestCase):
         # B2-6：当前轮 runId 随信封下发，恢复路径不再被迫读 events 原文
         self.assertEqual(invalid["currentRunId"], "review-run-1")
 
+    def test_review_close_accepts_inherited_dispositions_from_carryover(self) -> None:
+        """WI-3.1 步骤③：携带项的处置可继承上一轮（inheritedFromRunId），
+        但必须出现在携带回执的 carriedOverIds 里——手工声明不被接受。"""
+        review_dir = self.change_dir / "reports" / "review"
+        review_dir.mkdir(parents=True)
+        findings = {
+            "schemaVersion": 2,
+            "runId": "review-run-2",
+            "findings": [
+                {
+                    "id": "f-carried",
+                    "dimension": "correctness",
+                    "severity": "YELLOW",
+                    "path": "src/timer.ts",
+                    "line": 12,
+                    "title": "避免魔法数",
+                    "fixbackAction": "code",
+                    "firstSeenRunId": "review-run-1",
+                    "lastSeenRunId": "review-run-1",
+                    "carriedOver": True,
+                },
+                {
+                    "id": "f-new",
+                    "dimension": "correctness",
+                    "severity": "YELLOW",
+                    "path": "src/new.ts",
+                    "line": 1,
+                    "title": "新发现",
+                    "fixbackAction": "code",
+                    "firstSeenRunId": "review-run-2",
+                    "lastSeenRunId": "review-run-2",
+                },
+            ],
+        }
+        (review_dir / "review-findings.json").write_text(
+            json.dumps(findings), encoding="utf-8"
+        )
+        dispositions = {
+            "schemaVersion": 1,
+            "runId": "review-run-2",
+            "dispositions": [
+                {
+                    "findingId": "f-carried",
+                    "disposition": "FIXED",
+                    "inheritedFromRunId": "review-run-1",
+                },
+                {"findingId": "f-new", "disposition": "OPEN"},
+            ],
+        }
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(dispositions), encoding="utf-8"
+        )
+        receipt_dir = self.change_dir / "runtime" / "invalidations"
+        receipt_dir.mkdir(parents=True)
+        (receipt_dir / "review-carryover-fb-1.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "batchId": "fb-1",
+                    "carriedOverIds": ["f-carried"],
+                    "invalidatedIds": [],
+                    "expandedSignals": [],
+                    "findings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        valid = gate.validate_review_outputs_for_close(
+            self.change_dir, "review-run-2"
+        )
+        self.assertTrue(valid["ok"], valid)
+
+        # 手工声明继承（不在回执 carriedOverIds 里）→ 拒绝
+        dispositions["dispositions"][0]["inheritedFromRunId"] = "review-run-1"
+        dispositions["dispositions"][1]["inheritedFromRunId"] = "review-run-1"
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(dispositions), encoding="utf-8"
+        )
+        forged = gate.validate_review_outputs_for_close(
+            self.change_dir, "review-run-2"
+        )
+        self.assertFalse(forged["ok"], forged)
+        self.assertTrue(
+            any("inheritedFromRunId" in p for p in forged["problems"]), forged
+        )
+
     def test_risk_classification_uses_change_worktree_root(self) -> None:
         worktree = self.project / ".worktrees" / "demo"
         worktree.parent.mkdir()

@@ -234,6 +234,164 @@ class CrossRoundIdentityTests(ReviewFixture):
         self.assertEqual(findings[2]["lastSeenRunId"], "review-run-2")
 
 
+class CarryoverMergeTests(ReviewFixture):
+    """WI-3.1 步骤③：重评审轮 write-findings 合并携带项（fail-closed 防丢失）。"""
+
+    def _write_carryover_receipt(self, carried: list[str]) -> None:
+        receipt_dir = self.state_dir / "runtime" / "invalidations"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "review-carryover-fb-1.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "batchId": "fb-1",
+                    "carriedOverIds": carried,
+                    "invalidatedIds": [],
+                    "expandedSignals": [],
+                    "findings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _written(self) -> dict:
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        return json.loads(out_path.read_text(encoding="utf-8"))
+
+    def test_carried_finding_absent_from_resubmission_is_merged_back(self) -> None:
+        first = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(first["ok"], first)
+        round1 = self._written()
+        carried_id = round1["findings"][0]["id"]
+        self._write_carryover_receipt([carried_id])
+
+        # 第二轮模型只重新上报了后两个 finding，携带项未上报
+        doc = self.sample_findings()
+        doc["runId"] = "review-run-2"
+        doc["findings"] = doc["findings"][1:]
+        second = review.write_findings(self.change_dir, doc)
+        self.assertTrue(second["ok"], second)
+
+        merged = self._written()
+        merged_ids = [f["id"] for f in merged["findings"]]
+        self.assertIn(carried_id, merged_ids, "携带项必须合并回来，不能静默丢失")
+        carried_entry = next(f for f in merged["findings"] if f["id"] == carried_id)
+        self.assertTrue(carried_entry["carriedOver"])
+        self.assertEqual(carried_entry["firstSeenRunId"], "review-run-1")
+        self.assertEqual(carried_entry["lastSeenRunId"], "review-run-1")
+
+    def test_resubmitted_finding_is_not_marked_carried(self) -> None:
+        first = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(first["ok"], first)
+        round1 = self._written()
+        carried_id = round1["findings"][0]["id"]
+        self._write_carryover_receipt([carried_id])
+
+        doc = self.sample_findings()
+        doc["runId"] = "review-run-2"
+        second = review.write_findings(self.change_dir, doc)
+        self.assertTrue(second["ok"], second)
+
+        merged = self._written()
+        entry = next(f for f in merged["findings"] if f["id"] == carried_id)
+        self.assertNotIn("carriedOver", entry, "重新上报的项不是携带项")
+
+
+class DispositionInheritanceTests(ReviewFixture):
+    """WI-3.1 步骤③：write-dispositions 自动继承携带项的上一轮处置。"""
+
+    def _seed_round1(self) -> dict:
+        first = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(first["ok"], first)
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        round1 = json.loads(out_path.read_text(encoding="utf-8"))
+        dispositions = [
+            {"findingId": f["id"], "disposition": "FIXED"}
+            for f in round1["findings"]
+        ]
+        written = review.write_dispositions(
+            self.change_dir,
+            {"runId": "review-run-1", "dispositions": dispositions},
+        )
+        self.assertTrue(written["ok"], written)
+        return round1
+
+    def _write_carryover_receipt(self, carried: list[str]) -> None:
+        receipt_dir = self.state_dir / "runtime" / "invalidations"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "review-carryover-fb-1.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "batchId": "fb-1",
+                    "carriedOverIds": carried,
+                    "invalidatedIds": [],
+                    "expandedSignals": [],
+                    "findings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _dispositions_doc(self) -> dict:
+        path = self.state_dir / "reports" / "review" / "fixback-dispositions.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _resubmit_round2(self) -> list[dict]:
+        """第二轮只重新上报后两个 finding，返回合并后 sidecar 的非携带项。"""
+        doc = self.sample_findings()
+        doc["runId"] = "review-run-2"
+        doc["findings"] = doc["findings"][1:]
+        second = review.write_findings(self.change_dir, doc)
+        self.assertTrue(second["ok"], second)
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        merged = json.loads(out_path.read_text(encoding="utf-8"))
+        return [f for f in merged["findings"] if not f.get("carriedOver")]
+
+    def test_carried_disposition_is_inherited_with_provenance(self) -> None:
+        round1 = self._seed_round1()
+        carried_id = round1["findings"][0]["id"]
+        self._write_carryover_receipt([carried_id])
+
+        # 第二轮：携带项未重新上报（合并回 sidecar），模型只处置新发现
+        resubmitted = self._resubmit_round2()
+        written = review.write_dispositions(
+            self.change_dir,
+            {
+                "runId": "review-run-2",
+                "dispositions": [
+                    {"findingId": f["id"], "disposition": "OPEN"}
+                    for f in resubmitted
+                ],
+            },
+        )
+        self.assertTrue(written["ok"], written)
+
+        result = self._dispositions_doc()
+        by_id = {d["findingId"]: d for d in result["dispositions"]}
+        self.assertIn(carried_id, by_id, "携带项处置必须自动继承")
+        self.assertEqual(by_id[carried_id]["disposition"], "FIXED")
+        self.assertEqual(by_id[carried_id]["inheritedFromRunId"], "review-run-1")
+        self.assertEqual(result["runId"], "review-run-2")
+
+    def test_inherited_entry_not_required_in_model_submission(self) -> None:
+        round1 = self._seed_round1()
+        carried_id = round1["findings"][0]["id"]
+        self._write_carryover_receipt([carried_id])
+        resubmitted = self._resubmit_round2()
+        written = review.write_dispositions(
+            self.change_dir,
+            {
+                "runId": "review-run-2",
+                "dispositions": [
+                    {"findingId": f["id"], "disposition": "OPEN"}
+                    for f in resubmitted
+                ],
+            },
+        )
+        self.assertTrue(written["ok"], written)
+
+
 class AnchorTests(ReviewFixture):
     """WI-3.1 步骤①：finding 锚点（行 ±2 行规范化文本哈希）。"""
 

@@ -2666,6 +2666,27 @@ def validate_plan_handoff(change_dir: Path) -> dict[str, Any]:
     return hpf.verify_plan(change_dir)
 
 
+def _load_carryover_carried_ids(change_dir: Path) -> set[str]:
+    """读最近的评审携带回执，返回 carriedOverIds 集合；无/损坏返回空集。"""
+    state_dir = hp.resolve_state_dir_for_contract(change_dir)
+    base = Path(state_dir) / "runtime" / "invalidations"
+    if not base.is_dir():
+        return set()
+    receipts = sorted(base.glob("review-carryover-*.json"))
+    if not receipts:
+        return set()
+    try:
+        data = json.loads(receipts[-1].read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    ids = data.get("carriedOverIds")
+    if not isinstance(ids, list):
+        return set()
+    return {str(item) for item in ids}
+
+
 def validate_review_outputs_for_close(
     change_dir: Path,
     run_id: str,
@@ -2722,6 +2743,22 @@ def validate_review_outputs_for_close(
         problems.append(
             "findings without dispositions: " + ",".join(missing_dispositions)
         )
+    # WI-3.1 步骤③：携带项的处置可继承上一轮（inheritedFromRunId），
+    # 但必须出现在携带回执的 carriedOverIds 里——继承集合只能由
+    # fixback 判定函数产出，手工声明一律拒绝（fail-closed 防绕过）。
+    carried_ids = _load_carryover_carried_ids(change_dir)
+    for item in dispositions.get("dispositions", []):
+        if not isinstance(item, dict):
+            continue
+        inherited_from = item.get("inheritedFromRunId")
+        if inherited_from is None:
+            continue
+        fid = str(item.get("findingId"))
+        if fid not in carried_ids:
+            problems.append(
+                f"disposition {fid} declares inheritedFromRunId but is not in "
+                "the review-carryover receipt carriedOverIds"
+            )
     if problems:
         return {
             "ok": False,
