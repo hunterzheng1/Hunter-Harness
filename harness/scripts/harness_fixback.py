@@ -701,6 +701,7 @@ def invalidate_affected_evidence(
     *,
     changed_files: list[str],
     batch_id: str,
+    review_findings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Invalidate only verification targets whose declared inputs were changed."""
     normalized = {
@@ -765,6 +766,9 @@ def invalidate_affected_evidence(
         "validations": sorted(validation_names),
         "createdAt": now_iso(),
     }
+    if review_findings is not None:
+        # WI-3.1 步骤⑤：评审侧携带/失效计数并入验证侧回执。
+        invalidation_receipt["reviewFindings"] = dict(review_findings)
     invalidations_dir = _state_root(change_dir) / "runtime" / "invalidations"
     invalidations_dir.mkdir(parents=True, exist_ok=True)
     _write_json(
@@ -1809,11 +1813,6 @@ def resolve_issue(
     )
     batch["updatedAt"] = resolved_at
     batch_changed_files = [record["path"] for record in changed_records]
-    batch["invalidation"] = invalidate_affected_evidence(
-        change_dir,
-        changed_files=batch_changed_files,
-        batch_id=batch_id,
-    )
     # WI-3.1 步骤②：评审结论按 finding 粒度失效/携带。判定结果落
     # runtime/invalidations/review-carryover-<batchId>.json，供 close 校验
     # 与 efficiency 汇总消费；失败 fail-closed（携带判定失败 → 整批重评审）。
@@ -1851,6 +1850,17 @@ def resolve_issue(
         "invalidated": len(carryover["invalidatedIds"]),
         "expandedSignals": carryover["expandedSignals"],
     }
+    # WI-3.1 步骤⑤：验证侧回执并入评审侧计数，efficiency 汇总单文件可读。
+    batch["invalidation"] = invalidate_affected_evidence(
+        change_dir,
+        changed_files=batch_changed_files,
+        batch_id=batch_id,
+        review_findings={
+            "carriedOver": len(carryover["carriedOverIds"]),
+            "invalidated": len(carryover["invalidatedIds"]),
+            "expandedSignals": carryover["expandedSignals"],
+        },
+    )
     _write_json(_batch_path(change_dir, batch_id), batch)
     return issue
 

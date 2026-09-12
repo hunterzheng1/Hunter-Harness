@@ -84,6 +84,31 @@ class EfficiencySummaryTests(unittest.TestCase):
         self.assertEqual(summary["invalidationReasons"]["PRODUCT_INPUT_CHANGED"], 1)
         self.assertEqual(summary["repeatedCommandsWithoutNewEvidence"], 0)
 
+    def test_review_carryover_counts_are_summed_from_invalidation_receipts(self) -> None:
+        """WI-3.1 步骤⑤：fixback 回执的 reviewFindings 计数进 efficiency 汇总。"""
+        module = load_module()
+        summary = module.build_efficiency_summary(
+            run_sessions=[],
+            environment_receipts=[],
+            invalidations=[
+                {
+                    "reasonCode": "FIXBACK_AFFECTED_INPUT_CHANGED",
+                    "reviewFindings": {
+                        "carriedOver": 3,
+                        "invalidated": 2,
+                        "expandedSignals": ["shared-state"],
+                    },
+                },
+                {
+                    "reasonCode": "FIXBACK_AFFECTED_INPUT_CHANGED",
+                    "reviewFindings": {"carriedOver": 1, "invalidated": 0},
+                },
+                {"reasonCode": "PRODUCT_INPUT_CHANGED"},
+            ],
+        )
+        self.assertEqual(summary["reviewFindings"]["carriedOver"], 4)
+        self.assertEqual(summary["reviewFindings"]["invalidated"], 2)
+
     def test_wall_clock_unions_overlapping_sessions_instead_of_summing(self) -> None:
         module = load_module()
         summary = module.build_efficiency_summary(

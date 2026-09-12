@@ -764,6 +764,17 @@ class FixbackBatchTests(unittest.TestCase):
                 .read_text(encoding="utf-8")
             )
             self.assertEqual(batch["reviewCarryover"]["carriedOver"], 1)
+            # WI-3.1 步骤⑤：验证侧回执并入评审侧计数，efficiency 单文件可读。
+            fixback_receipt = json.loads(
+                (
+                    change_dir / "runtime" / "invalidations"
+                    / "fixback-batch-carry.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                fixback_receipt["reviewFindings"],
+                {"carriedOver": 1, "invalidated": 0, "expandedSignals": []},
+            )
 
     def test_close_batch_flips_fixback_session_to_closed(self) -> None:
         """F-5：批次关闭时托管会话必须同步 CLOSED，不再误拦后续 launch-review。"""

@@ -256,6 +256,16 @@ def build_efficiency_summary(
     progress_states: Counter[str] = Counter()
     budget_states: Counter[str] = Counter()
     slow_stages: Counter[str] = Counter()
+    # WI-3.1 步骤⑤：评审携带/失效计数（fixback 回执的 reviewFindings 子对象）。
+    # 旧回执无该字段时缺省 0，口径向后兼容。
+    review_carried_over = 0
+    review_invalidated = 0
+    for item in invalidations:
+        review_findings = item.get("reviewFindings")
+        if not isinstance(review_findings, dict):
+            continue
+        review_carried_over += _integer(review_findings.get("carriedOver"))
+        review_invalidated += _integer(review_findings.get("invalidated"))
     for session in run_sessions:
         classification = _failure_class(session)
         if classification is not None:
@@ -332,6 +342,10 @@ def build_efficiency_summary(
             str(item.get("reasonCode") or "UNKNOWN")
             for item in invalidations
         ),
+        "reviewFindings": {
+            "carriedOver": review_carried_over,
+            "invalidated": review_invalidated,
+        },
         "environment": {
             key: environment_actions.get(key, 0)
             for key in ("prepare", "reuse", "reset", "cleanup")
