@@ -728,7 +728,10 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
             if not isinstance(value, list):
                 missing.append(field)
             elif verification == "unitTestFull" and not value:
-                missing.append("inputsFiles(non-empty)")
+                # WI-3.2：imported 条目绑定整个产品 tree（inputsFiles 为空 +
+                # imported 标志），文件级闭包由 tree 蕴含——放行该组合。
+                if entry.get("imported") is not True:
+                    missing.append("inputsFiles(non-empty)")
         elif field == "status":
             if value != "OK" and not degraded and not not_applicable:
                 if str(value).upper() == "NOT_RUN":
