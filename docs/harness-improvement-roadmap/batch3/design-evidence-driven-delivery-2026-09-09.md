@@ -165,10 +165,9 @@ ASSURANCE_SIGNALS）是两套独立裁决，信号表已对齐（risk-signal-inf
 
 1. **局部失效**：返工/fixback 只失效受影响的验证与评审结论
    （现有 invalidation 机制扩展到 review sidecars）。
-   > **状态：设计待裁决（2026-09-12）**。独立设计文档
-   > `design-wi3-1-partial-invalidation-2026-09-12.md`（含五项待裁决项）。
-   > 勘察结论：验证证据侧局部失效已存在（fixback 条目级），本项主体是
-   > 评审侧 finding 级携带 + disposition 跨轮继承。
+   > **状态：已实施并收尾（2026-09-12）**。独立设计文档
+   > `design-wi3-1-partial-invalidation-2026-09-12.md`（已裁决，§7 实施记录
+   > 六步全过，试点复验 17/17）。
 2. **证据复用**：P14 决策维持不接入（can-reuse 封存）；本项只做
    「跨 change 的同类验证证据导入」（宿主 CI 证据导入路径，提案 §4.6）。
 3. **任务依赖**：并行写入的文件范围冲突检测（提案 §4.4）。

@@ -2,8 +2,9 @@
 
 > 日期：2026-09-12
 >
-> 状态：**已裁决（2026-09-12）**。本文是 `design-evidence-driven-delivery-2026-09-09.md`
-> §2 WI-3 子项 1 的展开。用户确认 §0 五项建议值全部采纳，按 §4 顺序实施。
+> 状态：**已实施并收尾（2026-09-12）**。本文是 `design-evidence-driven-delivery-2026-09-09.md`
+> §2 WI-3 子项 1 的展开。用户确认 §0 五项建议值全部采纳，按 §4 顺序实施；
+> 六步全部完成（实施记录见 §7），试点复验 17/17 门槛通过。
 >
 > 输入：提案 `product-optimization-proposal-2026-09.md` §4.7（「返工只失效受影响的
 > 测试和评审结论。改变公共接口、共享配置或整体设计时相应扩大范围」）；
@@ -138,3 +139,34 @@ TS 侧若有 sidecar 消费方需在步骤 ③ 同步契约（实施时先排查
 | 契约 v2 破坏在途 change 的旧 sidecar | 读时兼容分流（v1 保持整 run 语义）；不迁移历史文件 |
 | 携带集合被手工声明绕过 | 携带集合只能由判定函数输出并带 findingsHash 签名，close 校验验签 |
 | 与 WI-3.4 范围交叠 | 本项只产出失效/携带的账本语义与 sidecar 事实；评审输入构造留给 WI-3.4 |
+
+## 7. 实施记录（2026-09-12）
+
+| 步骤 | 内容 | 提交 |
+|---|---|---|
+| ① | finding 稳定 id（去 runId）+ `compute_finding_anchor`（±2 行 sha256）+ `write_findings` 输出 schemaVersion 2（firstSeenRunId/lastSeenRunId/anchors）+ fixback schemaVersion 放宽到 (1,2) | `ee60700` |
+| ② | `classify_review_carryover` 三分支判定 + `detect_blast_radius`（复用 risk-signals.json fullMarkers）+ `resolve_issue` 接线，回执落 `runtime/invalidations/review-carryover-<batchId>.json` | `a3712d1` |
+| ③ | disposition 继承：`write_findings` 自动合并未上报的携带项（fail-closed 防丢失）；`write_dispositions` 自动继承携带项处置（标 `inheritedFromRunId`）；gate close 校验继承条目必须出现在携带回执（手工声明一律拒绝） | `39c39d5` |
+| ④ | 验证侧报错精准化（裁决项 4）：identity_mismatch 兜底命中失效标志时报 `EVIDENCE_INVALIDATED` + 逐条目详情，不改变放行/拒绝集合 | `f4a0e9d` |
+| ⑤ | 验证侧回执并入 `reviewFindings` 计数；efficiency 汇总新增 `reviewFindings` 字段（旧回执缺省 0）；harness-review SKILL.md 补携带语义；TS 侧排查结论：无 sidecar 消费方，无需契约投影同步 | `67831d9` |
+| ⑥ | 试点复验：临时脚本走完整两轮 review + fixback 流程，17 项门槛全过（见下） | （无产物，脚本即删） |
+
+### 试点门槛结果（§5 全覆盖）
+
+- 单测：review 46/46、gate 129/129、fixback 34/34、efficiency 8/8；全量 1554 绿。
+- 试点复验：两轮 review（run-1 → fixback batch-p1 → run-2）+ 影响扩大批次
+  batch-p2。G1 携带判定（仅改 b.py → b 失效、a/c 携带）；G1b 未上报携带项
+  自动合并回 sidecar；G2 处置自动继承（`inheritedFromRunId=run-1`）；
+  G3 close 接受继承处置；G3b 回执外伪造继承被拒；G4/G4b 回执并入
+  reviewFindings 且 efficiency 汇总可见；G5 shared-state 命中 → 整 dimension
+  `BLAST_RADIUS_EXPANDED`（fail-closed）；G6 抽查携带项与 changedFiles 无交集。
+- 无静默放宽：影响扩大用例单测 + 试点各覆盖一次，均整 dimension 失效。
+
+### 实施偏差（相对 §3/§4 原文）
+
+- 步骤⑤「契约投影同步」：排查后 TS 侧无 review-findings 消费方
+  （`rule-candidates.ts` 把 findings 当不透明 JSON），无需同步。
+- 步骤③继承语义落地为「自动继承」而非「模型显式提交继承条目」：模型只
+  处置新发现/失效重生项，携带项处置由 `write_dispositions` 从上一轮 sidecar
+  自动带出并标 `inheritedFromRunId`；gate 验签继承集合 ⊆ 携带回执，
+  防绕过语义与设计一致。
