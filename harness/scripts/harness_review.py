@@ -92,15 +92,62 @@ def _normalize_title(title: str) -> str:
 
 
 def stable_finding_id(
-    run_id: str, dimension: str, path: str, line: int, title: str
+    dimension: str, path: str, line: int, title: str
 ) -> str:
-    """Stable finding identity (run + dimension + canonical path + line + title)."""
+    """Stable finding identity (dimension + canonical path + line + title).
+
+    WI-3.1：id 不含 runId——同一问题跨轮 review 保持同一 id，
+    携带（carry-over）与处置继承才有可比对的身份。轮次信息降为
+    finding 字段（firstSeenRunId / lastSeenRunId）。
+    """
     canonical_path = str(path).replace("\\", "/").strip("/").lower()
     basis = (
-        f"{run_id}|{dimension.strip().lower()}|{canonical_path}|{int(line)}|"
+        f"{dimension.strip().lower()}|{canonical_path}|{int(line)}|"
         f"{_normalize_title(title)}"
     )
     return "f-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+ANCHOR_CONTEXT_RADIUS = 2
+
+
+def compute_finding_anchor(repo_root: Path, path: Any, line: Any) -> dict[str, Any]:
+    """WI-3.1 锚点：finding 行 ±2 行规范化文本（去行尾空白）的 sha256。
+
+    锚点是携带判定的安全网：文件不在 changedFiles 里却被改动（声明不全）
+    时，contextHash 漂移会把 finding 打回 invalidated。文件缺失、目录
+    路径、行号越界或行 0（文件级 finding）一律 unresolvable——下游对
+    unresolvable 的语义是 fail-closed（放大失效，不携带）。
+    """
+    rel = str(path).replace("\\", "/").strip("/") if isinstance(path, str) else ""
+    anchor: dict[str, Any] = {
+        "path": rel,
+        "contextHash": None,
+        "unresolvable": False,
+    }
+    line_no = line if isinstance(line, int) else -1
+    if not rel or rel.endswith("/") or line_no < 1:
+        anchor["unresolvable"] = True
+        return anchor
+    target = Path(repo_root) / rel
+    try:
+        if not target.is_file():
+            raise OSError("not a file")
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        anchor["unresolvable"] = True
+        return anchor
+    if line_no > len(lines):
+        anchor["unresolvable"] = True
+        return anchor
+    lo = max(1, line_no - ANCHOR_CONTEXT_RADIUS)
+    hi = min(len(lines), line_no + ANCHOR_CONTEXT_RADIUS)
+    window = [re.sub(r"\s+$", "", text) for text in lines[lo - 1 : hi]]
+    basis = rel + "\n" + "\n".join(window)
+    anchor["contextHash"] = (
+        "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()
+    )
+    return anchor
 
 
 def validate_findings(doc: Any, *, require_ids: bool = False) -> list[str]:
@@ -163,11 +210,24 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
             result["currentRunId"] = current
         return result
     run_id = doc["runId"]
+    # WI-3.1：重写前读旧 sidecar——跨轮重现的问题保留 firstSeenRunId，
+    # id 由 stable_finding_id 保证跨轮一致。v1 旧 sidecar 的 id 含 runId，
+    # 与 v2 id 空间不重叠，自然全部视为新发现（不迁移历史文件）。
+    previous = _load_findings(change_dir)
+    first_seen_by_id: dict[str, str] = {}
+    for old in (previous or {}).get("findings", []):
+        if (
+            isinstance(old, dict)
+            and isinstance(old.get("id"), str)
+            and isinstance(old.get("firstSeenRunId"), str)
+            and old["firstSeenRunId"].strip()
+        ):
+            first_seen_by_id[old["id"]] = old["firstSeenRunId"]
+    repo_root = Path(harness_paths.resolve_worktree_root(change_dir))
     assigned: list[dict[str, Any]] = []
     seen: set[str] = set()
     for finding in doc["findings"]:
         fid = stable_finding_id(
-            run_id,
             finding["dimension"],
             finding["path"],
             finding["line"],
@@ -181,9 +241,14 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
         seen.add(unique)
         entry = dict(finding)
         entry["id"] = unique
+        entry["firstSeenRunId"] = first_seen_by_id.get(fid, run_id)
+        entry["lastSeenRunId"] = run_id
+        entry["anchors"] = compute_finding_anchor(
+            repo_root, finding.get("path"), finding.get("line")
+        )
         assigned.append(entry)
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "runId": run_id,
         "changeName": doc.get("changeName") or Path(change_dir).name,
         "findings": assigned,

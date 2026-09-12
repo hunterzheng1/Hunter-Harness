@@ -166,26 +166,152 @@ class FindingIdTests(ReviewFixture):
 
     def test_stable_id_ignores_whitespace_and_case(self) -> None:
         one = review.stable_finding_id(
-            "run-1", "security", "src/app.py", 10, "Token  Logged   Plaintext"
+            "security", "src/app.py", 10, "Token  Logged   Plaintext"
         )
         two = review.stable_finding_id(
-            "run-1", "security", "src/app.py", 10, "token logged plaintext"
+            "security", "src/app.py", 10, "token logged plaintext"
         )
         self.assertEqual(one, two)
 
-    def test_id_changes_with_run(self) -> None:
-        one = review.stable_finding_id("run-1", "security", "a.py", 1, "t")
-        two = review.stable_finding_id("run-2", "security", "a.py", 1, "t")
-        self.assertNotEqual(one, two)
-
     def test_id_changes_with_path_and_line(self) -> None:
-        base = review.stable_finding_id("run-1", "security", "a.py", 1, "t")
+        base = review.stable_finding_id("security", "a.py", 1, "t")
         self.assertNotEqual(
-            base, review.stable_finding_id("run-1", "security", "b.py", 1, "t")
+            base, review.stable_finding_id("security", "b.py", 1, "t")
         )
         self.assertNotEqual(
-            base, review.stable_finding_id("run-1", "security", "a.py", 2, "t")
+            base, review.stable_finding_id("security", "a.py", 2, "t")
         )
+
+    def test_id_changes_with_dimension_and_title(self) -> None:
+        base = review.stable_finding_id("security", "a.py", 1, "t")
+        self.assertNotEqual(
+            base, review.stable_finding_id("architecture", "a.py", 1, "t")
+        )
+        self.assertNotEqual(
+            base, review.stable_finding_id("security", "a.py", 1, "other")
+        )
+
+
+class CrossRoundIdentityTests(ReviewFixture):
+    """WI-3.1 步骤①：finding id 去 runId 化——同一问题跨轮保持同一 id。"""
+
+    def _written(self) -> dict:
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        return json.loads(out_path.read_text(encoding="utf-8"))
+
+    def test_same_problem_keeps_id_and_first_seen_across_runs(self) -> None:
+        first = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(first["ok"], first)
+        ids_round1 = [f["id"] for f in self._written()["findings"]]
+
+        doc = self.sample_findings()
+        doc["runId"] = "review-run-2"
+        second = review.write_findings(self.change_dir, doc)
+        self.assertTrue(second["ok"], second)
+        round2 = self._written()
+
+        self.assertEqual(round2["schemaVersion"], 2)
+        ids_round2 = [f["id"] for f in round2["findings"]]
+        self.assertEqual(ids_round1, ids_round2, "同一问题跨轮必须保持同一 id")
+        for finding in round2["findings"]:
+            self.assertEqual(finding["firstSeenRunId"], "review-run-1")
+            self.assertEqual(finding["lastSeenRunId"], "review-run-2")
+
+    def test_new_problem_in_later_run_gets_current_run_as_first_seen(self) -> None:
+        first = review.write_findings(self.change_dir, self.sample_findings())
+        self.assertTrue(first["ok"], first)
+
+        doc = self.sample_findings()
+        doc["runId"] = "review-run-2"
+        doc["findings"][2]["title"] = "A brand new problem"
+        second = review.write_findings(self.change_dir, doc)
+        self.assertTrue(second["ok"], second)
+        findings = self._written()["findings"]
+
+        self.assertEqual(findings[0]["firstSeenRunId"], "review-run-1")
+        self.assertEqual(findings[1]["firstSeenRunId"], "review-run-1")
+        self.assertEqual(findings[2]["firstSeenRunId"], "review-run-2")
+        self.assertEqual(findings[2]["lastSeenRunId"], "review-run-2")
+
+
+class AnchorTests(ReviewFixture):
+    """WI-3.1 步骤①：finding 锚点（行 ±2 行规范化文本哈希）。"""
+
+    def _write_source(self) -> None:
+        src = self.project / "src"
+        src.mkdir(exist_ok=True)
+        content = "".join(f"line {i}\n" for i in range(1, 11))
+        (src / "app.py").write_text(content, encoding="utf-8")
+
+    def _doc(self, *, path: str = "src/app.py", line: int = 5) -> dict:
+        return {
+            "schemaVersion": 1,
+            "runId": "review-run-1",
+            "changeName": "demo",
+            "findings": [
+                {
+                    "dimension": "correctness",
+                    "severity": "YELLOW",
+                    "path": path,
+                    "line": line,
+                    "title": "some problem",
+                    "fixbackAction": "code",
+                }
+            ],
+        }
+
+    def _written_anchor(self) -> dict:
+        out_path = self.state_dir / "reports" / "review" / "review-findings.json"
+        doc = json.loads(out_path.read_text(encoding="utf-8"))
+        return doc["findings"][0]["anchors"]
+
+    def test_resolvable_anchor_captures_context_window(self) -> None:
+        self._write_source()
+        result = review.write_findings(self.change_dir, self._doc())
+        self.assertTrue(result["ok"], result)
+        anchor = self._written_anchor()
+        self.assertEqual(anchor["path"], "src/app.py")
+        self.assertFalse(anchor["unresolvable"])
+        self.assertTrue(str(anchor["contextHash"]).startswith("sha256:"))
+
+    def test_anchor_ignores_changes_outside_context_window(self) -> None:
+        self._write_source()
+        review.write_findings(self.change_dir, self._doc(line=1))
+        before = self._written_anchor()["contextHash"]
+        # 第 10 行在 line=1 的 ±2 窗口之外
+        path = self.project / "src" / "app.py"
+        text = path.read_text(encoding="utf-8").replace("line 10", "line ten")
+        path.write_text(text, encoding="utf-8")
+        review.write_findings(self.change_dir, self._doc(line=1))
+        after = self._written_anchor()["contextHash"]
+        self.assertEqual(before, after)
+
+    def test_anchor_drifts_when_context_window_changes(self) -> None:
+        self._write_source()
+        review.write_findings(self.change_dir, self._doc(line=5))
+        before = self._written_anchor()["contextHash"]
+        path = self.project / "src" / "app.py"
+        text = path.read_text(encoding="utf-8").replace("line 5", "line five")
+        path.write_text(text, encoding="utf-8")
+        review.write_findings(self.change_dir, self._doc(line=5))
+        after = self._written_anchor()["contextHash"]
+        self.assertNotEqual(before, after)
+
+    def test_anchor_unresolvable_for_missing_file(self) -> None:
+        review.write_findings(self.change_dir, self._doc(path="src/nope.py"))
+        anchor = self._written_anchor()
+        self.assertTrue(anchor["unresolvable"])
+        self.assertIsNone(anchor["contextHash"])
+
+    def test_anchor_unresolvable_for_directory_path(self) -> None:
+        self._write_source()
+        review.write_findings(self.change_dir, self._doc(path="src/"))
+        self.assertTrue(self._written_anchor()["unresolvable"])
+
+    def test_anchor_unresolvable_for_out_of_range_line(self) -> None:
+        self._write_source()
+        review.write_findings(self.change_dir, self._doc(line=99))
+        self.assertTrue(self._written_anchor()["unresolvable"])
 
 
 class FindingsWriteTests(ReviewFixture):

@@ -1354,10 +1354,12 @@ def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
         source_digest = "sha256:" + hashlib.sha256(review_path.read_bytes()).hexdigest()
         findings = review.get("findings") if isinstance(review, dict) else None
         problems: list[dict[str, Any]] = []
-        if not isinstance(review, dict) or review.get("schemaVersion") != 1:
+        # WI-3.1：v2 = v1 + 稳定 id（去 runId）+ firstSeen/lastSeen + anchors，
+        # 对 provenance 校验是严格超集，两版都接受；v3+ 未知仍拒绝。
+        if not isinstance(review, dict) or review.get("schemaVersion") not in (1, 2):
             problems.append({
                 "field": "review-findings.schemaVersion",
-                "expected": 1,
+                "expected": "1 or 2",
                 "actual": review.get("schemaVersion") if isinstance(review, dict) else None,
             })
         if not isinstance(findings, list):

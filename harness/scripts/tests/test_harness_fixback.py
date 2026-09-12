@@ -973,6 +973,52 @@ class ReviewReceiptRespectsDispositionsTests(unittest.TestCase):
             ):
                 module.register_evidence(change_dir, relative)
 
+    def test_v2_findings_sidecar_accepted(self) -> None:
+        """WI-3.1：write-findings 已输出 schemaVersion=2（稳定 id + 锚点），
+        provenance 校验必须接受 v1|v2，否则全部 fixback 被锁死。"""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="YELLOW", disposition="FIXED"
+            )
+            doc = json.loads(findings_path.read_text(encoding="utf-8"))
+            doc["schemaVersion"] = 2
+            doc["findings"][0]["firstSeenRunId"] = "review-run-1"
+            doc["findings"][0]["lastSeenRunId"] = "review-run-1"
+            doc["findings"][0]["anchors"] = {
+                "path": "bin/cli.js",
+                "contextHash": None,
+                "unresolvable": True,
+            }
+            findings_path.write_text(json.dumps(doc), encoding="utf-8")
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            record = module.register_evidence(change_dir, relative)
+
+            self.assertEqual(record["kind"], "review")
+
+    def test_unknown_findings_schema_still_rejected(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="YELLOW", disposition="FIXED"
+            )
+            doc = json.loads(findings_path.read_text(encoding="utf-8"))
+            doc["schemaVersion"] = 3
+            findings_path.write_text(json.dumps(doc), encoding="utf-8")
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "FIXBACK_REVIEW_PROVENANCE_INVALID"
+            ):
+                module.register_evidence(change_dir, relative)
+
 
 class EvidenceTemplateTests(unittest.TestCase):
     """手写证据 JSON 是 fixback 最贵的一段：schema 只存在于 Python 源码里。
