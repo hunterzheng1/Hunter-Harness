@@ -1124,6 +1124,9 @@ def _ci_receipt(*, base: str, tree: str | None = None) -> dict:
         "runUrl": "https://ci.example.com/runs/1234567890",
         "headSha": base,
         "headTree": tree,
+        # R4: productTree = 排除 .harness 的产品内容树。本 fixture 中
+        # .harness 未入库，产品树与 HEAD 树同值。
+        "productTree": tree,
         "toolchain": {"node": "24.9.0"},
         "conclusion": "success",
         "jobs": [
@@ -1250,6 +1253,7 @@ class CiEvidenceImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             change, receipt = self._make_repo(Path(tmp))
             receipt["headTree"] = "sha256:" + "f" * 64
+            receipt["productTree"] = "sha256:" + "f" * 64
             receipt["receiptHash"] = _receipt_hash(receipt)
             code, out, err = self._import(change, receipt)
             self.assertNotEqual(code, 0)
@@ -1272,6 +1276,185 @@ class CiEvidenceImportTests(unittest.TestCase):
             )
             self.assertNotEqual(code, 0)
             self.assertIn("RECEIPT_VERIFICATION_NOT_IMPORTABLE", err)
+
+    def test_import_rejects_uncommitted_worktree_drift(self) -> None:
+        """R4：收据必须绑定候选实际内容，未提交的工作区漂移即拒绝。
+
+        缺陷复现：CI 在已推送提交上运行后，本地再改动候选文件（不提交），
+        旧实现只比对 HEAD^{tree} → 漂移不可见 → 证据错误绑定。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            root = change.parents[2]
+            (root / "tracked.txt").write_text("drifted after CI\n", encoding="utf-8")
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_TREE_MISMATCH", err)
+
+    def test_import_rejects_untracked_product_file(self) -> None:
+        """R4：未跟踪的新产品文件同样使候选内容与收据不一致。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            root = change.parents[2]
+            (root / "new-module.py").write_text("print('new')\n", encoding="utf-8")
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_TREE_MISMATCH", err)
+
+    def test_import_ignores_harness_state_drift(self) -> None:
+        """R4：.harness 状态漂移不影响产品内容绑定（不产生误拒）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            root = change.parents[2]
+            note = change / "meta" / "local-note.md"
+            note.write_text("local only\n", encoding="utf-8")
+            code, out, err = self._import(change, receipt)
+            self.assertEqual(code, 0, msg=out + err)
+
+    def test_import_accepts_same_content_different_commit(self) -> None:
+        """R4：同内容不同 commit（空提交挪动 HEAD）不得误拒。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            root = change.parents[2]
+            import subprocess
+
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-q", "-m", "empty"],
+                cwd=root, check=True,
+            )
+            code, out, err = self._import(change, receipt)
+            self.assertEqual(code, 0, msg=out + err)
+
+
+class CiEvidenceShardTests(unittest.TestCase):
+    """R5：分片 CI 证据不得按 full 记录；完整能力需全部分片聚合。"""
+
+    def _make_repo(self, tmp: Path) -> tuple[Path, dict]:
+        root = tmp / "project"
+        root.mkdir()
+        base = _init_repo(root, {"tracked.txt": "base\n"})
+        import subprocess
+
+        subprocess.run(
+            ["git", "remote", "add", "origin",
+             "https://github.com/owner/repo.git"],
+            cwd=root, check=True,
+        )
+        _receipt_repo_hint.clear()
+        _receipt_repo_hint.extend([
+            root,
+            harness_ledger.harness_paths._normalize_remote(
+                harness_ledger.harness_paths._primary_remote_url(root)
+            ),
+        ])
+        change = root / ".harness" / "changes" / "demo"
+        (change / "meta").mkdir(parents=True)
+        (change / "meta" / "change-context.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "changeId": "demo",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo",
+                    "runtimeRoot": ".harness/state/changes/demo",
+                },
+                "ownership": {
+                    "productPaths": ["tracked.txt"],
+                    "staticEvidencePaths": [".harness/changes/demo/"],
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        receipt = _ci_receipt(base=base)
+        receipt["jobs"][0]["steps"][0]["command"] = "npm test -- --shard=1/2"
+        receipt["receiptHash"] = _receipt_hash(receipt)
+        return change, receipt
+
+    def _import_shard(
+        self, change: Path, receipt: dict, shard: str
+    ) -> tuple[int, str, str]:
+        from io import StringIO
+        from contextlib import redirect_stdout, redirect_stderr
+
+        with tempfile.TemporaryDirectory() as tmp2:
+            receipt_path = Path(tmp2) / "ci-evidence-receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            out, err = StringIO(), StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = harness_ledger.main([
+                    "import-ci-evidence", "--change-dir", str(change),
+                    "--receipt", str(receipt_path),
+                    "--verification", "unitTestFull",
+                    "--job", "test-windows-unit", "--step", "Run unit tests",
+                    "--shard", shard, "--json",
+                ])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_single_shard_records_partial_not_full(self) -> None:
+        """shard=1/2 导入后 coverage 为部分档，不得记为 full。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            code, out, err = self._import_shard(change, receipt, "1/2")
+            self.assertEqual(code, 0, msg=out + err)
+            ledger, _ = harness_ledger.load_ledger(change)
+            entry = ledger["validations"]["unitTestFull"]
+            self.assertTrue(entry["imported"])
+            self.assertNotEqual(entry["coverage"], "full", entry)
+            self.assertIn("1/2", entry.get("shards") or {}, entry)
+
+    def test_all_shards_aggregate_to_full(self) -> None:
+        """两分片各自绑定且齐全后聚合为完整能力。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            code, out, err = self._import_shard(change, receipt, "1/2")
+            self.assertEqual(code, 0, msg=out + err)
+            receipt2 = dict(receipt)
+            receipt2["runId"] = receipt["runId"]  # 同一 CI run 的另一分片
+            code, out, err = self._import_shard(change, receipt2, "2/2")
+            self.assertEqual(code, 0, msg=out + err)
+            ledger, _ = harness_ledger.load_ledger(change)
+            entry = ledger["validations"]["unitTestFull"]
+            self.assertEqual(entry["coverage"], "full", entry)
+            self.assertEqual(
+                sorted((entry.get("shards") or {}).keys()), ["1/2", "2/2"], entry
+            )
+
+    def test_diverged_tree_shard_does_not_aggregate(self) -> None:
+        """不同内容树上的分片不得拼成 full（旧分片被取代并留痕）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            code, out, err = self._import_shard(change, receipt, "1/2")
+            self.assertEqual(code, 0, msg=out + err)
+            root = change.parents[2]
+            import subprocess
+
+            (root / "tracked.txt").write_text("v2\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "v2"], cwd=root, check=True
+            )
+            base2 = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+            receipt2 = _ci_receipt(base=base2)
+            receipt2["jobs"][0]["steps"][0]["command"] = "npm test -- --shard=2/2"
+            receipt2["receiptHash"] = _receipt_hash(receipt2)
+            code, out, err = self._import_shard(change, receipt2, "2/2")
+            self.assertEqual(code, 0, msg=out + err)
+            ledger, _ = harness_ledger.load_ledger(change)
+            entry = ledger["validations"]["unitTestFull"]
+            self.assertNotEqual(entry["coverage"], "full", entry)
+            self.assertEqual(sorted((entry.get("shards") or {}).keys()), ["2/2"])
+            self.assertTrue(entry.get("supersededShards"), entry)
+
+    def test_shard_flag_must_match_receipt_shard(self) -> None:
+        """收据携带分片身份时，CLI 声明不一致即拒绝。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            receipt["shard"] = {"index": 2, "total": 2}
+            receipt["receiptHash"] = _receipt_hash(receipt)
+            code, out, err = self._import_shard(change, receipt, "1/2")
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_SHARD_MISMATCH", err)
 
 
 class DiffHashTests(unittest.TestCase):

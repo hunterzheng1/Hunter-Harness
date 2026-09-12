@@ -907,5 +907,218 @@ class SkillDirectoryTests(unittest.TestCase):
         self.assertTrue((skill_dir / "reference.md").is_file())
 
 
+class FinishRetryReclassifyTests(HarnessTaskFixture):
+    """R1：验证失败重试时，新增产品文件必须重新分类，不得沿用首次档位。"""
+
+    def _make_check_fail(self) -> None:
+        (self.project / "check.py").write_text(
+            "raise SystemExit(1)\n", encoding="utf-8"
+        )
+        self._git("add", "-A")
+        self._git("commit", "-m", "make check fail")
+
+    def test_retry_after_verification_failure_reclassifies_new_auth_file(
+        self,
+    ) -> None:
+        """首跑 docs-only 验证失败 → 新增 auth.py → 重试必须升级拒绝。
+
+        缺陷复现：首跑 finish 已声明 ownership(productPaths=[README.md])；
+        重试时 auth.py 被判 foreign 后未经重分类直接吸纳进提交范围，
+        full 信号（auth）不生效，最终以 fast 档把 auth.py 提交。
+        """
+        self._make_check_fail()
+        self._begin("retry-escalation")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        rc, out = self._finish("retry-escalation")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["code"], "VERIFICATION_FAILED", out)
+
+        # 修复 check.py，但新增 auth.py（full 信号路径）。
+        (self.project / "check.py").write_text(
+            "print('check ok')\n", encoding="utf-8"
+        )
+        (self.project / "auth.py").write_text("TOKEN = 'x'\n", encoding="utf-8")
+        rc, out = self._finish("retry-escalation")
+        self.assertEqual(rc, 3, out)
+        self.assertEqual(out["code"], "TASK_TIER_UPGRADE_REQUIRED", out)
+        self.assertIn("auth", out["signals"], out)
+        # 拒绝后不得提交 auth.py。
+        committed = self._git("show", "--name-only", "--format=", "HEAD")
+        self.assertNotIn("auth.py", committed)
+
+    def test_retry_full_signal_still_rejected_when_task_dir_globally_ignored(
+        self,
+    ) -> None:
+        """.gitignore 全局忽略场景下重试仍须识别新增敏感文件。"""
+        self._make_check_fail()
+        self._begin("retry-ignored")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        rc, out = self._finish("retry-ignored")
+        self.assertEqual(rc, 2, out)
+        (self.project / "check.py").write_text(
+            "print('check ok')\n", encoding="utf-8"
+        )
+        (self.project / "schema.prisma").write_text(
+            "model User { id Int }\n", encoding="utf-8"
+        )
+        rc, out = self._finish("retry-ignored")
+        self.assertEqual(rc, 3, out)
+        self.assertEqual(out["code"], "TASK_TIER_UPGRADE_REQUIRED", out)
+        self.assertIn("schema-migration", out["signals"], out)
+
+
+class FinishClosureCommitTests(HarnessTaskFixture):
+    """R2：abandoned/superseded 闭包不得产生提交，工作区改动保留给用户。"""
+
+    def test_abandoned_closure_does_not_commit(self) -> None:
+        self._begin("abandon-no-commit")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish(
+            "abandon-no-commit", "--closure", "abandoned",
+            "--closure-reason", "需求取消",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["closure"], "abandoned")
+        # 无提交：HEAD 不变，响应显式报告未提交。
+        self.assertEqual(self._git("rev-parse", "HEAD"), head_before)
+        self.assertIsNone(out["commit"], out)
+        # 工作区改动保留（用户处置），而非被收进提交。
+        self.assertIn("README.md", self._git("status", "--porcelain"))
+        # 归档仍然发生（闭包证据不丢）。
+        self.assertTrue(Path(out["archiveDir"]).is_dir())
+
+    def test_superseded_closure_does_not_commit(self) -> None:
+        self._begin("supersede-no-commit")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish(
+            "supersede-no-commit", "--closure", "superseded",
+            "--closure-reason", "被新方案取代",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._git("rev-parse", "HEAD"), head_before)
+        self.assertIsNone(out["commit"], out)
+        self.assertIn("README.md", self._git("status", "--porcelain"))
+
+    def test_completed_closure_still_commits(self) -> None:
+        """对照：completed 闭包保持自动提交行为不变。"""
+        self._begin("completed-commits")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish("completed-commits")
+        self.assertEqual(rc, 0, out)
+        self.assertIsNotNone(out["commit"], out)
+        self.assertNotEqual(self._git("rev-parse", "HEAD"), head_before)
+
+
+class FinishResumeTests(HarnessTaskFixture):
+    """R3/O1：终态已写但归档缺失时，finish 必须可恢复而非卡死。"""
+
+    def _simulate_crash_after_terminal_write(self, change: str) -> None:
+        """模拟「状态已写终态、归档未做」的崩溃现场。"""
+        task_path = self._change_dir(change) / "meta" / "task.json"
+        task = json.loads(task_path.read_text(encoding="utf-8-sig"))
+        task["status"] = "completed"
+        task["finishedAt"] = "2026-09-12T00:00:00+00:00"
+        task_path.write_text(
+            json.dumps(task, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_finish_resumes_when_terminal_but_archive_missing(self) -> None:
+        """崩溃后恢复：补做缺失动作（归档），不重复验证/提交。"""
+        self._begin("crash-before-archive")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        self._simulate_crash_after_terminal_write("crash-before-archive")
+        rc, out = self._finish("crash-before-archive")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_RESUMED", out)
+        self.assertTrue(Path(out["archiveDir"]).is_dir())
+        # 摘要等归档产物补齐。
+        archive_dir = Path(out["archiveDir"])
+        self.assertTrue(
+            (archive_dir / "reports" / "final" / "summary-data.json").is_file()
+        )
+
+    def test_finish_resume_does_not_duplicate_commit(self) -> None:
+        """恢复路径不得重复提交：task.commit 已记录时 HEAD 不变。"""
+        self._begin("crash-after-commit")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        # 先完整跑一遍拿到真实 commit，再把 change 搬回 changes 模拟崩溃。
+        rc, out = self._finish("crash-after-commit")
+        self.assertEqual(rc, 0, out)
+        commit = out["commit"]
+        archive_dir = Path(out["archiveDir"])
+        change_dir = self._change_dir("crash-after-commit")
+        shutil.move(str(archive_dir), str(change_dir))
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish("crash-after-commit")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_RESUMED", out)
+        self.assertEqual(self._git("rev-parse", "HEAD"), head_before)
+        self.assertEqual(out["commit"], commit)
+
+    def test_status_reports_pending_recovery_actions(self) -> None:
+        """status 对「终态未归档」输出恢复指引而不是误导性文案。"""
+        self._begin("crash-status")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        self._simulate_crash_after_terminal_write("crash-status")
+        rc, out = self._run(
+            "status", "--project", str(self.project), "--change",
+            "crash-status", "--json",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue(out.get("recoveryPending"), out)
+        self.assertIn("finish", out["nextAction"])
+
+    def test_fully_finished_task_still_returns_already_finished(self) -> None:
+        """对照：归档齐全的终态任务重复 finish 不重复动作（幂等）。"""
+        self._begin("fully-done")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        rc, out = self._finish("fully-done")
+        self.assertEqual(rc, 0, out)
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish("fully-done")
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(out["ok"])
+        self.assertIn(
+            out["code"], {"TASK_ALREADY_FINISHED", "CHANGE_NOT_FOUND"}, out
+        )
+        self.assertEqual(self._git("rev-parse", "HEAD"), head_before)
+
+
+class FinishCommitScopeTests(HarnessTaskFixture):
+    """R1 伴随约束：提交范围精确，不吞并验证后窗口落入的外来改动。"""
+
+    def test_finish_commit_scope_excludes_late_arriving_foreign_file(self) -> None:
+        """范围裁决落定后、提交前出现的文件不得被提交（git add -A 误吞）。
+
+        通过包装 _record_ledger_entry 在其内部写入外来文件，确定性模拟
+        「检测之后、提交之前」的并发落盘窗口。
+        """
+        self._begin("scoped-commit")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        original = ht._record_ledger_entry
+
+        def _inject_stray(*a: object, **kw: object) -> None:
+            (self.project / "late-stray.txt").write_text(
+                "concurrent user save\n", encoding="utf-8"
+            )
+            original(*a, **kw)
+
+        ht._record_ledger_entry = _inject_stray
+        try:
+            rc, out = self._finish("scoped-commit")
+        finally:
+            ht._record_ledger_entry = original
+        self.assertEqual(rc, 0, out)
+        committed = self._git("show", "--name-only", "--format=", "HEAD")
+        self.assertIn("README.md", committed)
+        self.assertNotIn("late-stray.txt", committed)
+        # 外来文件保留在工作区由用户处置，不丢不吞。
+        self.assertIn("late-stray.txt", self._git("status", "--porcelain"))
+
+
 if __name__ == "__main__":
     unittest.main()

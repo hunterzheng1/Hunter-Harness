@@ -931,6 +931,7 @@ class HarnessGateTests(unittest.TestCase):
         unit_status: str = "OK",
         unit_evidence: str = "evidence/unit.log",
         unit_applicability: dict | None = None,
+        full_coverage: str = "module",
     ) -> None:
         ledger = {
             "changeName": "demo",
@@ -950,6 +951,7 @@ class HarnessGateTests(unittest.TestCase):
                 "unitTestFull": self._v2_entry(
                     status="OK",
                     evidence="evidence/unit-full.log",
+                    coverage=full_coverage,
                 ),
             },
         }
@@ -2503,6 +2505,26 @@ class HarnessGateTests(unittest.TestCase):
         problems = result.get("problems") or []
         unit = next(p for p in problems if p["verification"] == "unitTest")
         self.assertIn("status=FAIL", unit["missing"])
+
+    def test_partial_coverage_does_not_satisfy_full_requirement_r5(self) -> None:
+        """R5：分片证据的部分覆盖（incremental）不得满足 unitTestFull 关门要求。"""
+        self._write_v2_ledger(full_coverage="incremental")
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
+        self.assertFalse(result["ok"], result)
+        problems = result.get("problems") or []
+        full = next(p for p in problems if p["verification"] == "unitTestFull")
+        self.assertTrue(
+            any(m.startswith("coverage(insufficient") for m in full["missing"]),
+            full,
+        )
+
+    def test_module_coverage_still_satisfies_full_requirement(self) -> None:
+        """对照：module 覆盖仍满足 unitTestFull（既有语义不回归）。"""
+        self._write_v2_ledger(full_coverage="module")
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
+        self.assertTrue(result["ok"], result)
 
 
 class ScenarioCoverageTests(unittest.TestCase):
