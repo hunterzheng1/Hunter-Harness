@@ -1456,5 +1456,61 @@ class ProductIdentityDefaultTests(unittest.TestCase):
             self.assertEqual(first, second)
 
 
+class ImportedEvidenceInvalidationTests(unittest.TestCase):
+    """WI-3.2 步骤③：imported 条目绑定整个 tree，任何产品变更即失效。"""
+
+    def _ledger(self, change_dir: Path, entries: dict) -> None:
+        path = change_dir / "evidence" / "verification-ledger.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"validations": entries}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def test_imported_entry_invalidated_by_any_change(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._ledger(change_dir, {
+                "unitTestFull": {
+                    "status": "OK", "imported": True, "inputsFiles": [],
+                    "inputsHash": "sha256:" + "a" * 64,
+                },
+                "compile": {
+                    "status": "OK", "inputsFiles": ["src/other.py"],
+                    "inputsHash": "sha256:" + "b" * 64,
+                },
+            })
+            result = module.invalidate_affected_evidence(
+                change_dir, changed_files=["src/anything.py"], batch_id="batch-x"
+            )
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["validations"], ["unitTestFull"])
+            path = change_dir / "evidence" / "verification-ledger.json"
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+            entry = ledger["validations"]["unitTestFull"]
+            self.assertFalse(entry["reusable"])
+            self.assertEqual(
+                entry["invalidation"]["code"], "FIXBACK_AFFECTED_INPUT_CHANGED"
+            )
+            # 非 imported 条目仍按文件交集判定，不受影响
+            self.assertNotIn("reusable", ledger["validations"]["compile"])
+
+    def test_imported_entry_survives_empty_change_set(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._ledger(change_dir, {
+                "unitTestFull": {
+                    "status": "OK", "imported": True, "inputsFiles": [],
+                },
+            })
+            result = module.invalidate_affected_evidence(
+                change_dir, changed_files=[], batch_id="batch-x"
+            )
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["validations"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

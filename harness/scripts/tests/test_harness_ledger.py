@@ -1095,6 +1095,185 @@ def _head(root: Path) -> str:
     ).strip()
 
 
+def _receipt_hash(receipt: dict) -> str:
+    """与 harness_ledger._ci_receipt_hash 同口径：除 receiptHash 外全字段。"""
+    body = {k: v for k, v in receipt.items() if k != "receiptHash"}
+    canonical = json.dumps(
+        body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _ci_receipt(*, base: str, tree: str | None = None) -> dict:
+    """构造合法 CI 证据收据（tree 缺省取 base commit 的 tree）。"""
+    import subprocess
+
+    root_hint = None
+    if tree is None:
+        root_hint = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=_receipt_repo_hint[0],
+            text=True,
+        ).strip()
+        tree = "sha256:" + root_hint
+    receipt = {
+        "schemaVersion": 1,
+        "repository": _receipt_repo_hint[1],
+        "runId": 1234567890,
+        "runAttempt": 1,
+        "workflow": "check",
+        "runUrl": "https://ci.example.com/runs/1234567890",
+        "headSha": base,
+        "headTree": tree,
+        "toolchain": {"node": "24.9.0"},
+        "conclusion": "success",
+        "jobs": [
+            {
+                "name": "test-windows-unit",
+                "conclusion": "success",
+                "steps": [
+                    {"name": "Run unit tests", "conclusion": "success",
+                     "command": "npm test"}
+                ],
+            }
+        ],
+        "concludedAt": "2026-09-12T00:00:00Z",
+    }
+    receipt["receiptHash"] = _receipt_hash(receipt)
+    return receipt
+
+
+_receipt_repo_hint: list = []
+
+
+class CiEvidenceImportTests(unittest.TestCase):
+    """WI-3.2：CI 证据收据校验与导入落账（fail-closed）。"""
+
+    def _make_repo(self, tmp: Path) -> tuple[Path, Path]:
+        root = tmp / "project"
+        root.mkdir()
+        base = _init_repo(root, {"tracked.txt": "base\n"})
+        import subprocess
+
+        subprocess.run(
+            ["git", "remote", "add", "origin",
+             "https://github.com/owner/repo.git"],
+            cwd=root, check=True,
+        )
+        tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True
+        ).strip()
+        _receipt_repo_hint.clear()
+        _receipt_repo_hint.extend([
+            root,
+            harness_ledger.harness_paths._normalize_remote(
+                harness_ledger.harness_paths._primary_remote_url(root)
+            ),
+        ])
+        change = root / ".harness" / "changes" / "demo"
+        (change / "meta").mkdir(parents=True)
+        (change / "meta" / "change-context.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "changeId": "demo",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo",
+                    "runtimeRoot": ".harness/state/changes/demo",
+                },
+                "ownership": {
+                    "productPaths": ["tracked.txt"],
+                    "staticEvidencePaths": [".harness/changes/demo/"],
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return change, _ci_receipt(base=base, tree="sha256:" + tree)
+
+    def _import(
+        self,
+        change: Path,
+        receipt: dict,
+        extra: list[str] | None = None,
+    ) -> tuple[int, str, str]:
+        from io import StringIO
+        from contextlib import redirect_stdout, redirect_stderr
+
+        with tempfile.TemporaryDirectory() as tmp2:
+            receipt_path = Path(tmp2) / "ci-evidence-receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            out, err = StringIO(), StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = harness_ledger.main(
+                    ["import-ci-evidence", "--change-dir", str(change),
+                     "--receipt", str(receipt_path), "--verification", "unitTestFull",
+                     "--job", "test-windows-unit", "--step", "Run unit tests",
+                     "--json", *(extra or [])]
+                )
+        return code, out.getvalue(), err.getvalue()
+
+    def test_import_success_writes_v2_imported_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            code, out, err = self._import(change, receipt)
+            self.assertEqual(code, 0, msg=out + err)
+            payload = json.loads(out)
+            self.assertEqual(payload["action"], "import-ci-evidence")
+            ledger, _ = harness_ledger.load_ledger(change)
+            entry = ledger["validations"]["unitTestFull"]
+            self.assertEqual(entry["status"], "OK")
+            self.assertTrue(entry["imported"])
+            self.assertEqual(entry["coverage"], "full")
+            self.assertEqual(entry["inputsHash"], receipt["headTree"])
+            self.assertEqual(entry["inputsFiles"], [])
+            self.assertEqual(entry["importedFrom"]["runId"], receipt["runId"])
+            self.assertEqual(
+                entry["importedFrom"]["headTree"], receipt["headTree"])
+
+    def test_import_rejects_tampered_receipt_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            receipt["jobs"][0]["conclusion"] = "failure"  # 篡改后不改 receiptHash
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_HASH_MISMATCH", err)
+
+    def test_import_rejects_failed_conclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            receipt["conclusion"] = "failure"
+            receipt["jobs"][0]["conclusion"] = "failure"
+            receipt["receiptHash"] = _receipt_hash(receipt)
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_CONCLUSION_NOT_SUCCESS", err)
+
+    def test_import_rejects_tree_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            receipt["headTree"] = "sha256:" + "f" * 64
+            receipt["receiptHash"] = _receipt_hash(receipt)
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_TREE_MISMATCH", err)
+
+    def test_import_rejects_repository_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            receipt["repository"] = "other-owner/other-repo"
+            receipt["receiptHash"] = _receipt_hash(receipt)
+            code, out, err = self._import(change, receipt)
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_REPOSITORY_MISMATCH", err)
+
+    def test_import_rejects_incremental_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change, receipt = self._make_repo(Path(tmp))
+            code, out, err = self._import(
+                change, receipt, extra=["--verification", "unitTest"]
+            )
+            self.assertNotEqual(code, 0)
+            self.assertIn("RECEIPT_VERIFICATION_NOT_IMPORTABLE", err)
+
+
 class DiffHashTests(unittest.TestCase):
     """Cluster 2: byte-level, commit-invariant diff-hash (UT-010..013, API-003)."""
 

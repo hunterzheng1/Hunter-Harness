@@ -3339,6 +3339,288 @@ def cmd_record_from_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- 批次 3 WI-3.2：CI 证据导入（校验式落账，fail-closed） ---
+
+CI_IMPORTABLE_VERIFICATIONS = frozenset({"compile", "unitTestFull"})
+CI_RECEIPT_SCHEMA_VERSION = 1
+
+
+def _ci_receipt_hash(receipt: dict[str, Any]) -> str:
+    body = {k: v for k, v in receipt.items() if k != "receiptHash"}
+    canonical = json.dumps(
+        body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _load_ci_evidence_receipt(
+    receipt_path: Path,
+) -> tuple[dict[str, Any] | None, str | None, str | None, str]:
+    """读取并校验 CI 证据收据（schema + 完整性哈希）。
+
+    返回 (receipt, field_path, problem, error_code)；失败 fail-closed。
+    """
+    try:
+        raw = receipt_path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        return None, "receipt", f"unreadable: {exc}", "RECEIPT_INVALID"
+    try:
+        receipt = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, "receipt", f"invalid JSON: {exc}", "RECEIPT_INVALID"
+    if not isinstance(receipt, dict):
+        return None, "receipt", "must be a JSON object", "RECEIPT_INVALID"
+    for field in (
+        "schemaVersion", "repository", "runId", "headSha", "headTree",
+        "toolchain", "conclusion", "jobs", "concludedAt", "receiptHash",
+    ):
+        if field not in receipt:
+            return None, field, "missing required field", "RECEIPT_INVALID"
+    if receipt["schemaVersion"] != CI_RECEIPT_SCHEMA_VERSION:
+        return None, "schemaVersion", (
+            f"expected {CI_RECEIPT_SCHEMA_VERSION}, got {receipt['schemaVersion']!r}"
+        ), "RECEIPT_INVALID"
+    if not isinstance(receipt["jobs"], list) or not receipt["jobs"]:
+        return None, "jobs", "must be a non-empty list", "RECEIPT_INVALID"
+    for index, job in enumerate(receipt["jobs"]):
+        if not isinstance(job, dict) or not job.get("name"):
+            return None, f"jobs[{index}]", "must be an object with a name", "RECEIPT_INVALID"
+        if "conclusion" not in job:
+            return None, f"jobs[{index}].conclusion", "missing required field", "RECEIPT_INVALID"
+    if not str(receipt["headTree"]).startswith("sha256:"):
+        return None, "headTree", "must be sha256: prefixed", "RECEIPT_INVALID"
+    expected = _ci_receipt_hash(receipt)
+    if receipt["receiptHash"] != expected:
+        return None, "receiptHash", (
+            f"hash mismatch: expected {expected}, got {receipt['receiptHash']!r}"
+        ), "RECEIPT_HASH_MISMATCH"
+    return receipt, None, None, "RECEIPT_INVALID"
+
+
+def _validate_ci_evidence_receipt(
+    receipt: dict[str, Any],
+    *,
+    project_root: Path,
+    verification: str,
+    job_name: str,
+    step_name: str,
+) -> tuple[dict[str, Any] | None, str, str, dict[str, Any] | None]:
+    """语义校验链：结果/代码版本/来源/verification 集合。
+
+    返回 (step, field_path, problem, detail)；step 非 None 表示全部通过。
+    """
+    if receipt.get("conclusion") != "success":
+        return None, "conclusion", "RECEIPT_CONCLUSION_NOT_SUCCESS", {
+            "actual": receipt.get("conclusion"),
+        }
+    job = next(
+        (j for j in receipt["jobs"] if j.get("name") == job_name), None
+    )
+    if job is None:
+        return None, "job", "RECEIPT_JOB_NOT_FOUND", {
+            "requested": job_name,
+            "available": [j.get("name") for j in receipt["jobs"]],
+        }
+    if job.get("conclusion") != "success":
+        return None, f"jobs[{job_name}].conclusion", (
+            "RECEIPT_CONCLUSION_NOT_SUCCESS"
+        ), {"actual": job.get("conclusion")}
+    step = next(
+        (
+            s for s in job.get("steps", [])
+            if isinstance(s, dict) and s.get("name") == step_name
+        ),
+        None,
+    )
+    if step is None:
+        return None, "step", "RECEIPT_STEP_NOT_FOUND", {
+            "requested": step_name,
+            "available": [
+                s.get("name") for s in job.get("steps", []) if isinstance(s, dict)
+            ],
+        }
+    if step.get("conclusion") != "success":
+        return None, f"steps[{step_name}].conclusion", (
+            "RECEIPT_CONCLUSION_NOT_SUCCESS"
+        ), {"actual": step.get("conclusion")}
+    local_tree = product_tree_hash(project_root)
+    if not local_tree or receipt.get("headTree") != local_tree:
+        return None, "headTree", "RECEIPT_TREE_MISMATCH", {
+            "receipt": receipt.get("headTree"),
+            "local": local_tree,
+            "hint": (
+                "CI 证据绑定整个产品 tree；工作区与 CI 运行时不一致即拒绝。"
+                "请在当前代码上重新触发 CI 并导入新收据。"
+            ),
+        }
+    local_repo = harness_paths._primary_remote_url(project_root)
+    if local_repo is None:
+        return None, "repository", "RECEIPT_REPOSITORY_MISMATCH", {
+            "receipt": receipt.get("repository"),
+            "local": None,
+            "hint": "本地仓库没有配置 remote，无法核验收据来源",
+        }
+    local_repo_normalized = harness_paths._normalize_remote(local_repo)
+    if receipt.get("repository") != local_repo_normalized:
+        return None, "repository", "RECEIPT_REPOSITORY_MISMATCH", {
+            "receipt": receipt.get("repository"),
+            "local": local_repo_normalized,
+        }
+    if verification not in CI_IMPORTABLE_VERIFICATIONS:
+        return None, "verification", "RECEIPT_VERIFICATION_NOT_IMPORTABLE", {
+            "requested": verification,
+            "importable": sorted(CI_IMPORTABLE_VERIFICATIONS),
+        }
+    return step, None, "", None
+
+
+def cmd_import_ci_evidence(args: argparse.Namespace) -> int:
+    """WI-3.2：导入宿主 CI 验证证据（提案 §4.6）。
+
+    校验链（任一失败即拒绝，fail-closed）：收据完整性 → conclusion →
+    headTree == 本地 product tree → repository == 本地 origin →
+    verification ∈ {compile, unitTestFull}。
+    """
+    as_json = bool(args.json)
+    change_dir = resolve_path(args.change_dir)
+    apply_inferred_project_root(args, change_dir)
+    receipt_path = resolve_path(args.receipt)
+    receipt, field_path, problem, error_code = _load_ci_evidence_receipt(
+        receipt_path
+    )
+    if receipt is None:
+        return emit_error(
+            f"invalid CI evidence receipt at {receipt_path}: {problem}",
+            as_json=as_json,
+            error_code=error_code,
+            extra={
+                "fieldPath": field_path,
+                "recoveryAction": (
+                    "使用 CI workflow 末尾生成的原始收据文件；不要手改任何字段"
+                    "（receiptHash 会失配）。"
+                ),
+            },
+        )
+    job_name = args.job
+    step_name = args.step
+    step, field_path, code, detail = _validate_ci_evidence_receipt(
+        receipt,
+        project_root=Path(str(getattr(args, "project", None) or change_dir)),
+        verification=args.verification,
+        job_name=job_name,
+        step_name=step_name,
+    )
+    if field_path is not None:
+        return emit_error(
+            f"CI evidence receipt rejected at {field_path}: {code}",
+            as_json=as_json,
+            error_code=code,
+            extra={"fieldPath": field_path, **(detail or {})},
+        )
+
+    project_root = Path(str(getattr(args, "project", None) or change_dir))
+    head_tree = receipt["headTree"]
+    ci_command = str(step.get("command") or f"{job_name}/{step_name}")
+    status = "OK"
+    entry = {
+        "status": status,
+        "command": ci_command,
+        "runnerCommand": f"ci:{receipt.get('runUrl') or receipt.get('runId')}",
+        "evidence": str(receipt_path),
+        "exitCode": 0,
+        "durationMs": 0,
+        "inputsHash": head_tree,
+        "inputsFiles": [],
+        "coverage": "full",
+        "algorithmVersion": LEDGER_VERSION,
+        "finishedAt": now_iso(),
+        "imported": True,
+        "importedFrom": {
+            "importVersion": "ci-import-v1",
+            "repository": receipt["repository"],
+            "runId": receipt["runId"],
+            "runAttempt": receipt.get("runAttempt"),
+            "runUrl": receipt.get("runUrl"),
+            "headSha": receipt["headSha"],
+            "headTree": head_tree,
+            "job": job_name,
+            "step": step_name,
+            "concludedAt": receipt["concludedAt"],
+        },
+    }
+    try:
+        ledger, existing_path = load_ledger(change_dir)
+        if ledger is None:
+            ledger = {
+                "changeName": change_dir.name,
+                "stateDir": str(change_dir),
+                "validations": {},
+            }
+        elif not isinstance(ledger.get("validations"), dict):
+            ledger["validations"] = {}
+        ledger, _migration = migrate_ledger_for_write(
+            change_dir,
+            ledger,
+            project_root=project_root,
+            base_commit=None,
+            diff_hash=None,
+            record_migration=existing_path is not None,
+        )
+        prev = ledger["validations"].get(args.verification)
+        superseded = None
+        if isinstance(prev, dict) and isinstance(prev.get("importedFrom"), dict):
+            superseded = prev["importedFrom"].get("runId")
+        if superseded is not None:
+            entry["importedFrom"]["supersededRunId"] = superseded
+        target_identity = {
+            "verification": args.verification,
+            "command": entry["command"],
+            "coverage": entry["coverage"],
+            "inputsHash": entry["inputsHash"],
+            "imported": True,
+        }
+        target_id = (
+            args.verification
+            + "-"
+            + hashlib.sha256(
+                json.dumps(
+                    target_identity,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+        )
+        target = {"id": target_id, "verification": args.verification, **entry}
+        targets = ledger.setdefault("verificationTargets", {})
+        if not isinstance(targets, dict):
+            targets = {}
+            ledger["verificationTargets"] = targets
+        targets[target_id] = target
+        ledger["validations"][args.verification] = {
+            key: value
+            for key, value in target.items()
+            if key not in {"id", "verification"}
+        }
+        ledger["changeName"] = change_dir.name
+        ledger["stateDir"] = str(change_dir)
+        out_path = preferred_write_path(change_dir)
+        write_ledger(out_path, ledger)
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        return emit_error(f"import failed: {exc}", as_json=as_json)
+    payload = {
+        "ok": True,
+        "action": "import-ci-evidence",
+        "verification": args.verification,
+        "status": status,
+        "inputsHash": head_tree,
+        "receiptPath": str(receipt_path),
+        "importedFrom": entry["importedFrom"],
+    }
+    emit_json(payload, as_json=as_json)
+    return 0
+
+
 def _zero_tests_with_selector_warning(
     command: str, evidence: str | None, project_root: Path | None
 ) -> str | None:
@@ -4405,6 +4687,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit full payload (default: compact ok/action/verification/status)",
     )
     p_rfr.set_defaults(func=cmd_record_from_receipt)
+
+    p_imp = sub.add_parser(
+        "import-ci-evidence",
+        parents=[shared_json],
+        help="import host CI verification evidence from a signed receipt (WI-3.2)",
+    )
+    p_imp.add_argument("--change-dir", "--change", dest="change_dir", required=True)
+    p_imp.add_argument(
+        "--receipt", required=True, help="ci-evidence-receipt.json path"
+    )
+    p_imp.add_argument(
+        "--verification",
+        required=True,
+        help="ledger verification to satisfy (only compile|unitTestFull importable)",
+    )
+    p_imp.add_argument(
+        "--job", required=True, help="CI job name inside the receipt"
+    )
+    p_imp.add_argument(
+        "--step", required=True, help="CI step name inside the job"
+    )
+    p_imp.add_argument(
+        "--project",
+        default=None,
+        help="project root used for tree hash and origin remote checks",
+    )
+    p_imp.add_argument(
+        "--verbose",
+        action="store_true",
+        help="emit full payload (default: compact)",
+    )
+    p_imp.set_defaults(func=cmd_import_ci_evidence)
 
     p_diff = sub.add_parser(
         "diff-hash",

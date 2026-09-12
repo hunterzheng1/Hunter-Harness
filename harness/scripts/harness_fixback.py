@@ -720,6 +720,10 @@ def invalidate_affected_evidence(
         return {"ok": False, "code": "FIXBACK_LEDGER_INVALID"}
 
     def affected(entry: dict[str, Any]) -> bool:
+        # WI-3.2 步骤③：imported 条目绑定整个产品 tree（inputsFiles 为空 +
+        # imported 标志），任何产品变更都使「CI 跑的是旧代码」——fail-closed。
+        if entry.get("imported") is True:
+            return True
         inputs = entry.get("inputsFiles")
         if not isinstance(inputs, list):
             return False
