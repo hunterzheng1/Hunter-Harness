@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.4.18] — hunter-harness
+
+> 证据驱动交付批次 1-3 的 CLI 侧落地：full 档权威链、风险信号单一权威、
+> evidence-pack/render-report 派生增强。hunter-harness 0.4.17 → 0.4.18，
+> bundle 0.2.81（见下）。验证：release:preflight（sync + lint + typecheck +
+> 增量测试 + bundle）全绿。
+
+### Added
+
+- **full 档权威链**（B3-2，5a353fa）：publish 按 mode→tier 全量重算 gate
+  四字段，evidence-pack 成为档位派生的单一出口；派生 omittable
+  capabilities/attempt/baseline（WI-4b，41d2887）。
+- **风险信号单一权威**（WI-1，a193123/a34a7fa）：`harness/contracts/risk-signals.json`
+  为信号与档位映射的单一权威，TS 常量由 sync-harness 生成
+  （`packages/contracts/src/generated/risk-signals.ts`），tier-mode-parity
+  跨语言契约测试守护新鲜度（c07eebd）。
+- **render-report 派生**（WI-4a，4ffa152）：测试报告从 ledger + events 派生，
+  不再要求模型手写。
+
+### Changed
+
+- **publish 收据保全**（B2-2，a6ecc70）：磁盘 pack 收据自动写回并续签，
+  防止重发布覆盖已有收据。
+
+## [0.4.21] — workflow-harness
+
+> 证据驱动交付批次 1-3 + WI-3.1/3.2 harness 侧落地（80 提交，+8.8k 行）。
+> workflow-harness 0.4.20 → 0.4.21，bundle 0.2.80 → 0.2.81（WI-3.2 CI 收据
+> 生成器与 imports 修复入包）。hunter-harness 0.4.18 同批发布。
+> 验证：Python 全量 1562/1562 绿（ledger 138 + gate 140）+ 端到端 CI 收据
+> 生成/导入走查 + release:preflight 全绿。
+
+### Added
+
+- **CI 证据导入**（WI-3.2，d26d42c）：`import-ci-evidence` 独立子命令——
+  收据完整性哈希（`RECEIPT_HASH_MISMATCH` 独立错误码）→ conclusion →
+  job/step → headTree==本地 tree → repository 归一化比对 → verification
+  集合的 fail-closed 校验链；落账 `imported`/`importedFrom` 条目，
+  `supersededRunId` 追踪覆盖链。check.yml 产出 `ci-evidence-receipt.json`
+  artifact（生成器 `scripts/ci/generate-evidence-receipt.mjs`，deepSort
+  对齐 Python sort_keys，repository 用 host/owner/repo 归一化）。
+- **局部失效**（WI-3.1，ee60700-67831d9）：finding 稳定身份 + 锚点（契约
+  v2）、评审携带判定 + fixback 接线、disposition 跨轮继承、验证侧报错
+  精准化（`EVIDENCE_INVALIDATED` 等）、回执/efficiency 计数 + SKILL 携带语义。
+- **bootstrap-execute**（WI-2，4cd8fdf）：execute 阶段统一引导入口；
+  `status --change` 只读恢复视图（f95b748）；exec 结果收据 + 
+  record-from-receipt 收据直接消费（78bfdcf/54fe0bd）。
+- **harness_task.py 轻任务闭环**（784ada8）：begin/finish/status + 变更
+  感知验证计划（P1/P5/P6 试点）。
+
+### Changed
+
+- **gate 风险信号契约化**（WI-1，bbdf1d0）：风险信号从 risk-signals.json
+  加载，消除 Python/TS 双端移植漂移面。
+- **B2 止血系列**：requiredRetained 告警带阶段明细（B2-5）、unpushed-commits
+  阻断补 recoveryAction（B2-4）、契约文件清单 + begin --tier 声明堵风险
+  升级盲区（P12）、归档 review-missing 文案带实际 tier（P13）、finish 重试
+  不再误判验证副作用文件为 foreign（P9）。
+- **减重**：按精简分析净 -6.5k 行批次内持续落地；fixback 36 用例 + ledger
+  导入 6 用例 + gate 放行组合覆盖。
+
 ## [0.4.17] — hunter-harness
 
 > 知识查询幂等键修复（knowledge-audit 落地轮）：hunter-harness 0.4.16 → 0.4.17。
