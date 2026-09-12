@@ -964,7 +964,7 @@ class FinishRetryReclassifyTests(HarnessTaskFixture):
         rc, out = self._finish("retry-ignored")
         self.assertEqual(rc, 3, out)
         self.assertEqual(out["code"], "TASK_TIER_UPGRADE_REQUIRED", out)
-        self.assertIn("schema-migration", out["signals"], out)
+        self.assertIn("migration", out["signals"], out)
 
 
 class FinishClosureCommitTests(HarnessTaskFixture):

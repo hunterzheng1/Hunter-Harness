@@ -62,6 +62,9 @@ if hasattr(sys.stderr, "reconfigure"):
 TASK_SCHEMA_VERSION = 1
 TASK_REL = Path("meta") / "task.json"
 TASK_PHASE = "task"
+# 终态集合：status 属于此集合且 change 目录仍在 .harness/changes/ 下时，
+# 说明上次 finish 在「终态写入 → 归档」之间崩溃，走恢复通道（R3/O1）。
+TERMINAL_TASK_STATUSES = ("completed", "abandoned", "superseded")
 # 轻任务入口接受的档位；full 必须走完整流程（用户确认 2026-09-07）。
 ACCEPTED_TIERS = ("fast", "standard")
 # WI-1：触发 full 档拒绝的信号集从共享契约派生（risk-signals.json 的
@@ -571,6 +574,34 @@ def _tier_from_classification(payload: dict[str, Any]) -> tuple[str | None, list
     return "standard", []
 
 
+def _apply_tier_floors(
+    tier: str,
+    recorded_tier: str,
+    declared_tier: Any,
+    classification: dict[str, Any],
+) -> str:
+    """档位下限调整（recorded_tier 保留 + begin 声明 floor），两处裁决共用。
+
+    - 补归档重跑（无新 diff）时沿用上次裁决的档位，避免 standard 工作
+      被改记成 fast；
+    - begin --tier 声明的档位比裁决高时抬升，反之不压低（full 信号升级
+      拒绝不受此影响）。
+    """
+    if (
+        tier == "fast"
+        and recorded_tier in ACCEPTED_TIERS
+        and "no-code-diff"
+        in [str(s) for s in (classification.get("signals") or [])]
+    ):
+        tier = recorded_tier
+    if (
+        declared_tier in ACCEPTED_TIERS
+        and TIER_RANK[declared_tier] > TIER_RANK[tier]
+    ):
+        tier = declared_tier
+    return tier
+
+
 def _resolve_verification_argv(
     project: Path, verification: str
 ) -> tuple[str, list[str] | None]:
@@ -1035,25 +1066,452 @@ def _write_execution_log(change_dir: Path, head_hash: str) -> Path:
     return log_path
 
 
-def _git_commit_all(project: Path, message: str) -> tuple[str | None, str | None]:
-    """git add -A + commit；返回 (commit_hash, error)。"""
-    for args in (("add", "-A"), ("commit", "-m", message)):
-        proc = subprocess.run(
-            ["git", *args],
+
+
+
+def _full_signals_for_paths(paths: list[str]) -> list[str]:
+    """对任意路径集计算 full 档信号（与 classify_risk 同一权威契约）。
+
+    classify_risk 只对 productPaths 跑信号扫描；finish 的落定范围复检需要
+    对外来/新增路径独立判定，避免信号被 ownership 归类遮蔽（R1）。
+    """
+    normalized = [str(p).replace("\\", "/") for p in paths]
+    lowered = "\n".join(normalized).lower()
+    hits = [
+        signal
+        for signal, markers in hg._load_risk_signals_contract()["fullMarkers"].items()
+        if any(marker in lowered for marker in markers)
+    ]
+    if any(path.lower() in hg.CONTRACT_SCHEMA_PATHS for path in normalized):
+        hits.append("contract-schema")
+    return sorted(set(hits))
+
+
+def _scope_content_fingerprint(
+    project: Path, paths: list[str]
+) -> dict[str, Any]:
+    """落定范围的内容指纹：path → sha256；目录递归展开；缺失记 None。
+
+    用于「验证完成 → 提交」窗口的并发写入检测：指纹不同 = 产品内容在
+    验证后被改写，验证结论不再覆盖提交内容，必须冲突报错（R1）。
+    """
+    fingerprint: dict[str, Any] = {}
+    for raw in paths:
+        rel = str(raw).replace("\\", "/")
+        abs_path = project / rel
+        if abs_path.is_file():
+            fingerprint[rel] = _file_sha256(abs_path)
+        elif abs_path.is_dir():
+            entries: list[str] = []
+            for file in sorted(abs_path.rglob("*")):
+                if file.is_file():
+                    rel_file = file.relative_to(project).as_posix()
+                    entries.append(f"{rel_file}={_file_sha256(file)}")
+            fingerprint[rel] = hashlib.sha256(
+                "\n".join(entries).encode("utf-8")
+            ).hexdigest()
+        else:
+            fingerprint[rel] = None
+    return fingerprint
+
+
+def _git_commit_scoped(
+    project: Path, change: str, product_paths: list[str], message: str
+) -> tuple[str | None, str | None]:
+    """精确范围提交（R1 修复）：只暂存落定产品范围 + 本任务证据目录。
+
+    旧实现 git add -A 会把验证窗口内落入的外来文件、其他任务的 .harness
+    目录一并吞进本任务提交。现在逐路径暂存；范围外改动保留在工作区由
+    用户处置（finish 起步的 FOREIGN_PATHS_PRESENT 与提交前复检兜底）。
+    返回 (commit_hash, error)；范围内无差异时返回 (None, None)。
+    """
+    stage: list[str] = []
+    seen: set[str] = set()
+    candidates = [
+        *[str(p).replace("\\", "/") for p in product_paths],
+        f".harness/changes/{change}",
+        f".harness/state/changes/{change}",
+        ".harness/closure-ledger.json",
+        ".harness/config/build-profile.json",
+    ]
+    for rel in candidates:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        if (project / rel).exists():
+            stage.append(rel)
+            continue
+        # 已删除的路径：仅当被 git 跟踪过才需要显式暂存删除
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel],
             cwd=project,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             check=False,
         )
-        if proc.returncode != 0:
-            stderr = (proc.stderr or proc.stdout or "").strip()
-            # commit 无变更时 git 返回 1 + "nothing to commit"——视为成功。
-            if args[0] == "commit" and "nothing to commit" in stderr:
-                break
-            return None, stderr
+        if tracked.returncode == 0:
+            stage.append(rel)
+    if not stage:
+        return None, None
+    # 被 .gitignore 忽略的路径（如真实仓库整目录忽略的 .harness/）显式传给
+    # git add 会报 "paths are ignored"；旧实现 git add -A 无 pathspec 所以
+    # 静默跳过。先过滤保持一致（check-ignore 默认不报告已跟踪路径）。
+    probe = subprocess.run(
+        ["git", "check-ignore", "--", *stage],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    ignored = {
+        line.strip().strip('"').replace("\\", "/")
+        for line in probe.stdout.splitlines()
+        if line.strip()
+    }
+    stage = [rel for rel in stage if rel not in ignored]
+    if not stage:
+        return None, None
+    add = subprocess.run(
+        ["git", "add", "-A", "--", *stage],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if add.returncode != 0:
+        return None, (add.stderr or add.stdout or "").strip()
+    diff = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=project,
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode == 0:
+        return None, None
+    commit = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if commit.returncode != 0:
+        return None, (commit.stderr or commit.stdout or "").strip()
     return git_text(project, "rev-parse", "HEAD"), None
+
+
+def _terminal_ledger_state(change_dir: Path) -> bool:
+    """终态任务的验证账本完整性：存在、可解析、至少一条且全部 OK。"""
+    ledger_path = hl.find_ledger_path(change_dir)
+    if ledger_path is None:
+        return False
+    try:
+        ledger = read_json_file(ledger_path)
+    except (OSError, ValueError):
+        return False
+    validations = ledger.get("validations") if isinstance(ledger, dict) else None
+    if not isinstance(validations, dict) or not validations:
+        return False
+    return all(
+        isinstance(entry, dict) and entry.get("status") == "OK"
+        for entry in validations.values()
+    )
+
+
+def _ledger_verifications(change_dir: Path) -> list[dict[str, Any]]:
+    """从 ledger 重建 verifications 摘要（恢复路径不重跑验证）。"""
+    ledger_path = hl.find_ledger_path(change_dir)
+    if ledger_path is None:
+        return []
+    try:
+        ledger = read_json_file(ledger_path)
+    except (OSError, ValueError):
+        return []
+    validations = ledger.get("validations") if isinstance(ledger, dict) else None
+    if not isinstance(validations, dict):
+        return []
+    return [
+        {
+            "verification": name,
+            "resolvedAs": name,
+            "status": str(entry.get("status") or "UNKNOWN"),
+            "durationMs": int(entry.get("durationMs") or 0),
+        }
+        for name, entry in sorted(validations.items())
+        if isinstance(entry, dict)
+    ]
+
+
+def _resume_terminal_finish(
+    project: Path,
+    change_dir: Path,
+    task: dict[str, Any],
+    no_commit: bool,
+    as_json: bool,
+) -> int | None:
+    """R3/O1 恢复通道：终态已写但归档缺失，只补缺失动作。
+
+    - completed 且 commit + ledger 证据齐全 → 只补 plan/snapshot/exec-log
+      与归档（不重复验证/提交），发 TASK_RESUMED；
+    - completed 但 commit 缺失（崩溃于提交前，或 --no-commit 终态）或
+      ledger 不完整 → 验证结论无法覆盖提交内容，回滚 open 并返回 None，
+      由主流程完整重验证（fail-closed）；
+    - abandoned/superseded 闭包本就无提交（R2）→ 直接补归档。
+    归档失败时不回滚终态——本通道可重入，重跑 finish 继续恢复。
+    """
+    change = change_dir.name
+    closure = str(task.get("status") or "completed")
+    commit = str(task.get("commit") or "") or None
+    started_at = time.perf_counter()
+
+    if closure == "completed" and (
+        commit is None or not _terminal_ledger_state(change_dir)
+    ):
+        # fail-closed：证据链不完整，回滚 open 走完整重验证
+        task["status"] = "open"
+        task["finishedAt"] = None
+        task["commit"] = None
+        write_json_file(change_dir / TASK_REL, task)
+        return None
+
+    tier = str(task.get("tier") or "fast")
+    verifications = _ledger_verifications(change_dir)
+    plan_path = change_dir / "plans" / f"{change}-plan.md"
+    # 目录内已有归档 manifest = 曾被完整归档后移回：证据与清单校验和绑定，
+    # 对 change_dir 的任何写入都会破坏 source consistency——一个字节都
+    # 不写，只重执行归档。否则按真实崩溃处理：只补缺失证据（幂等，
+    # 已存在的一律不重写，避免漂移已有清单）。
+    sealed_before = (
+        change_dir / "evidence" / "archive-manifest-before.json"
+    ).is_file()
+    if not sealed_before:
+        if not plan_path.is_file():
+            plan_path = _generate_plan_md(change_dir, task, tier, verifications)
+        if not (change_dir / "meta" / "state-snapshot.json").is_file():
+            hs.capture_current_state(
+                project=project,
+                change_dir=change_dir,
+                change_name=change,
+                worktree_root=project,
+            )
+        exec_log_path = change_dir / "logs" / "execution-log.md"
+        if not exec_log_path.is_file():
+            head_hash = commit or git_text(project, "rev-parse", "HEAD")
+            _write_execution_log(change_dir, head_hash)
+        # 崩溃若发生在 phase.end 写入前，补上闭环事件（与 ⑩ 同一配对约定）。
+        open_start = find_open_task_start(load_task_events(change_dir))
+        if open_start is not None:
+            start_attempt = open_start.get("attempt")
+            he.append_event(
+                change_dir,
+                phase=TASK_PHASE,
+                type_="phase.end",
+                run_id=str(open_start.get("run_id") or "") or None,
+                attempt=(
+                    int(start_attempt) if isinstance(start_attempt, int) else None
+                ),
+                status="OK",
+                duration_ms=0,
+                note=f"轻任务恢复闭包：{closure}",
+            )
+        he.append_event(
+            change_dir,
+            phase=TASK_PHASE,
+            type_="decision",
+            note=f"恢复补归档：{closure}（commit={commit or '无'}）",
+        )
+
+    archive_root = project / ".harness" / "archive"
+    archive_code, archive_payload = ha.execute_archive(
+        change_dir,
+        archive_root,
+        skip_ingest=False,
+        allow_missing_review=True,
+        archive_intent="record-only",
+        closure_disposition=closure,
+        closure_reason=str(task.get("closureReason") or ""),
+    )
+    if archive_code != 0:
+        blockers = [
+            str(item.get("code") or item.get("message") or item)
+            for item in (
+                archive_payload.get("issues")
+                or (archive_payload.get("preflight") or {}).get("status", {}).get("blockers")
+                or []
+            )
+            if isinstance(item, dict)
+        ]
+        emit(
+            error_envelope(
+                "ARCHIVE_FAILED",
+                str(
+                    archive_payload.get("error")
+                    or archive_payload.get("reasonCode")
+                    or "archive execute failed"
+                ),
+                problems=blockers,
+                recovery_action=(
+                    "处理归档阻断项后重跑 "
+                    f"harness_task.py finish --project . --change {change} --json"
+                    "（恢复通道可重入，仍只补归档）"
+                ),
+                extra={"archivePayload": archive_payload},
+            ),
+            as_json,
+        )
+        return 2
+
+    duration_ms = max(0, int(round((time.perf_counter() - started_at) * 1000)))
+    archive_dir = str(
+        archive_payload.get("archive_dir")
+        or archive_payload.get("archiveDir")
+        or (archive_root / f"{dt.date.today().isoformat()}-{change}")
+    )
+    emit(
+        {
+            "ok": True,
+            "code": "TASK_RESUMED",
+            "changeId": change,
+            "tier": tier,
+            "closure": closure,
+            "commit": commit,
+            "verifications": verifications,
+            "planPath": str(plan_path),
+            "archiveDir": archive_dir,
+            "resumed": True,
+            "summary": {
+                "完成内容": task.get("goal"),
+                "验证结果": (
+                    "；".join(
+                        f"{v['verification']}={v['status']}({v['durationMs']}ms)"
+                        for v in verifications
+                    )
+                    or f"无（{closure} 闭包不重跑验证）"
+                ),
+                "残余风险": "恢复通道未重复验证/提交，仅补齐归档证据链",
+                "代码位置": (
+                    f"commit {commit}" if commit else "未提交（非 completed 闭包）"
+                ),
+            },
+            "durationMs": duration_ms,
+        },
+        as_json,
+    )
+    return 0
+
+
+def _precommit_scope_check(
+    project: Path,
+    change: str,
+    product_paths: list[str],
+    scope_fingerprint: dict[str, Any] | None,
+    task: dict[str, Any],
+    as_json: bool,
+) -> int | None:
+    """提交前复检（R1）：验证结论必须覆盖实际提交内容。
+
+    - 验证窗口内晚到的外来路径若命中 full 信号 → rc3 升级拒绝（本任务
+      验证副作用豁免——合法测试输出不错误升级；普通外来文件不拒绝，
+      _git_commit_scoped 本就不暂存它们，留工作区给用户）；
+    - 落定范围内内容在验证后被改写（指纹漂移）→ TASK_CONTENT_DRIFT。
+    返回 None 表示通过，否则已 emit 错误并返回退出码。
+    """
+    scope = {str(p).replace("\\", "/") for p in product_paths}
+    recorded_effects = {
+        str(p).replace("\\", "/")
+        for p in (task.get("verificationSideEffects") or [])
+    }
+
+    def _in_scope(rel: str) -> bool:
+        return any(
+            rel == base or rel.startswith(base.rstrip("/") + "/")
+            for base in scope
+        )
+
+    late_foreign = sorted(
+        normalized
+        for raw in _dirty_paths(project)
+        for normalized in (raw.replace("\\", "/"),)
+        if not _in_scope(normalized)
+        and not normalized.startswith(".harness/")
+        and normalized not in recorded_effects
+    )
+    late_signals = _full_signals_for_paths(late_foreign)
+    if late_signals:
+        emit(
+            error_envelope(
+                "TASK_TIER_UPGRADE_REQUIRED",
+                "验证完成后窗口内落入的外来路径命中 full 档信号，验证结论不再"
+                "覆盖待提交内容，轻任务链禁止自动升级",
+                field_path="risk-classification.signals",
+                problems=[f"signal: {item}" for item in late_signals],
+                recovery_action=(
+                    "把外来文件移出工作区或 stash 后重跑 finish；确属本任务的"
+                    "变更请改用 /harness-plan 完整流程"
+                ),
+                extra={"signals": late_signals, "paths": late_foreign},
+            ),
+            as_json,
+        )
+        return 3
+    if scope_fingerprint is not None:
+        current = _scope_content_fingerprint(project, product_paths)
+        if current != scope_fingerprint:
+            drifted = sorted(
+                path
+                for path in set(current) | set(scope_fingerprint)
+                if current.get(path) != scope_fingerprint.get(path)
+            )
+            emit(
+                error_envelope(
+                    "TASK_CONTENT_DRIFT",
+                    "落定范围内的内容在验证完成后被改写，验证结论不再覆盖待提交"
+                    "内容",
+                    field_path="workspaceBreakdown.productPaths",
+                    problems=drifted,
+                    recovery_action=(
+                        "harness_task.py finish --project . "
+                        f"--change {change} --json 重跑以重新验证当前内容"
+                    ),
+                ),
+                as_json,
+            )
+            return 2
+    return None
+
+
+def _record_verification_side_effects(
+    project: Path,
+    change_dir: Path,
+    task: dict[str, Any],
+    pre_verify_dirty: set[str],
+) -> None:
+    """R1/P9：记录验证窗口内新落盘的非 .harness 路径（本任务验证副作用）。
+
+    重试 finish 时这些路径豁免 ②c 升级判定（合法测试输出不错误升级），
+    窗口外的用户/他人新增路径不在此列，仍须过 full 信号复检。
+    """
+    current = {
+        str(p).replace("\\", "/")
+        for p in _dirty_paths(project)
+        if not str(p).replace("\\", "/").startswith(".harness/")
+    }
+    new_paths = sorted(current - pre_verify_dirty)
+    if not new_paths:
+        return
+    recorded = {
+        str(p).replace("\\", "/")
+        for p in (task.get("verificationSideEffects") or [])
+    }
+    merged = sorted(recorded | set(new_paths))
+    if merged != sorted(recorded):
+        task["verificationSideEffects"] = merged
+        write_json_file(change_dir / TASK_REL, task)
 
 
 def cmd_finish(args: argparse.Namespace) -> int:
@@ -1095,19 +1553,31 @@ def cmd_finish(args: argparse.Namespace) -> int:
             as_json,
         )
         return 2
+    resumed = False
     if task.get("status") != "open":
-        emit(
-            error_envelope(
-                "TASK_ALREADY_FINISHED",
-                f"change {change} 已处于终态 {task.get('status')!r}",
-                field_path="meta/task.json.status",
-                recovery_action=(
-                    f"harness_task.py status --project . --change {change} --json"
+        # R3/O1：终态但归档缺失（终态写入后、归档前崩溃）→ 走恢复通道，
+        # 只补做缺失动作；证据链不完整时回滚 open 继续下方完整重验证；
+        # 非终态的脏 status 一律 fail-closed。
+        if task.get("status") in TERMINAL_TASK_STATUSES:
+            resume_rc = _resume_terminal_finish(
+                project, change_dir, task, no_commit, as_json
+            )
+            if resume_rc is not None:
+                return resume_rc
+            resumed = True
+            task = load_task(change_dir) or task
+        else:
+            emit(
+                error_envelope(
+                    "TASK_STATE_INVALID",
+                    f"change {change} 任务状态不可信（status={task.get('status')!r}），"
+                    "fail-closed 拒绝 finish",
+                    field_path="meta/task.json.status",
+                    recovery_action="人工核对 meta/task.json 后修正为 open 再重跑 finish",
                 ),
-            ),
-            as_json,
-        )
-        return 2
+                as_json,
+            )
+            return 2
 
     if closure != "completed" and not closure_reason:
         emit(
@@ -1226,21 +1696,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     # 补归档重跑（归档失败后）：产品树已提交、无新 diff（no-code-diff），
     # 档位沿用上次裁决的记录，避免把 standard 工作改记成 fast。
     recorded_tier = str(task.get("tier") or "")
-    if (
-        tier == "fast"
-        and recorded_tier in ACCEPTED_TIERS
-        and "no-code-diff" in [str(s) for s in (classification.get("signals") or [])]
-    ):
-        tier = recorded_tier
-
-    # 声明档位下限（floor）：begin --tier 声明的档位比裁决高时抬升裁决，
-    # 反之不压低——classify 信号升级（该拒还拒）不受声明影响。与上面的
-    # recorded_tier 保留机制并行，任意顺序组合无冲突。
-    if (
-        declared_tier in ACCEPTED_TIERS
-        and TIER_RANK[declared_tier] > TIER_RANK[tier]
-    ):
-        tier = declared_tier
+    tier = _apply_tier_floors(tier, recorded_tier, declared_tier, classification)
 
     # ②b 声明产品所有权：classify 的 productPaths 即本次 diff 的产品路径。
     #     不声明则归档把全部改动判 foreignPaths → DIFF_ZERO_WITH_NONEMPTY_COMMIT
@@ -1272,6 +1728,56 @@ def cmd_finish(args: argparse.Namespace) -> int:
             )
             return 2
 
+    # ②c R1：吸纳外来路径后，基于落定范围重分类并重裁决档位。旧实现沿用
+    #     吸纳前的分类——其信号只扫旧 ownership.productPaths，导致验证失败
+    #     重试时新增的 full 信号路径（auth/迁移等）被静默按原档提交。
+    #     同时区分来源（R1 实施要求 2）：本任务验证窗口内落盘的副作用
+    #     （verificationSideEffects，如 manifest 类构建产物）是合法测试
+    #     输出，豁免升级判定；窗口外的用户/他人新增路径必须过 full 信号。
+    absorbed_foreign = [
+        path for path in contract_foreign if not path.startswith(".harness/")
+    ]
+    if absorbed_foreign:
+        recorded_effects = {
+            str(p).replace("\\", "/")
+            for p in (task.get("verificationSideEffects") or [])
+        }
+        escalated = [
+            path for path in absorbed_foreign if path not in recorded_effects
+        ]
+        classification = hg.classify_risk(change_dir, "post-run", workflow=workflow)
+        settled_tier, settled_full_hits = _tier_from_classification(classification)
+        if escalated and settled_tier is None:
+            emit(
+                error_envelope(
+                    "TASK_TIER_UPGRADE_REQUIRED",
+                    "范围落定后重分类命中 full 档信号（验证失败重试时新增/吸纳"
+                    "的路径），轻量任务链禁止自动升级",
+                    field_path="risk-classification.signals",
+                    problems=[f"signal: {item}" for item in settled_full_hits],
+                    recovery_action=(
+                        "方案 A（推荐）：harness_ledger.py record-degradation "
+                        "--reason '授权扩大' --verification all --approval user "
+                        "→ harness_gate.py add-approval --approver user → 重跑 finish；"
+                        "方案 B：放弃该任务（finish --closure abandoned）"
+                    ),
+                    extra={
+                        "changeDir": str(change_dir),
+                        "signals": settled_full_hits,
+                        "paths": escalated,
+                        "changePreserved": True,
+                    },
+                ),
+                as_json,
+            )
+            return 3
+        tier = _apply_tier_floors(
+            settled_tier if settled_tier is not None else tier,
+            recorded_tier,
+            declared_tier,
+            classification,
+        )
+
     # ③ 写 gate-policy（plannedPhases=["task","archive"] 使 archive_auto_gate
     #    认得 phase.end(task)——harness_archive.py:3480-3485 的 completed_phase
     #    取 plannedPhases 中 archive 的前一个）。tier 用最终裁决值（含
@@ -1289,6 +1795,13 @@ def cmd_finish(args: argparse.Namespace) -> int:
         # ④ 变更感知验证计划（P1/P5/P6）+ ⑤ 逐项执行写 ledger
         signals = [str(s) for s in (classification.get("signals") or [])]
         plan = _plan_verifications(tier, signals, product_paths, project)
+        # R1/P9：验证前快照——窗口内新落盘的非 .harness 路径记为本任务
+        # 验证副作用（供 ②c 来源区分）；窗口外的用户/他人新增不在此列。
+        pre_verify_dirty = {
+            str(p).replace("\\", "/")
+            for p in _dirty_paths(project)
+            if not str(p).replace("\\", "/").startswith(".harness/")
+        }
         for item in plan:
             if item.get("reason") == "deduped":
                 # P5：同一 argv 已执行——名义项保留在摘要，不重复执行/记账。
@@ -1304,10 +1817,16 @@ def cmd_finish(args: argparse.Namespace) -> int:
                 continue
             summary, verify_error = _run_verification(project, change_dir, item)
             if verify_error is not None:
+                _record_verification_side_effects(
+                    project, change_dir, task, pre_verify_dirty
+                )
                 emit(verify_error, as_json)
                 return 2
             verifications.append(summary)
             if summary["status"] != "OK":
+                _record_verification_side_effects(
+                    project, change_dir, task, pre_verify_dirty
+                )
                 emit(
                     error_envelope(
                         "VERIFICATION_FAILED",
@@ -1323,6 +1842,17 @@ def cmd_finish(args: argparse.Namespace) -> int:
                     as_json,
                 )
                 return 2
+        # 成功路径同样记录——副作用判定只看验证窗口，与验证成败无关。
+        _record_verification_side_effects(
+            project, change_dir, task, pre_verify_dirty
+        )
+
+    # R1：验证完成时刻对落定范围取内容指纹；提交前复检比对（见 ⑧）。
+    scope_fingerprint: dict[str, Any] | None = (
+        _scope_content_fingerprint(project, product_paths)
+        if closure == "completed"
+        else None
+    )
 
     # ⑥ 生成 plan.md（businessGoal/风险等级/任务表三契约）
     plan_path = _generate_plan_md(change_dir, task, tier, verifications)
@@ -1336,14 +1866,26 @@ def cmd_finish(args: argparse.Namespace) -> int:
     )
 
     # ⑧ commit（不 push；record-only 归档在无上游场景通过——批次 0 证据）
+    #     R2：abandoned/superseded 闭包跳过提交——取消的任务不产生代码提交，
+    #     工作区改动保留给用户处置（文档 §闭包语义）；归档走 unfinished
+    #     closure 通道保留证据链。
     head_hash = git_text(project, "rev-parse", "HEAD")
     committed_hash: str | None = None
-    if not no_commit:
+    if closure == "completed" and not no_commit:
+        # R1：提交前复检候选内容——验证后窗口落入的范围外路径、或落定范围
+        # 内被并发改写的内容，都使验证结论不再覆盖待提交内容，fail-closed。
+        precheck_rc = _precommit_scope_check(
+            project, change, product_paths, scope_fingerprint, task, as_json
+        )
+        if precheck_rc is not None:
+            return precheck_rc
         default_message = (
             commit_message
             or f"harness-task: {task.get('goal') or change}"
         )
-        committed_hash, commit_error = _git_commit_all(project, default_message)
+        committed_hash, commit_error = _git_commit_scoped(
+            project, change, product_paths, default_message
+        )
         if commit_error is not None:
             emit(
                 error_envelope(
@@ -1413,7 +1955,10 @@ def cmd_finish(args: argparse.Namespace) -> int:
     task["status"] = closure
     task["tier"] = tier
     task["finishedAt"] = now_iso()
-    task["commit"] = head_hash
+    # R2：只有 completed 闭包才有本任务提交；abandoned/superseded 不产生
+    # 提交，记 HEAD 会把无关提交误标成本任务成果。
+    task["commit"] = committed_hash if closure == "completed" else None
+    task["closureReason"] = closure_reason or None
     write_json_file(change_dir / TASK_REL, task)
 
     # ⑫ 归档（record-only；completed 之外不要求 ledger——:2986-2991）。
@@ -1423,11 +1968,12 @@ def cmd_finish(args: argparse.Namespace) -> int:
         emit(
             {
                 "ok": True,
-                "code": "TASK_FINISHED_NO_ARCHIVE",
+                "code": "TASK_RESUMED" if resumed else "TASK_FINISHED_NO_ARCHIVE",
                 "changeId": change,
                 "tier": tier,
                 "closure": closure,
-                "commit": head_hash,
+                "commit": committed_hash,
+                "resumed": resumed,
                 "verifications": verifications,
                 "planPath": str(plan_path),
                 "summary": {
@@ -1511,14 +2057,15 @@ def cmd_finish(args: argparse.Namespace) -> int:
     emit(
         {
             "ok": True,
-            "code": "TASK_FINISHED",
+            "code": "TASK_RESUMED" if resumed else "TASK_FINISHED",
             "changeId": change,
             "tier": tier,
             "closure": closure,
-            "commit": head_hash,
+            "commit": committed_hash,
             "verifications": verifications,
             "planPath": str(plan_path),
             "archiveDir": archive_dir,
+            "resumed": resumed,
             "summary": {
                 "完成内容": task.get("goal"),
                 "验证结果": (
@@ -1531,7 +2078,11 @@ def cmd_finish(args: argparse.Namespace) -> int:
                 "残余风险": (
                     "record-only 归档未做发布评审；full 档信号已前置拒绝"
                 ),
-                "代码位置": f"commit {head_hash}",
+                "代码位置": (
+                    f"commit {committed_hash}"
+                    if committed_hash
+                    else "未提交（工作区保留，用户处置）"
+                ),
             },
             "durationMs": duration_ms,
         },
@@ -1595,10 +2146,19 @@ def cmd_status(args: argparse.Namespace) -> int:
     dirty_paths = _dirty_paths(project)
 
     status = str(task.get("status") or "open")
+    # 能解析到 change 目录说明尚未归档（归档会移走整个目录）——终态 + 目录
+    # 仍在 = 归档中断，需要恢复指引而非误导性的"已终态"文案（R3/O1）。
+    recovery_pending = status in TERMINAL_TASK_STATUSES
     if status == "open":
         next_action = (
             "继续编辑/测试，然后 harness_task.py finish --project . "
             f"--change {change_dir.name} --json"
+        )
+    elif recovery_pending:
+        next_action = (
+            f"任务已终态（{status}）但归档中断；重跑 harness_task.py finish "
+            f"--project . --change {change_dir.name} --json ——恢复通道只补缺失"
+            "动作，不重复验证/提交"
         )
     else:
         next_action = "任务已终态；归档目录见 archiveDir 或 .harness/archive/"
@@ -1619,6 +2179,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "commit": task.get("commit"),
             "createdAt": task.get("createdAt"),
             "finishedAt": task.get("finishedAt"),
+            "recoveryPending": recovery_pending,
             "nextAction": next_action,
         },
         as_json,

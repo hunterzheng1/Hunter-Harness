@@ -60,6 +60,22 @@ MANIFEST_COMPARE_EXCLUDE = frozenset(
     }
 )
 
+# 归档流程自身在 before 清单生成之后重写的簿记/派生文件（freeze-first
+# 的证据截止快照、归档意图快照、collect 的汇总数据与保留审计、由
+# summary+plans 派生的知识候选）。与 MANIFEST_COMPARE_EXCLUDE 的区别：
+# 这些路径仍参与清单比对——仅在 before 中缺失时照常计入 generated；
+# 仅当双侧都存在但哈希不同（重归档场景：旧产物被本流程重写）时降级为
+# 容忍，否则一切重归档必然失败。最终内容仍由 after 清单与字节覆盖校验。
+MANIFEST_SELF_REGENERATED = frozenset(
+    {
+        "evidence/evidence-cutoff.json",
+        "evidence/retention-audit.json",
+        "meta/archive-intent.json",
+        "reports/final/summary-data.json",
+        "candidates/knowledge.json",
+    }
+)
+
 SCHEMA_VERSION = "2.3"
 NOT_AVAILABLE = "not_available"
 
@@ -436,7 +452,10 @@ def compare_manifests(
         if a_item is None:
             missing.append(rel)
             continue
-        if str(a_item.get("sha256")) != str(b_item.get("sha256")):
+        if (
+            str(a_item.get("sha256")) != str(b_item.get("sha256"))
+            and rel not in MANIFEST_SELF_REGENERATED
+        ):
             mismatched.append(
                 {
                     "path": rel,
@@ -6388,7 +6407,14 @@ def validate_source_consistency(
                     if not target.is_relative_to(change_root) or not target.is_file():
                         valid = False
                         break
-                    if not _manifest_path_excluded(rel) and sha256_file(target) != digest:
+                    # 自再生文件（MANIFEST_SELF_REGENERATED）在重归档时会被
+                    # 本流程重写，其旧校验和必然失效——与 compare_manifests
+                    # 同一豁免域。
+                    if (
+                        not _manifest_path_excluded(rel)
+                        and rel not in MANIFEST_SELF_REGENERATED
+                        and sha256_file(target) != digest
+                    ):
                         valid = False
                         break
             if not valid:
