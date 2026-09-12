@@ -31,6 +31,25 @@ jobs:
       - name: Run full check
         run: npm run check
 
+      - name: Generate CI evidence receipt
+        if: success()
+        run: |
+          node scripts/ci/generate-evidence-receipt.mjs \
+            --workflow check \
+            --job check-linux \
+            --step "Run full check" \
+            --command "npm run check" \
+            --conclusion success \
+            --out "$RUNNER_TEMP/ci-evidence-receipt.json"
+
+      - name: Upload CI evidence receipt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-evidence-receipt-${{ github.run_id }}-check-linux
+          if-no-files-found: error
+          path: ${{ runner.temp }}/ci-evidence-receipt.json
+
   test-windows:
     strategy:
       fail-fast: false
@@ -54,6 +73,25 @@ jobs:
 
       - name: Run Windows test shard ${{ matrix.shard }}/2
         run: npm test -- --shard=${{ matrix.shard }}/2
+
+      - name: Generate CI evidence receipt
+        if: success()
+        run: |
+          node scripts/ci/generate-evidence-receipt.mjs `
+            --workflow check `
+            --job "test-windows-unit" `
+            --step "Run unit tests" `
+            --command "npm test -- --shard=${{ matrix.shard }}/2" `
+            --conclusion success `
+            --out "$env:RUNNER_TEMP\ci-evidence-receipt.json"
+
+      - name: Upload CI evidence receipt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-evidence-receipt-${{ github.run_id }}-test-windows-${{ matrix.shard }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/ci-evidence-receipt.json
 
   package-smoke:
     runs-on: ubuntu-latest
