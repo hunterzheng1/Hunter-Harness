@@ -17,6 +17,227 @@ def load_module():
     return module
 
 
+def _finding(
+    *,
+    fid: str,
+    path: str,
+    line: int = 3,
+    dimension: str = "correctness",
+    title: str = "t",
+    severity: str = "YELLOW",
+) -> dict:
+    return {
+        "id": fid,
+        "dimension": dimension,
+        "severity": severity,
+        "path": path,
+        "line": line,
+        "title": title,
+        "fixbackAction": "code",
+        "firstSeenRunId": "review-run-1",
+        "lastSeenRunId": "review-run-1",
+        "anchors": {"path": path, "contextHash": None, "unresolvable": True},
+    }
+
+
+def _v2_findings_doc(findings: list[dict]) -> dict:
+    return {"schemaVersion": 2, "runId": "review-run-1", "findings": findings}
+
+
+class CarryOverClassificationTests(unittest.TestCase):
+    """WI-3.1 步骤②：fixback 后逐 finding 的携带/失效判定。"""
+
+    def _classify(
+        self,
+        findings: list[dict],
+        changed: list[str],
+        *,
+        repo_root: Path | None = None,
+    ) -> dict:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc(findings)), encoding="utf-8"
+            )
+            return module.classify_review_carryover(
+                change_dir,
+                changed_files=changed,
+                batch_id="fb-1",
+                repo_root=repo_root or change_dir,
+            )
+
+    def test_unchanged_path_is_carried_over(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "a.py").write_text("l1\nl2\nl3\n", encoding="utf-8")
+            anchor = module.hr.compute_finding_anchor(root, "src/a.py", 2)
+            change_dir = root / "change"
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            finding = _finding(fid="f-a", path="src/a.py", line=2)
+            finding["anchors"] = anchor
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc([finding])), encoding="utf-8"
+            )
+            result = module.classify_review_carryover(
+                change_dir, changed_files=["src/b.py"], batch_id="fb-1",
+                repo_root=root,
+            )
+        self.assertEqual(result["carriedOverIds"], ["f-a"])
+        self.assertEqual(result["invalidatedIds"], [])
+
+    def test_changed_path_is_invalidated(self) -> None:
+        result = self._classify(
+            [_finding(fid="f-a", path="src/a.py")], changed=["src/a.py"]
+        )
+        self.assertEqual(result["carriedOverIds"], [])
+        self.assertEqual(
+            result["invalidatedIds"],
+            ["f-a"],
+            "命中 finding 的失效原因必须是 PATH_CHANGED",
+        )
+        self.assertEqual(
+            result["findings"][0]["invalidation"]["code"], "PATH_CHANGED"
+        )
+
+    def test_resolved_anchor_drift_invalidates(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "a.py").write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+            anchor = module.hr.compute_finding_anchor(root, "src/a.py", 2)
+            self.assertTrue(str(anchor["contextHash"]).startswith("sha256:"))
+            (src / "a.py").write_text(
+                "line 1\nCHANGED line 2\nline 3\n", encoding="utf-8"
+            )
+            change_dir = root / "change"
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            finding = _finding(fid="f-a", path="src/a.py", line=2)
+            finding["anchors"] = anchor
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc([finding])), encoding="utf-8"
+            )
+            result = module.classify_review_carryover(
+                change_dir,
+                changed_files=[],  # 路径未声明变更——锚点是最后的安全网
+                batch_id="fb-1",
+                repo_root=root,
+            )
+            self.assertEqual(result["invalidatedIds"], ["f-a"])
+            self.assertEqual(
+                result["findings"][0]["invalidation"]["code"], "ANCHOR_DRIFT"
+            )
+
+    def test_unresolvable_anchor_is_fail_closed(self) -> None:
+        result = self._classify(
+            [_finding(fid="f-a", path="gone/a.py")], changed=["src/b.py"]
+        )
+        self.assertEqual(result["carriedOverIds"], [])
+        self.assertEqual(result["invalidatedIds"], ["f-a"])
+        self.assertEqual(
+            result["findings"][0]["invalidation"]["code"], "ANCHOR_UNRESOLVABLE"
+        )
+
+    def test_v1_findings_fail_closed_to_run_granularity(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "runId": "review-run-1",
+                        "findings": [
+                            {"id": "f-old", "path": "src/a.py"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = module.classify_review_carryover(
+                change_dir, changed_files=["src/b.py"], batch_id="fb-1",
+                repo_root=change_dir,
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "REVIEW_CARRYOVER_UNSUPPORTED_SCHEMA")
+
+    def test_missing_findings_sidecar_is_noop(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = module.classify_review_carryover(
+                Path(tmp), changed_files=["src/a.py"], batch_id="fb-1",
+                repo_root=Path(tmp),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["carriedOverIds"], [])
+            self.assertEqual(result["invalidatedIds"], [])
+
+
+class BlastRadiusTests(unittest.TestCase):
+    """WI-3.1 裁决 3：影响扩大信号命中 → 整 dimension fail-closed 失效。"""
+
+    def _findings(self) -> list[dict]:
+        return [
+            _finding(fid="f-a", path="src/a.py", dimension="architecture"),
+            _finding(fid="f-b", path="src/b.py", dimension="correctness"),
+        ]
+
+    def _classify(self, changed: list[str]) -> dict:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc(self._findings())), encoding="utf-8"
+            )
+            return module.classify_review_carryover(
+                change_dir, changed_files=changed, batch_id="fb-1",
+                repo_root=change_dir,
+            )
+
+    def test_shared_state_signal_expands_to_whole_dimension(self) -> None:
+        # workflow-policy 是 risk-signals.json shared-state 的 marker
+        result = self._classify(changed=["harness/workflow-policy.json"])
+        # 正确性 dimension 的两个 finding 均不在变更路径上，
+        # 但 shared-state 信号命中 → 全 dimension 失效
+        self.assertEqual(result["carriedOverIds"], [])
+        self.assertEqual(
+            sorted(result["invalidatedIds"]), ["f-a", "f-b"]
+        )
+        self.assertIn("shared-state", result["expandedSignals"])
+
+    def test_no_signal_hit_carries_per_finding(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "a.py").write_text("l1\nl2\nl3\n", encoding="utf-8")
+            (src / "b.py").write_text("l1\nl2\nl3\n", encoding="utf-8")
+            change_dir = root / "change"
+            (change_dir / "reports" / "review").mkdir(parents=True)
+            f_a = _finding(fid="f-a", path="src/a.py", line=2, dimension="architecture")
+            f_b = _finding(fid="f-b", path="src/b.py", line=2, dimension="correctness")
+            f_a["anchors"] = module.hr.compute_finding_anchor(root, "src/a.py", 2)
+            f_b["anchors"] = module.hr.compute_finding_anchor(root, "src/b.py", 2)
+            (change_dir / "reports" / "review" / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc([f_a, f_b])), encoding="utf-8"
+            )
+            result = module.classify_review_carryover(
+                change_dir, changed_files=["src/only-app.ts"], batch_id="fb-1",
+                repo_root=root,
+            )
+        self.assertEqual(sorted(result["carriedOverIds"]), ["f-a", "f-b"])
+        self.assertEqual(result["expandedSignals"], [])
+
+
 def write_evidence(
     root: Path,
     relative: str,
@@ -450,6 +671,99 @@ class FixbackBatchTests(unittest.TestCase):
             self.assertEqual(receipt["targetIds"], ["unit"])
             self.assertEqual(receipt["validations"], ["unitTestFull"])
             self.assertEqual(receipt["changedFiles"], ["src/engine.ts"])
+
+            # WI-3.1 步骤②：评审携带回执同批落盘，无 findings 时为空集
+            carryover_path = (
+                change_dir / "runtime" / "invalidations"
+                / "review-carryover-batch-receipt.json"
+            )
+            self.assertTrue(carryover_path.is_file())
+            carryover = json.loads(carryover_path.read_text(encoding="utf-8"))
+            self.assertEqual(carryover["carriedOverIds"], [])
+            self.assertEqual(carryover["invalidatedIds"], [])
+            self.assertEqual(carryover["expandedSignals"], [])
+
+    def test_resolve_issue_classifies_carryover_with_v2_findings(self) -> None:
+        """带 v2 findings 的夹具：携带判定进回执 + batch.reviewCarryover 计数。"""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            src = change_dir / "src"
+            src.mkdir()
+            (src / "a.py").write_text("l1\nl2\nl3\n", encoding="utf-8")
+            (src / "engine.ts").write_text("export {}\n", encoding="utf-8")
+            review_dir = change_dir / "reports" / "review"
+            review_dir.mkdir(parents=True)
+            anchor = module.hr.compute_finding_anchor(change_dir, "src/a.py", 2)
+            finding = _finding(fid="f-a", path="src/a.py", line=2)
+            finding["anchors"] = anchor
+            (review_dir / "review-findings.json").write_text(
+                json.dumps(_v2_findings_doc([finding])), encoding="utf-8"
+            )
+            ledger_path = change_dir / "evidence" / "verification-ledger.json"
+            ledger_path.parent.mkdir(parents=True)
+            ledger_path.write_text(
+                json.dumps({
+                    "verificationTargets": {
+                        "unit": {
+                            "verification": "unitTestFull",
+                            "inputsFiles": ["src/engine.ts"],
+                            "reusable": True,
+                        },
+                    },
+                    "validations": {},
+                }),
+                encoding="utf-8",
+            )
+            module.open_batch(
+                change_dir,
+                batch_id="batch-carry",
+                product_identity="sha256:before",
+                root_cause="x",
+            )
+            module.add_issue(
+                change_dir,
+                batch_id="batch-carry",
+                issue_id="I-1",
+                summary="x",
+                risk_tags=[],
+            )
+            module.resolve_issue(
+                change_dir,
+                batch_id="batch-carry",
+                issue_id="I-1",
+                red_evidence=write_evidence(
+                    change_dir,
+                    "evidence/red-carry.json",
+                    kind="red",
+                    status="FAIL",
+                    product_identity="sha256:before",
+                    evidence_id="red-carry",
+                ),
+                green_evidence=write_evidence(
+                    change_dir,
+                    "evidence/green-carry.json",
+                    kind="green",
+                    status="PASS",
+                    product_identity="sha256:after",
+                    evidence_id="green-carry",
+                ),
+                changed_files=["src/engine.ts"],
+            )
+
+            carryover = json.loads(
+                (
+                    change_dir / "runtime" / "invalidations"
+                    / "review-carryover-batch-carry.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(carryover["carriedOverIds"], ["f-a"])
+            self.assertEqual(carryover["invalidatedIds"], [])
+            batch = json.loads(
+                (change_dir / "fixback" / "batches" / "batch-carry.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertEqual(batch["reviewCarryover"]["carriedOver"], 1)
 
     def test_close_batch_flips_fixback_session_to_closed(self) -> None:
         """F-5：批次关闭时托管会话必须同步 CLOSED，不再误拦后续 launch-review。"""

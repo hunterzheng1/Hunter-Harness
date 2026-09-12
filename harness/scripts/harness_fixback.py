@@ -778,6 +778,149 @@ def invalidate_affected_evidence(
     }
 
 
+# WI-3.1 裁决 3：影响扩大信号的权威来源是共享契约（risk-signals.json 的
+# fullMarkers），与 WI-1 档位裁决同源，不另立清单。
+BLAST_RADIUS_SIGNALS = frozenset({"shared-state", "contract-schema"})
+
+
+def _load_full_markers() -> dict[str, tuple[str, ...]]:
+    import harness_gate as hg
+
+    return hg._load_risk_signals_contract()["fullMarkers"]
+
+
+def detect_blast_radius(
+    changed_files: list[str],
+) -> list[str]:
+    """changedFiles 命中 shared-state / contract-schema 影响扩大信号时返回信号名。
+
+    线性扫描 fullMarkers（信号表几十条 × marker 几个关键词，量级无害）；
+    判定与 WI-1 classify 的 marker 语义一致：任意 marker 是路径的子串即命中。
+    """
+    if not changed_files:
+        return []
+    markers = _load_full_markers()
+    normalized = [str(p).replace("\\", "/") for p in changed_files if str(p).strip()]
+    hits: set[str] = set()
+    for signal in sorted(BLAST_RADIUS_SIGNALS):
+        for marker in markers.get(signal, ()):
+            token = marker.lower()
+            if any(token in path.lower() for path in normalized):
+                hits.add(signal)
+                break
+    return sorted(hits)
+
+
+def _normalized_rel(path: Any) -> str:
+    if not isinstance(path, str):
+        return ""
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def classify_review_carryover(
+    change_dir: Path,
+    *,
+    changed_files: list[str],
+    batch_id: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """WI-3.1 步骤②：fixback 后逐 finding 的携带/失效判定。
+
+    三分支（裁决 2，finding 粒度）：
+    - path ∈ changedFiles → invalidated(PATH_CHANGED)
+    - 锚点可算且 contextHash 一致 → carriedOver
+    - 锚点漂移/不可算 → invalidated(ANCHOR_DRIFT / ANCHOR_UNRESOLVABLE)
+    fail-closed：v1 sidecar（无锚点语义）整 run 粒度拒绝；影响扩大信号命中
+    时关联 dimension 整组失效（裁决 3）。
+    """
+    findings_path = hr.findings_path(change_dir)
+    if not findings_path.is_file():
+        return {
+            "ok": True,
+            "code": "REVIEW_CARRYOVER_NO_FINDINGS",
+            "carriedOverIds": [],
+            "invalidatedIds": [],
+            "findings": [],
+            "expandedSignals": [],
+        }
+    try:
+        doc = json.loads(findings_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        doc = None
+    if not isinstance(doc, dict):
+        return {
+            "ok": False,
+            "code": "REVIEW_CARRYOVER_UNSUPPORTED_SCHEMA",
+            "detail": "review-findings.json 不是对象",
+        }
+    if doc.get("schemaVersion") != 2:
+        return {
+            "ok": False,
+            "code": "REVIEW_CARRYOVER_UNSUPPORTED_SCHEMA",
+            "detail": (
+                "评审携带判定要求 schemaVersion=2（稳定 id + 锚点）；"
+                f"实际 {doc.get('schemaVersion')!r}。重跑本轮 write-findings "
+                "或按整 run 粒度重评审"
+            ),
+        }
+    normalized_changed = {
+        _normalized_rel(p) for p in changed_files if _normalized_rel(p)
+    }
+    expanded_signals = detect_blast_radius(changed_files)
+    expanded_dimensions: set[str] = set()
+    if expanded_signals:
+        for item in doc.get("findings", []):
+            if isinstance(item, dict) and isinstance(item.get("dimension"), str):
+                expanded_dimensions.add(item["dimension"])
+    root = Path(repo_root) if repo_root is not None else None
+    carried: list[str] = []
+    invalidated: list[str] = []
+    findings_out: list[dict[str, Any]] = []
+    for item in doc.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        fid = str(item.get("id") or "")
+        finding_out = dict(item)
+        code: str | None = None
+        if item.get("dimension") in expanded_dimensions:
+            code = "BLAST_RADIUS_EXPANDED"
+        elif _normalized_rel(item.get("path")) in normalized_changed:
+            code = "PATH_CHANGED"
+        else:
+            anchor = item.get("anchors")
+            if not isinstance(anchor, dict) or anchor.get("unresolvable"):
+                code = "ANCHOR_UNRESOLVABLE"
+            elif root is not None:
+                fresh = hr.compute_finding_anchor(
+                    root, item.get("path"), item.get("line")
+                )
+                if fresh.get("unresolvable") or (
+                    fresh.get("contextHash") != anchor.get("contextHash")
+                ):
+                    code = "ANCHOR_DRIFT"
+            # root=None（调用方未给仓库根）时锚点核验跳过——携带只看路径交集
+        if code is None:
+            carried.append(fid)
+        else:
+            invalidated.append(fid)
+            finding_out["invalidation"] = {
+                "code": code,
+                "batchId": batch_id,
+                "invalidatedAt": now_iso(),
+            }
+            if code == "BLAST_RADIUS_EXPANDED":
+                finding_out["invalidation"]["signals"] = expanded_signals
+        findings_out.append(finding_out)
+    return {
+        "ok": True,
+        "code": "REVIEW_CARRYOVER_CLASSIFIED",
+        "carriedOverIds": carried,
+        "invalidatedIds": invalidated,
+        "findings": findings_out,
+        "expandedSignals": expanded_signals,
+    }
+
+
 def _required_verifications(issues: list[dict[str, Any]]) -> list[str]:
     required = {"affected", "review"}
     for issue in issues:
@@ -1665,11 +1808,49 @@ def resolve_issue(
         }
     )
     batch["updatedAt"] = resolved_at
+    batch_changed_files = [record["path"] for record in changed_records]
     batch["invalidation"] = invalidate_affected_evidence(
         change_dir,
-        changed_files=[record["path"] for record in changed_records],
+        changed_files=batch_changed_files,
         batch_id=batch_id,
     )
+    # WI-3.1 步骤②：评审结论按 finding 粒度失效/携带。判定结果落
+    # runtime/invalidations/review-carryover-<batchId>.json，供 close 校验
+    # 与 efficiency 汇总消费；失败 fail-closed（携带判定失败 → 整批重评审）。
+    carryover = classify_review_carryover(
+        change_dir,
+        changed_files=batch_changed_files,
+        batch_id=batch_id,
+    )
+    if not carryover.get("ok"):
+        carryover = {
+            "ok": False,
+            "code": carryover.get("code", "REVIEW_CARRYOVER_FAILED"),
+            "carriedOverIds": [],
+            "invalidatedIds": [],
+            "findings": [],
+            "expandedSignals": [],
+        }
+    carryover_receipt = {
+        "schemaVersion": 1,
+        "batchId": batch_id,
+        "createdAt": resolved_at,
+        "carriedOverIds": carryover["carriedOverIds"],
+        "invalidatedIds": carryover["invalidatedIds"],
+        "expandedSignals": carryover["expandedSignals"],
+        "findings": carryover["findings"],
+    }
+    invalidations_dir = _state_root(change_dir) / "runtime" / "invalidations"
+    invalidations_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        invalidations_dir / f"review-carryover-{batch_id}.json",
+        carryover_receipt,
+    )
+    batch["reviewCarryover"] = {
+        "carriedOver": len(carryover["carriedOverIds"]),
+        "invalidated": len(carryover["invalidatedIds"]),
+        "expandedSignals": carryover["expandedSignals"],
+    }
     _write_json(_batch_path(change_dir, batch_id), batch)
     return issue
 
