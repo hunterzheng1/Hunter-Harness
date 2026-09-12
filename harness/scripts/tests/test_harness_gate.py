@@ -280,6 +280,77 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(result["code"], "LEDGER_IDENTITY_MISMATCH")
         self.assertNotEqual(result["storedDiffHash"], result["currentDiffHash"])
 
+    def test_split_contract_refines_mismatch_to_evidence_invalidated(self) -> None:
+        """WI-3.1 步骤④（裁决项 4）：identity_mismatch 兜底命中且 required
+        条目带 fixback 失效标志时，报错细化为 EVIDENCE_INVALIDATED + 逐条目
+        详情；不改变拒绝语义（ok 仍为 False）。"""
+        context = {
+            "schemaVersion": 2,
+            "changeId": "demo",
+            "stateOwnership": {
+                "contractRoot": ".harness/changes/demo",
+                "runtimeRoot": ".harness/state/changes/demo",
+            },
+            "ownership": {
+                "productPaths": ["README.md"],
+                "staticEvidencePaths": [".harness/changes/demo/"],
+            },
+        }
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps(context) + "\n", encoding="utf-8"
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+        ledger = {
+            "schemaVersion": 3,
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "changeName": "demo",
+            "baseCommit": head,
+            "currentHead": head,
+            "diffHash": gate.hl.compute_ownership_diff(
+                self.project, base=head, change_dir=self.change_dir
+            )["diffHash"],
+            "ownershipHash": gate.hl.ownership_hash(context),
+            "validations": {
+                "compile": self._v2_entry(command="python -m compileall"),
+                "unitTest": {
+                    **self._v2_entry(),
+                    "reusable": False,
+                    "invalidation": {
+                        "code": "EVIDENCE_INVALIDATED",
+                        "batchId": "batch-demo",
+                        "changedFiles": ["src/demo.py"],
+                        "invalidatedAt": "2026-09-12T00:00:00+00:00",
+                    },
+                },
+            },
+        }
+        ledger_path = (
+            self.project / ".harness" / "state" / "changes" / "demo"
+            / "evidence" / "verification-ledger.json"
+        )
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_text(json.dumps(ledger) + "\n", encoding="utf-8")
+        (self.project / "README.md").write_text("changed after verification\n", encoding="utf-8")
+
+        result = gate.validate_ledger_for_phase_close(
+            self.change_dir, "run", policy.load_policy(REPO_ROOT),
+            execution_root=self.project,
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "EVIDENCE_INVALIDATED")
+        invalidated = {
+            item["verification"]: item for item in result["invalidatedEntries"]
+        }
+        self.assertIn("unitTest", invalidated)
+        self.assertNotIn("compile", invalidated)
+        self.assertEqual(
+            invalidated["unitTest"]["invalidation"]["batchId"], "batch-demo"
+        )
+
     def test_begin_blocks_task_6_while_checkpoint_pending(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
             with mock.patch.object(

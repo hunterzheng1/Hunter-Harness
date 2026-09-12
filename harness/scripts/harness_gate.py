@@ -847,6 +847,38 @@ def validate_ledger_for_phase_close(
             or ledger.get("diffHash") != current_diff
         )
         if identity_mismatch:
+            # WI-3.1 步骤④（裁决项 4）：兜底命中时，若 required 条目带
+            # fixback 失效标志，则报错细化为逐条目详情，替代笼统的
+            # LEDGER_IDENTITY_MISMATCH。不改变放行/拒绝集合（ok 仍 False）。
+            invalidated_entries = [
+                {
+                    "verification": verification,
+                    "invalidation": entry.get("invalidation"),
+                    "reusable": entry.get("reusable"),
+                }
+                for verification in required
+                if isinstance(entry := validations.get(verification), dict)
+                and (
+                    entry.get("reusable") is False
+                    or isinstance(entry.get("invalidation"), dict)
+                )
+            ]
+            if invalidated_entries:
+                return {
+                    "ok": False,
+                    "code": "EVIDENCE_INVALIDATED",
+                    "message": (
+                        "required verification evidence was invalidated by a "
+                        "fixback batch; re-record before close"
+                    ),
+                    "phase": phase,
+                    "invalidatedEntries": invalidated_entries,
+                    "ledgerPath": str(ledger_path) if ledger_path else None,
+                    "recoveryAction": (
+                        "只重新执行列出的验证（re-record），其余条目按原样复用，"
+                        "再原样重试 close。"
+                    ),
+                }
             return {
                 "ok": False,
                 "code": "LEDGER_IDENTITY_MISMATCH",
