@@ -59,7 +59,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-TASK_SCHEMA_VERSION = 1
+# v2：新增 writeScope/dependsOn（WI-3.3 并行冲突检测与依赖门）；
+# v1 读侧兼容——字段缺省即未声明，不参与检测。
+TASK_SCHEMA_VERSION = 2
 TASK_REL = Path("meta") / "task.json"
 TASK_PHASE = "task"
 # 终态集合：status 属于此集合且 change 目录仍在 .harness/changes/ 下时，
@@ -295,6 +297,122 @@ def resolve_change_dir(project: Path, change: str) -> tuple[Path | None, dict[st
 # begin
 # ---------------------------------------------------------------------------
 
+def _normalize_write_scope(raw: list[str] | None) -> tuple[list[str] | None, list[str]]:
+    """begin --write-scope 规范化：POSIX 相对路径、去尾斜杠、去重保序。
+
+    返回 (规范化结果, problems)；raw 为 None（未带参数）时返回 (None, [])
+    表示「未声明」。声明是 begin 时的事实输入，格式非法即拒（不建目录）。
+    """
+    if raw is None:
+        return None, []
+    problems: list[str] = []
+    normalized: list[str] = []
+    for item in raw:
+        text = str(item).strip().replace("\\", "/")
+        if text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+            problems.append(f"writeScope 必须是仓库相对路径（非绝对路径）: {item!r}")
+            continue
+        if ".." in text.split("/"):
+            problems.append(f"writeScope 不允许父级引用 '..': {item!r}")
+            continue
+        text = text.strip("/")
+        if not text:
+            problems.append("writeScope 不允许空路径")
+            continue
+        if text not in normalized:
+            normalized.append(text)
+    return normalized, problems
+
+
+def _normalize_depends_on(raw: list[str] | None) -> list[str] | None:
+    """begin --depends-on 规范化：strip、去空、去重保序；None 表示未声明。
+
+    非法 change 名不单独拒绝——存在性检查会以 TASK_DEPENDENCY_MISSING 兜底。
+    """
+    if raw is None:
+        return None
+    out: list[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _paths_overlap(a: str, b: str) -> bool:
+    """前缀包含语义：相等或一方是另一方的父目录即视为相交。"""
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def _detect_scope_conflicts(
+    project: Path, self_change: str, write_scope: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """扫 .harness/changes/ 下其他 open 任务的 writeScope（排除自身与归档目录）。
+
+    返回 (conflicts, unscoped_change_ids)：conflicts 带相交路径明细；
+    unscoped 是未声明 scope 的 open 任务（仅提示，不阻塞）。
+    """
+    conflicts: list[dict[str, Any]] = []
+    unscoped: list[str] = []
+    changes_root = project / ".harness" / "changes"
+    if not changes_root.is_dir():
+        return conflicts, unscoped
+    for child in sorted(changes_root.iterdir()):
+        if not child.is_dir() or child.name == self_change:
+            continue
+        doc = load_task(child)
+        if doc is None or doc.get("status") != "open":
+            continue
+        other = [str(p) for p in (doc.get("writeScope") or []) if str(p).strip()]
+        if not other:
+            unscoped.append(child.name)
+            continue
+        hits = sorted(
+            {
+                mine
+                for mine in write_scope
+                for theirs in other
+                if _paths_overlap(mine, theirs)
+            }
+        )
+        if hits:
+            conflicts.append({"changeId": child.name, "overlaps": hits})
+    return conflicts, unscoped
+
+
+def _detect_dependency_cycle(
+    project: Path, self_change: str, depends_on: list[str]
+) -> list[str] | None:
+    """从 self 沿 dependsOn 图 DFS：回到 self 返回环路径，否则 None。
+
+    缺失节点视为无出边（存在性由 TASK_DEPENDENCY_MISSING 单独报告）；
+    self 的出边直接用本次声明值（首次 begin 时盘上尚无 task.json）。
+    """
+    changes_root = project / ".harness" / "changes"
+
+    def _deps_of(name: str) -> list[str]:
+        if name == self_change:
+            return list(depends_on)
+        doc = load_task(changes_root / name)
+        if doc is None:
+            return []
+        return [str(d) for d in (doc.get("dependsOn") or [])]
+
+    visited: set[str] = set()
+    stack: list[tuple[str, list[str]]] = [(self_change, [self_change])]
+    while stack:
+        node, path = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        for nxt in _deps_of(node):
+            if nxt == self_change:
+                return path + [nxt]
+            if nxt not in visited:
+                stack.append((nxt, path + [nxt]))
+    return None
+
+
 def load_task_events(change_dir: Path) -> list[dict[str, Any]]:
     events_path = change_dir / "events.ndjson"
     if not events_path.is_file():
@@ -437,6 +555,158 @@ def cmd_begin(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # WI-3.3：写入范围与依赖声明校验。全部失败路径都不建 change 目录
+    # （对齐 --tier full 先例：begin 拒绝不留孤儿目录）。
+    # getattr 防御：既有测试/调用方手工构造 Namespace 时可能缺新属性
+    # （对齐 args.tier 的处理先例）。
+    write_scope, scope_problems = _normalize_write_scope(
+        getattr(args, "write_scope", None)
+    )
+    depends_on = _normalize_depends_on(getattr(args, "depends_on", None))
+    if scope_problems:
+        emit(
+            error_envelope(
+                "TASK_SCOPE_INVALID",
+                "--write-scope 声明非法：须为仓库相对 POSIX 路径，"
+                "不允许绝对路径 / 父级引用 / 空路径",
+                field_path="args.write_scope",
+                problems=scope_problems,
+                recovery_action=(
+                    "示例：--write-scope src/auth --write-scope docs/api.md"
+                ),
+            ),
+            as_json,
+        )
+        return 2
+
+    # 声明不可改（对齐 declaredTier 守卫语义）：open 任务重复 begin 时，
+    # 未带参数 = 不表态（幂等放行）；带参数且与既有声明不同 = 拒绝。
+    # 改范围 = 新协调，须 abandon 后以新声明重开。
+    if existing_task is not None:
+        existing_scope = existing_task.get("writeScope") or None
+        existing_depends = existing_task.get("dependsOn") or None
+        redeclared: list[str] = []
+        if write_scope and existing_scope is not None and existing_scope != write_scope:
+            redeclared.append(
+                f"writeScope: 已声明 {existing_scope}，不得改口为 {write_scope}"
+            )
+        if depends_on and existing_depends is not None and existing_depends != depends_on:
+            redeclared.append(
+                f"dependsOn: 已声明 {existing_depends}，不得改口为 {depends_on}"
+            )
+        if redeclared:
+            emit(
+                error_envelope(
+                    "TASK_SCOPE_REDECLARED",
+                    f"change {change} 的 begin 声明不可改——"
+                    "改范围/改依赖须先 abandon 再以新声明重开",
+                    field_path="meta/task.json",
+                    problems=redeclared,
+                    recovery_action=(
+                        f"harness_task.py finish --project . --change {change} "
+                        "--closure abandoned --closure-reason 重声明 --json"
+                    ),
+                ),
+                as_json,
+            )
+            return 2
+
+    # 生效声明 = 既有声明优先（幂等复用/补声明场景），否则本次新声明。
+    effective_scope = (
+        (existing_task.get("writeScope") or None) if existing_task is not None else None
+    ) or (write_scope or None)
+    effective_depends = (
+        (existing_task.get("dependsOn") or None) if existing_task is not None else None
+    ) or (depends_on or None)
+
+    # 依赖门：先环检测（图结构问题，不看状态），再存在性，再完成状态。
+    # 目标 abandoned/superseded 同样阻塞——不可强行 begin，须先重开/替换依赖。
+    if effective_depends:
+        cycle = _detect_dependency_cycle(project, change, effective_depends)
+        if cycle is not None:
+            emit(
+                error_envelope(
+                    "TASK_DEPENDENCY_CYCLE",
+                    f"依赖声明成环: {' → '.join(cycle)}",
+                    field_path="args.depends_on",
+                    extra={"cycle": cycle},
+                    recovery_action="解开环后重试（调整 --depends-on 声明）",
+                ),
+                as_json,
+            )
+            return 2
+        changes_root = project / ".harness" / "changes"
+        missing_deps: list[str] = []
+        unmet_deps: list[str] = []
+        for dep in effective_depends:
+            dep_doc = load_task(changes_root / dep)
+            if dep_doc is None:
+                missing_deps.append(dep)
+                continue
+            dep_status = str(dep_doc.get("status") or "open")
+            if dep_status != "completed":
+                unmet_deps.append(f"{dep}(status={dep_status})")
+        if missing_deps:
+            emit(
+                error_envelope(
+                    "TASK_DEPENDENCY_MISSING",
+                    f"依赖的 change 不存在: {', '.join(missing_deps)}",
+                    field_path="args.depends_on",
+                    problems=[f"missing: {dep}" for dep in missing_deps],
+                    recovery_action="确认依赖 change 名，或先 begin 该依赖任务",
+                ),
+                as_json,
+            )
+            return 2
+        if unmet_deps:
+            emit(
+                error_envelope(
+                    "TASK_DEPENDENCY_UNMET",
+                    "依赖目标未达 completed，不允许 begin"
+                    "（依赖语义不腐蚀——先等待/重开/替换依赖）",
+                    field_path="args.depends_on",
+                    problems=[f"unmet: {dep}" for dep in unmet_deps],
+                    recovery_action=(
+                        "依赖目标完成后重试；目标 abandoned/superseded 时"
+                        "须重开或替换依赖（不可强行 begin）"
+                    ),
+                ),
+                as_json,
+            )
+            return 2
+
+    # 写入范围冲突检测：仅双方均声明时判定（既有未声明 open 任务只提示）。
+    unscoped_open: list[str] = []
+    if effective_scope:
+        conflicts, unscoped_open = _detect_scope_conflicts(
+            project, change, effective_scope
+        )
+        if conflicts:
+            conflict_ids = [item["changeId"] for item in conflicts]
+            emit(
+                error_envelope(
+                    "TASK_SCOPE_CONFLICT",
+                    f"写入范围与 open 任务 {', '.join(conflict_ids)} 相交，"
+                    "拒绝并行 begin",
+                    field_path="args.write_scope",
+                    problems=[
+                        f"conflict with {item['changeId']}: "
+                        f"{', '.join(item['overlaps'])}"
+                        for item in conflicts
+                    ],
+                    recovery_action=(
+                        "等待冲突任务 finish 后重试（begin 拒绝零副作用，"
+                        "可直接重跑）；或收窄 --write-scope 到不相交范围"
+                    ),
+                    extra={
+                        "conflicts": conflicts,
+                        "unscopedOpenChanges": unscoped_open,
+                    },
+                ),
+                as_json,
+            )
+            return 2
+
     created = not change_dir.is_dir()
     if created:
         (change_dir / "meta").mkdir(parents=True, exist_ok=True)
@@ -472,6 +742,9 @@ def cmd_begin(args: argparse.Namespace) -> int:
             "tier": None,
             # begin --tier 声明的档位下限；tier 仍是 finish 裁决值。
             "declaredTier": declared_tier,
+            # WI-3.3：写入范围与依赖声明（None = 未声明，不参与检测）。
+            "writeScope": effective_scope,
+            "dependsOn": effective_depends,
             "createdAt": now_iso(),
             "finishedAt": None,
             # begin 时刻脏树基线：finish 的外来路径检测基准（非循环）。
@@ -480,10 +753,19 @@ def cmd_begin(args: argparse.Namespace) -> int:
         write_json_file(change_dir / TASK_REL, task_doc)
     else:
         task_doc = existing_task
-        # 既有任务补声明：之前 begin 未带 --tier，现在带了 → 补写
-        # （同值幂等；不同值已被上面的冲突守卫拒绝）。
+        # 既有任务补声明：之前 begin 未带参数、现在带了 → 补写
+        # （同值幂等；不同值已被上面的重声明守卫拒绝）。
+        task_dirty = False
         if declared_tier is not None and task_doc.get("declaredTier") is None:
             task_doc["declaredTier"] = declared_tier
+            task_dirty = True
+        if write_scope and not task_doc.get("writeScope"):
+            task_doc["writeScope"] = write_scope
+            task_dirty = True
+        if depends_on and not task_doc.get("dependsOn"):
+            task_doc["dependsOn"] = depends_on
+            task_dirty = True
+        if task_dirty:
             write_json_file(change_dir / TASK_REL, task_doc)
 
     # phase.start 幂等：已有未关闭的 task phase.start 则复用，不重复追加。
@@ -542,6 +824,10 @@ def cmd_begin(args: argparse.Namespace) -> int:
             "goal": task_doc.get("goal"),
             "acceptance": task_doc.get("acceptance"),
             "declaredTier": task_doc.get("declaredTier"),
+            "writeScope": task_doc.get("writeScope"),
+            "dependsOn": task_doc.get("dependsOn"),
+            # WI-3.3：未声明 scope 的 open 任务（不参与冲突检测，仅提示）。
+            "unscopedOpenChanges": unscoped_open,
             "changeBase": git_state.get("base"),
             "head": git_state.get("head"),
             "nextAction": (
@@ -1714,6 +2000,43 @@ def cmd_finish(args: argparse.Namespace) -> int:
             if not path.startswith(".harness/")
         }
     )
+    # WI-3.3：声明了 writeScope 的任务，实际产品 diff（含吸纳的外来路径）
+    # 必须落在声明范围内；越界即停止——不声明、不提交，改动留在工作区，
+    # 由用户收窄改动或以更大范围重开任务（声明是 begin 时的协调事实）。
+    task_scope = [
+        str(p) for p in (task.get("writeScope") or []) if str(p).strip()
+    ]
+    if task_scope and product_paths:
+        out_of_scope = [
+            path
+            for path in product_paths
+            if not any(
+                path == scope or path.startswith(scope + "/")
+                for scope in task_scope
+            )
+        ]
+        if out_of_scope:
+            emit(
+                error_envelope(
+                    "TASK_SCOPE_VIOLATION",
+                    f"实际改动越过 begin 声明的写入范围 {task_scope}，已停止",
+                    field_path="meta/task.json.writeScope",
+                    problems=[
+                        f"out-of-scope: {path}" for path in out_of_scope
+                    ],
+                    recovery_action=(
+                        "收窄改动到声明范围内；或先 abandon 本任务，"
+                        "以覆盖实际改动的 --write-scope 重新 begin"
+                    ),
+                    extra={
+                        "declaredScope": task_scope,
+                        "outOfScope": out_of_scope,
+                    },
+                ),
+                as_json,
+            )
+            return 2
+
     if product_paths:
         ownership = hchg.declare_product_ownership(
             project, change, product_paths=product_paths
@@ -2213,6 +2536,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("fast", "standard", "full"),
         default=None,
         help="声明档位下限；full 直接拒绝（转 /harness-plan 完整流程）",
+    )
+    p_begin.add_argument(
+        "--write-scope",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="写入范围声明（仓库相对路径，可重复）；与其他 open 任务声明"
+        "相交即拒绝 begin，finish 实际 diff 越界即停止",
+    )
+    p_begin.add_argument(
+        "--depends-on",
+        action="append",
+        default=None,
+        metavar="CHANGE",
+        help="依赖的 change id（可重复）；目标须达 completed 才允许 begin，"
+        "abandoned/superseded 须先重开或替换依赖",
     )
     p_begin.add_argument("--json", action="store_true")
     p_begin.set_defaults(func=cmd_begin)

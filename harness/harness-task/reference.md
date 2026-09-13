@@ -8,7 +8,8 @@
 ```
 harness_task.py begin  --project . --change <cn> --executor <tool> \
                       --goal "<目标一句话>" --acceptance "<条件>" (可重复) \
-                      [--tier fast|standard] --json
+                      [--tier fast|standard] [--write-scope <路径>] (可重复) \
+                      [--depends-on <cn>] (可重复) --json
 harness_task.py finish --project . --change <cn> [--commit-message <msg>] \
                        [--closure abandoned|superseded --closure-reason <r>] \
                        [--no-commit] --json
@@ -20,6 +21,21 @@ harness_task.py status --project . --change <cn> --json
   `--tier` 声明档位下限（floor）：声明比 finish 裁决高时抬升裁决，
   反之不压低（classify 信号升级仍生效）；`--tier full` 直接拒绝
   （rc=3，不建 change 目录）；改口声明不同档位 → TASK_INPUT_INVALID。
+- `begin --write-scope`（WI-3.3）：声明写入范围（仓库相对 POSIX 路径，
+  尾斜杠自动剥除；绝对路径/`..`/空路径 → TASK_SCOPE_INVALID）。与其他
+  open 任务的声明按**前缀包含**判定相交（相等或一方是另一方父目录）→
+  TASK_SCOPE_CONFLICT（rc=2，不建目录，带 conflicts 明细）；既有未声明
+  scope 的 open 任务不参与判定，响应 `unscopedOpenChanges` 提示。
+- `begin --depends-on`（WI-3.3）：声明依赖的 change id。目标不存在 →
+  TASK_DEPENDENCY_MISSING；非 completed（含 abandoned/superseded，不可
+  强行 begin）→ TASK_DEPENDENCY_UNMET；沿声明图成环（含自环）→
+  TASK_DEPENDENCY_CYCLE（环检测先于状态检查报出）。
+- 声明不可改：open 任务重复 begin 带不同 writeScope/dependsOn →
+  TASK_SCOPE_REDECLARED（改范围 = 新协调，须 abandon 后重开）；未带参数
+  = 不表态（幂等放行）；首次补声明（既有为 null）正常补写。
+- `finish` 越界校验：声明 writeScope 的任务，实际产品 diff（含吸纳的
+  外来路径）越出声明范围 → TASK_SCOPE_VIOLATION（rc=2，不声明 ownership、
+  不提交，改动留工作区）；未声明 scope 的任务行为不变。
 - `finish`：classify → 档位裁决 → 验证 → ledger → plan.md → commit →
   归档（record-only）。幂等——验证失败修复后、归档失败处理后都直接重跑。
 - `status`：只读恢复视图（档位/声明档位/已记验证/未提交 diff/下一步）。
@@ -81,6 +97,13 @@ finish 在执行前先生成验证计划（`_plan_verifications`），摘要项�
 | code | 含义 | recoveryAction |
 |------|------|----------------|
 | TASK_INPUT_INVALID | begin 输入缺失/非法（change 名、goal、acceptance） | 按 problems[] 补参重跑 begin |
+| TASK_SCOPE_INVALID | `--write-scope` 含绝对路径/`..`/空路径 | 改为仓库相对 POSIX 路径 |
+| TASK_SCOPE_REDECLARED | open 任务重复 begin 改口 writeScope/dependsOn | abandon 后以新声明重开（声明不可改） |
+| TASK_SCOPE_CONFLICT | 写入范围与其他 open 任务声明相交（前缀包含） | 等冲突方 finish 后重试，或收窄 scope 到不相交 |
+| TASK_SCOPE_VIOLATION | finish 实际 diff 越出 begin 声明范围 | 收窄改动；或 abandon 后以更大范围重开 |
+| TASK_DEPENDENCY_MISSING | `--depends-on` 目标 change 不存在 | 确认名字或先 begin 依赖任务 |
+| TASK_DEPENDENCY_UNMET | 依赖目标非 completed（含 abandoned/superseded） | 等目标完成；abandoned 须重开/替换依赖 |
+| TASK_DEPENDENCY_CYCLE | 依赖声明成环（含自环），先于状态检查报出 | 解开环后重试 |
 | TASK_NOT_BEGUN | change 缺 meta/task.json | 先运行 begin |
 | TASK_ALREADY_FINISHED | 任务已终态（completed/abandoned/superseded） | `status` 查看结果；新任务换 change 名 |
 | TASK_TIER_UPGRADE_REQUIRED | diff 触发 full 档信号（rc=3）；begin `--tier full` 也返回（rc=3，field_path=args.tier，不建 change 目录）；手改 task.json declaredTier=full 同样拒绝（field_path=meta/task.json.declaredTier） | 改用 `/harness-plan` 完整流程；change 目录保留可续用 |
@@ -103,8 +126,9 @@ finish 在执行前先生成验证计划（`_plan_verifications`），摘要项�
    双通道；重试时上次验证副作用弄脏的产品树文件按任务工作并入
    ownership，不拒绝——P9）；declaredTier 纵深防御（非法值拒绝）+
    floor 抬升（声明比裁决高时）
-3. 声明 ownership.productPaths（classify 的 productPaths + 契约外
-   产品树脏路径）
+3. writeScope 越界校验（WI-3.3：声明 scope 的任务实际产品 diff 越界 →
+   TASK_SCOPE_VIOLATION，停止且不提交）；声明 ownership.productPaths
+   （classify 的 productPaths + 契约外产品树脏路径）
 4. 写 gate-policy（plannedPhases=["task","archive"]）
 5. 生成验证计划（P1/P5/P6：doc-contract / python-targeted 定向替换 +
    同 argv 去重；见「验证计划」节）

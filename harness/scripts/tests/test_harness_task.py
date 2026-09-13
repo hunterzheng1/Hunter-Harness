@@ -1120,5 +1120,230 @@ class FinishCommitScopeTests(HarnessTaskFixture):
         self.assertIn("late-stray.txt", self._git("status", "--porcelain"))
 
 
+class ScopedTaskFixture(HarnessTaskFixture):
+    """WI-3.3 公共辅助：带 --write-scope / --depends-on 的 begin。"""
+
+    def _begin_scoped(
+        self,
+        change: str,
+        scope: list[str] | None = None,
+        depends: list[str] | None = None,
+        goal: str = "测试目标",
+    ) -> tuple[int, dict]:
+        argv = [
+            "begin", "--project", str(self.project), "--change", change,
+            "--executor", "test", "--goal", goal,
+            "--acceptance", "验收条件", "--json",
+        ]
+        for path in scope or []:
+            argv += ["--write-scope", path]
+        for dep in depends or []:
+            argv += ["--depends-on", dep]
+        return self._run(*argv)
+
+    def _task_doc(self, change: str) -> dict:
+        return json.loads(
+            (self._change_dir(change) / "meta" / "task.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+
+    def _write_task_status(self, change: str, status: str) -> None:
+        doc = self._task_doc(change)
+        doc["status"] = status
+        (self._change_dir(change) / "meta" / "task.json").write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+
+class ScopeConflictTests(ScopedTaskFixture):
+    """WI-3.3：begin 前写入范围冲突检测（任务书 9.1 必测：独立可并行、
+    相交被阻止、父子路径冲突、无声明不阻塞、重启不重复分派）。"""
+
+    def test_disjoint_scopes_both_begin(self) -> None:
+        rc, out_a = self._begin_scoped("work-a", scope=["src/a"])
+        self.assertEqual(rc, 0, out_a)
+        rc, out_b = self._begin_scoped("work-b", scope=["src/b"])
+        self.assertEqual(rc, 0, out_b)
+        self.assertEqual(out_b["code"], "TASK_BEGUN", out_b)
+
+    def test_identical_scope_conflicts(self) -> None:
+        rc, _ = self._begin_scoped("work-a", scope=["src/a.py"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-b", scope=["src/a.py"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_CONFLICT", out)
+        self.assertIn("work-a", json.dumps(out, ensure_ascii=False))
+        # 拒绝不建孤儿 change 目录（对齐 --tier full 先例）。
+        self.assertFalse(self._change_dir("work-b").exists())
+
+    def test_parent_child_scope_conflicts_both_directions(self) -> None:
+        # 父目录先声明，子路径 begin → 冲突。
+        rc, _ = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-b", scope=["src/deep/x.py"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_CONFLICT", out)
+        # 反向：文件先声明，父目录 begin → 同样冲突。
+        rc, _ = self._begin_scoped("work-c", scope=["lib/y.py"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-d", scope=["lib"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_CONFLICT", out)
+
+    def test_trailing_slash_normalized(self) -> None:
+        rc, out = self._begin_scoped("work-a", scope=["src/"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._task_doc("work-a").get("writeScope"), ["src"])
+
+    def test_scope_rejects_absolute_and_parent_ref(self) -> None:
+        rc, out = self._begin_scoped("work-a", scope=["../outside"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_INVALID", out)
+        rc, out = self._begin_scoped("work-a", scope=["/abs/path"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_INVALID", out)
+
+    def test_unscoped_open_task_does_not_block_but_is_surfaced(self) -> None:
+        # 存量无声明 open 任务（旧 schema）不阻塞，但提示字段列出。
+        self._begin("legacy-open")
+        rc, out = self._begin_scoped("work-b", scope=["src"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("legacy-open", out.get("unscopedOpenChanges") or [])
+
+    def test_conflict_clears_after_peer_terminal(self) -> None:
+        rc, _ = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0)
+        self._write_task_status("work-a", "completed")
+        rc, out = self._begin_scoped("work-b", scope=["src"])
+        self.assertEqual(rc, 0, out)
+
+    def test_redeclare_scope_on_open_task_rejected(self) -> None:
+        rc, _ = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-a", scope=["lib"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_REDECLARED", out)
+        # 原声明不被覆盖。
+        self.assertEqual(self._task_doc("work-a").get("writeScope"), ["src"])
+
+    def test_idempotent_begin_same_scope_reuses_run(self) -> None:
+        """重启不重复分派：同 change 同声明重复 begin 复用原 run。"""
+        rc, first = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0, first)
+        rc, second = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0, second)
+        self.assertEqual(second["code"], "TASK_BEGUN", second)
+        self.assertEqual(first["runId"], second["runId"])
+        starts = [
+            e for e in self._events("work-a")
+            if e.get("type") == "phase.start" and e.get("phase") == "task"
+        ]
+        self.assertEqual(len(starts), 1)
+
+
+class TaskDependencyTests(ScopedTaskFixture):
+    """WI-3.3：依赖缺失/阻塞/失败传播/成环（任务书 9.1 必测）。"""
+
+    def test_dependency_missing(self) -> None:
+        rc, out = self._begin_scoped("work-a", depends=["ghost"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_DEPENDENCY_MISSING", out)
+        self.assertIn("ghost", json.dumps(out, ensure_ascii=False))
+        self.assertFalse(self._change_dir("work-a").exists())
+
+    def test_dependency_unmet_while_open(self) -> None:
+        rc, _ = self._begin_scoped("work-b", scope=["src/b"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-a", depends=["work-b"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_DEPENDENCY_UNMET", out)
+
+    def test_dependency_completed_allows_begin(self) -> None:
+        rc, _ = self._begin_scoped("work-b", scope=["src/b"])
+        self.assertEqual(rc, 0)
+        self._write_task_status("work-b", "completed")
+        rc, out = self._begin_scoped("work-a", depends=["work-b"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._task_doc("work-a").get("dependsOn"), ["work-b"])
+
+    def test_dependency_abandoned_blocks(self) -> None:
+        """失败传播：依赖目标 abandoned 同样阻塞，且不可强行 begin。"""
+        rc, _ = self._begin_scoped("work-b", scope=["src/b"])
+        self.assertEqual(rc, 0)
+        self._write_task_status("work-b", "abandoned")
+        rc, out = self._begin_scoped("work-a", depends=["work-b"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_DEPENDENCY_UNMET", out)
+        self.assertIn("abandoned", json.dumps(out, ensure_ascii=False))
+
+    def test_dependency_self_cycle(self) -> None:
+        rc, out = self._begin_scoped("work-a", depends=["work-a"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_DEPENDENCY_CYCLE", out)
+
+    def test_dependency_indirect_cycle(self) -> None:
+        """A 依赖 B、B（open）声明依赖 A → 环先于 UNMET 报出。"""
+        rc, _ = self._begin_scoped("work-a", scope=["src/a"])
+        self.assertEqual(rc, 0)
+        # 手工给 open 的 A 补一条 dependsOn=[work-b]（模拟并行声明窗口）。
+        doc = self._task_doc("work-a")
+        doc["dependsOn"] = ["work-b"]
+        (self._change_dir("work-a") / "meta" / "task.json").write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        rc, out = self._begin_scoped("work-b", depends=["work-a"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_DEPENDENCY_CYCLE", out)
+
+    def test_redeclare_depends_on_open_task_rejected(self) -> None:
+        rc, _ = self._begin_scoped("work-b", scope=["src/b"])
+        self.assertEqual(rc, 0)
+        self._write_task_status("work-b", "completed")
+        rc, _ = self._begin_scoped("work-a", depends=["work-b"])
+        self.assertEqual(rc, 0)
+        rc, out = self._begin_scoped("work-a", depends=["work-c"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_REDECLARED", out)
+
+
+class ScopeViolationFinishTests(ScopedTaskFixture):
+    """WI-3.3：finish 越界停止——声明 writeScope 后实际 diff 越界即拒绝，
+    不吸纳、不提交（任务书 9.1「越过声明边界时停止相关写入」）。"""
+
+    def test_finish_within_scope_ok(self) -> None:
+        rc, _ = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0)
+        (self.project / "src").mkdir()
+        (self.project / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        rc, out = self._finish("work-a")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_FINISHED", out)
+
+    def test_finish_out_of_scope_rejected_without_commit(self) -> None:
+        rc, _ = self._begin_scoped("work-a", scope=["src"])
+        self.assertEqual(rc, 0)
+        (self.project / "src").mkdir()
+        (self.project / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        (self.project / "other.py").write_text("y = 2\n", encoding="utf-8")
+        head_before = self._git("rev-parse", "HEAD")
+        rc, out = self._finish("work-a")
+        self.assertEqual(rc, 2)
+        self.assertEqual(out["code"], "TASK_SCOPE_VIOLATION", out)
+        self.assertIn("other.py", json.dumps(out, ensure_ascii=False))
+        # 停止相关写入：无提交，改动保留在工作区。
+        self.assertEqual(self._git("rev-parse", "HEAD"), head_before)
+        self.assertIn("other.py", self._git("status", "--porcelain"))
+
+    def test_finish_without_scope_keeps_absorb_behavior(self) -> None:
+        """对照：未声明 scope 的任务保持现状（外来路径吸纳进 ownership）。"""
+        self._begin("plain-task")
+        (self.project / "src").mkdir(exist_ok=True)
+        (self.project / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        rc, out = self._finish("plain-task")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_FINISHED", out)
+
+
 if __name__ == "__main__":
     unittest.main()
