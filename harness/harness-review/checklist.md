@@ -14,9 +14,25 @@ description: harness-review 的6维度审查检查项详细列表。仅在执行
 
 ### 1. 获取变更范围
 
+**先跑 WI-3.4 增量评审边界判定**（第二轮及以后收敛输入）：
+
+```powershell
+python <skills-root>/scripts/harness_review.py diff-scope --change-dir <change-dir> --json
+```
+
+- `mode=incremental`：只审 `incrementalFiles`（上次评审边界之后的增量）+
+  `contextFiles`（受影响上下文）；`openFindings`（既有未解决发现）必须连同
+  新 diff 一起复核——不得因输入收窄而漏掉它们是否已被修复/被新改动影响。
+- `mode=full`：按 `fullFiles` 全量审查；`reason` 给出回退原因
+  （NO_PREVIOUS_SCOPE / HEAD_UNRESOLVABLE / EXPANDED_SIGNALS:<信号> /
+  UNEXPLAINED_DRIFT / DIFF_ERROR），在报告「变更摘要」中注明。
+- 首轮评审（无上一轮 findings sidecar）必然是 full。
+
+随后取 diff 内容（增量轮也须把 `openFindings` 涉及的文件读进来对账）：
+
 ```powershell
 powershell.exe -Command "git -C '<项目路径>' diff --stat"
-powershell.exe -Command "git -C '<项目路径>' diff"
+powershell.exe -Command "git -C '<项目路径>' diff -- <incrementalFiles...>"
 ```
 
 ### 2. 六维度逐文件审查

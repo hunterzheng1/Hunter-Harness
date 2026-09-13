@@ -861,12 +861,14 @@ def classify_review_carryover(
             "code": "REVIEW_CARRYOVER_UNSUPPORTED_SCHEMA",
             "detail": "review-findings.json 不是对象",
         }
-    if doc.get("schemaVersion") != 2:
+    # v3 = v2 + 顶层 diffScope（WI-3.4 评审边界记录）；finding 级结构、
+    # 稳定 id 与锚点语义与 v2 完全一致，携带判定同样适用。
+    if doc.get("schemaVersion") not in (2, 3):
         return {
             "ok": False,
             "code": "REVIEW_CARRYOVER_UNSUPPORTED_SCHEMA",
             "detail": (
-                "评审携带判定要求 schemaVersion=2（稳定 id + 锚点）；"
+                "评审携带判定要求 schemaVersion ∈ {2, 3}（稳定 id + 锚点）；"
                 f"实际 {doc.get('schemaVersion')!r}。重跑本轮 write-findings "
                 "或按整 run 粒度重评审"
             ),

@@ -39,6 +39,12 @@ RED/YELLOW/OK 三态的判定原则——结论必须基于实际 diff 内容，
 
 ### 变更摘要
 - 变更文件: N 个 | +xxx / -xxx
+- 评审模式: full | incremental（`harness_review.py diff-scope` 输出；
+  full 时注明 reason，如 EXPANDED_SIGNALS:shared-state）
+
+### 增量对账（mode=incremental 时必填）
+- 新增发现: N | 持续发现（id 同上轮 openFindings）: M | 消失（上轮未解决、本轮未复现且未重报）: K
+- 消失项须在报告中逐条说明去向（已修复 / 文件还原 / 锚点漂移待重报），防止漏审
 
 ### 审查结果
 

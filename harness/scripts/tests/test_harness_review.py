@@ -210,7 +210,9 @@ class CrossRoundIdentityTests(ReviewFixture):
         self.assertTrue(second["ok"], second)
         round2 = self._written()
 
-        self.assertEqual(round2["schemaVersion"], 2)
+        # WI-3.4：sidecar 升 schemaVersion 3（顶层 diffScope）；
+        # id 与 firstSeenRunId 语义不变，跨轮一致性仍须成立。
+        self.assertEqual(round2["schemaVersion"], 3)
         ids_round2 = [f["id"] for f in round2["findings"]]
         self.assertEqual(ids_round1, ids_round2, "同一问题跨轮必须保持同一 id")
         for finding in round2["findings"]:
@@ -929,6 +931,254 @@ class StdinInputTests(unittest.TestCase):
                 "--stdin",
             ], stdin_text="{}")
             self.assertNotEqual(code, 0)
+
+
+class DiffScopeFixture(ReviewFixture):
+    """WI-3.4 公共基建：.gitignore 隔离 .harness/，产品文件写入/提交/findings 辅助。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.project / ".gitignore").write_text(".harness/\n", encoding="utf-8")
+        git(self.project, "add", ".gitignore")
+        git(self.project, "commit", "-m", "gitignore")
+
+    def _write_product(self, rel: str, content: str) -> None:
+        path = self.project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def _commit_all(self, msg: str = "wip") -> None:
+        git(self.project, "add", "-A")
+        git(self.project, "commit", "-m", msg)
+
+    def _write_findings(
+        self, findings: list[dict] | None = None, run_id: str = "review-run-1"
+    ) -> dict:
+        doc = {
+            "runId": run_id,
+            "changeName": "demo",
+            "findings": findings
+            if findings is not None
+            else [
+                {
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "src/app.py",
+                    "line": 42,
+                    "title": "God object accumulates responsibilities",
+                    "fixbackAction": "code",
+                }
+            ],
+        }
+        result = review.write_findings(self.change_dir, doc)
+        assert result["ok"], result
+        return result
+
+    def _sidecar(self) -> dict:
+        return json.loads(
+            review.findings_path(self.change_dir).read_text(encoding="utf-8-sig")
+        )
+
+    def _save_sidecar(self, doc: dict) -> None:
+        review.findings_path(self.change_dir).write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def _diff_scope(self) -> dict:
+        return review.diff_scope(self.change_dir)
+
+
+class DiffScopeTests(DiffScopeFixture):
+    """WI-3.4：diff-scope 增量/全量判定（任务书 O2 §9.2 必测矩阵）。"""
+
+    def test_first_round_no_sidecar_returns_full(self) -> None:
+        self._write_product("src/a.py", "a = 1\n")
+        out = self._diff_scope()
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "NO_PREVIOUS_SCOPE")
+        self.assertIn("src/a.py", out["fullFiles"])
+
+    def test_v2_sidecar_without_scope_returns_full(self) -> None:
+        path = review.findings_path(self.change_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"schemaVersion": 2, "runId": "r1", "changeName": "demo",
+                 "findings": []}
+            ),
+            encoding="utf-8",
+        )
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "NO_PREVIOUS_SCOPE")
+
+    def test_incremental_lists_only_changed_files(self) -> None:
+        """无关模块不重审：a.py 改动、b.py 未动 → 增量只列 a.py。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_product("src/b.py", "b = 1\n")
+        self._write_findings()
+        self._write_product("src/a.py", "a = 2\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertEqual(out["incrementalFiles"], ["src/a.py"])
+
+    def test_new_file_is_incremental(self) -> None:
+        self._write_findings()
+        self._write_product("src/new.py", "n = 1\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertIn("src/new.py", out["incrementalFiles"])
+
+    def test_deleted_tracked_file_is_incremental(self) -> None:
+        """base 中已跟踪的文件被删除也是须审的增量（state-snapshot 钉 base）。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._commit_all("add a")
+        head = git(self.project, "rev-parse", "HEAD").stdout.strip()
+        snapshot = {"git": {"base": head, "head": head}}
+        (self.change_dir / "meta" / "state-snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
+        self._write_findings()  # 相对 base 工作区干净 → files={}
+        git(self.project, "rm", "-q", "src/a.py")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertIn("src/a.py", out["incrementalFiles"])
+
+    def test_shared_state_marker_expands_to_full(self) -> None:
+        """全局配置/共享状态变化触发扩大（O2 §9.2 必测）。"""
+        self._write_findings()
+        self._write_product("src/shared/pool.py", "x = 1\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "EXPANDED_SIGNALS:shared-state")
+
+    def test_contract_schema_path_expands_to_full(self) -> None:
+        """接口/契约邻接变化正确扩展（O2 §9.2 必测）。"""
+        self._write_findings()
+        self._write_product("harness/scripts/harness_gate.py", "# change\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "EXPANDED_SIGNALS:contract-schema")
+
+    def test_head_unresolvable_returns_full(self) -> None:
+        self._write_findings()
+        sidecar = self._sidecar()
+        sidecar["diffScope"]["head"] = "0" * 40
+        self._save_sidecar(sidecar)
+        self._write_product("src/a.py", "a = 1\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "HEAD_UNRESOLVABLE")
+
+    def test_unexplained_drift_returns_full(self) -> None:
+        """per-file 无差异但整体 diffHash 不一致 → fail-closed 全量。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_findings()
+        sidecar = self._sidecar()
+        sidecar["diffScope"]["diffHash"] = "sha256:forged"
+        self._save_sidecar(sidecar)
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "full")
+        self.assertEqual(out["reason"], "UNEXPLAINED_DRIFT")
+
+    def test_no_change_incremental_empty_and_open_findings_listed(self) -> None:
+        """无变化仍是 incremental（空清单）；上轮 OPEN finding 不因局部输入消失。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_findings()
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertEqual(out["incrementalFiles"], [])
+        paths = [f["path"] for f in out["openFindings"]]
+        self.assertIn("src/app.py", paths)
+
+    def test_open_findings_exclude_fixed(self) -> None:
+        """已修复发现不重复出现在增量输入。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_findings()
+        fid = self._sidecar()["findings"][0]["id"]
+        dispo = review.write_dispositions(
+            self.change_dir,
+            {
+                "schemaVersion": 1,
+                "runId": "review-run-1",
+                "dispositions": [{"findingId": fid, "disposition": "FIXED"}],
+            },
+        )
+        assert dispo["ok"], dispo
+        out = self._diff_scope()
+        self.assertEqual(out["openFindings"], [])
+
+    def test_commit_does_not_disturb_incremental(self) -> None:
+        """checkpoint commit 不冲掉内容身份：提交后新改 b.py，增量只列 b.py。"""
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_findings()
+        self._commit_all("checkpoint")
+        self._write_product("src/b.py", "b = 1\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertEqual(out["incrementalFiles"], ["src/b.py"])
+
+    def test_context_files_pair_tests(self) -> None:
+        """受影响上下文：增量源文件配对的测试文件纳入 contextFiles。"""
+        self._write_product("tests/test_a.py", "def test_a():\n    pass\n")
+        self._commit_all("add test")
+        self._write_findings()
+        self._write_product("src/a.py", "a = 1\n")
+        out = self._diff_scope()
+        self.assertEqual(out["mode"], "incremental", out)
+        self.assertIn("tests/test_a.py", out.get("contextFiles") or [])
+
+
+class FindingsV3Tests(DiffScopeFixture):
+    """WI-3.4：findings sidecar schemaVersion 3 + diffScope 捕获。"""
+
+    def test_write_findings_captures_diff_scope(self) -> None:
+        self._write_product("src/a.py", "a = 1\n")
+        self._write_findings()
+        sidecar = self._sidecar()
+        self.assertEqual(sidecar["schemaVersion"], 3)
+        scope = sidecar["diffScope"]
+        for key in ("base", "head", "diffHash", "files", "mode", "capturedAt"):
+            self.assertIn(key, scope)
+        self.assertEqual(scope["mode"], "full")  # 首轮无上一轮边界
+        self.assertIn("src/a.py", scope["files"])
+        self.assertTrue(str(scope["diffHash"]).startswith("sha256:"))
+
+    def test_second_round_write_mode_incremental(self) -> None:
+        self._write_findings(run_id="r1")
+        self._write_findings(run_id="r2")
+        self.assertEqual(self._sidecar()["diffScope"]["mode"], "incremental")
+
+    def test_explicit_diff_mode_override(self) -> None:
+        self._write_findings(run_id="r1")
+        result = review.write_findings(
+            self.change_dir, {"runId": "r2", "findings": [], "diffMode": "full"}
+        )
+        assert result["ok"], result
+        self.assertEqual(self._sidecar()["diffScope"]["mode"], "full")
+
+
+class CarryoverV3CompatTests(DiffScopeFixture):
+    """WI-3.4：v3 sidecar 与 WI-3.1 携带判定兼容（锚点/id 语义不变）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.fixback = load_module("harness_fixback", "harness_fixback.py")
+
+    def test_v3_sidecar_carryover_still_classified(self) -> None:
+        lines = "".join(f"line {i}\n" for i in range(1, 60))
+        self._write_product("src/app.py", lines)
+        self._write_findings()  # v3 sidecar，finding path=src/app.py line=42
+        out = self.fixback.classify_review_carryover(
+            self.change_dir,
+            changed_files=["other.py"],
+            batch_id="b1",
+            repo_root=self.project,
+        )
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["code"], "REVIEW_CARRYOVER_CLASSIFIED", out)
+        self.assertEqual(len(out["carriedOverIds"]), 1)
 
 
 if __name__ == "__main__":

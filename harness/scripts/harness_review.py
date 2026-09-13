@@ -212,7 +212,12 @@ def validate_findings(doc: Any, *, require_ids: bool = False) -> list[str]:
     return problems
 
 
-def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
+def write_findings(
+    change_dir: Path,
+    doc: dict[str, Any],
+    *,
+    diff_mode: str | None = None,
+) -> dict[str, Any]:
     # B2-6：缺 runId 时自动取当前 review run（events 里最近一轮 phase.start），
     # 不再让调用方为拿 runId 被迫读 events 原文。显式给出的 runId 始终优先。
     auto_filled_run_id = False
@@ -284,11 +289,18 @@ def write_findings(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
             merged["lastSeenRunId"] = merged.get("firstSeenRunId", run_id)
             assigned.append(merged)
             seen.add(carried_id)
+    # WI-3.4：schemaVersion 3，顶层附 diffScope（被审内容身份：base/head/
+    # diffHash/files/mode/capturedAt）。mode 显式声明（stdin diffMode 字段
+    # 或 CLI --mode）优先，缺省自动推断（上轮有 diffScope → incremental）。
+    mode_override = (
+        doc.get("diffMode") if isinstance(doc.get("diffMode"), str) else diff_mode
+    )
     payload = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "runId": run_id,
         "changeName": doc.get("changeName") or Path(change_dir).name,
         "findings": assigned,
+        "diffScope": _capture_diff_scope(change_dir, previous, mode_override),
     }
     # 目录路径的 finding 下游产不出可绑定的知识候选（source_refs 会拒整包），
     # 写入时提前可见——demo-datasource 的 quality/#L1 就是这么漏出去的
@@ -418,6 +430,328 @@ def write_dispositions(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
     out = dispositions_path(change_dir)
     _write_json_atomic(out, payload)
     return {"ok": True, "code": "DISPOSITIONS_WRITTEN", "path": str(out)}
+
+
+# ---------------------------------------------------------------------------
+# WI-3.4 增量评审：diff-scope 判定与 diffScope 捕获
+#
+# 评审输入从「整个 diff」收敛到「上次评审边界之后的增量 + 受影响上下文 +
+# 既有未解决发现」。边界身份记录在 findings sidecar 顶层 diffScope
+# （schemaVersion 3）；per-file 内容哈希是增量判定主键（diffHash 只做整体
+# 校验）；扩大信号与 WI-1/detect_blast_radius 同源（risk-signals.json）。
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _git(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def _read_change_base(change_dir: Path) -> str | None:
+    """best-effort 读 state-snapshot 的不可变 base（git.base → changeBase）。"""
+    snapshot = Path(change_dir) / "meta" / "state-snapshot.json"
+    try:
+        doc = json.loads(snapshot.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    git_section = doc.get("git")
+    if isinstance(git_section, dict):
+        base = git_section.get("base")
+        if isinstance(base, str) and base.strip():
+            return base.strip()
+    base = doc.get("changeBase")
+    if isinstance(base, str) and base.strip():
+        return base.strip()
+    return None
+
+
+def _current_change_set(
+    repo_root: Path, base: str | None
+) -> tuple[str, dict[str, str | None]]:
+    """当前变更集（path → 工作区内容 sha256；None = 已删除）。
+
+    变更集定义与 ledger diffHash 同源（_changed_paths：相对 base 的 tracked
+    diff ∪ untracked，commit 无关）——checkpoint commit 不会冲掉内容身份。
+    """
+    import harness_ledger  # 延迟 import：大模块，仅本路径需要
+
+    resolved_base, paths = harness_ledger._changed_paths(repo_root, base)
+    files: dict[str, str | None] = {}
+    for rel in paths:
+        abs_path = Path(repo_root) / rel
+        if abs_path.is_file():
+            files[rel] = "sha256:" + hashlib.sha256(abs_path.read_bytes()).hexdigest()
+        else:
+            files[rel] = None
+    return resolved_base, files
+
+
+def _current_diff_hash(
+    repo_root: Path, base: str | None, change_dir: Path
+) -> str | None:
+    import harness_ledger  # 延迟 import
+
+    try:
+        digest, _meta = harness_ledger.compute_diff_hash(repo_root, base, change_dir)
+    except Exception:
+        return None
+    return digest if isinstance(digest, str) else None
+
+
+def _current_head(repo_root: Path) -> str | None:
+    proc = _git(repo_root, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    head = proc.stdout.strip()
+    return head or None
+
+
+def _head_resolvable(repo_root: Path, head: str) -> bool:
+    proc = _git(repo_root, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}")
+    return proc.returncode == 0
+
+
+def _expansion_signals(paths: list[str]) -> list[str]:
+    """变更路径命中 risk-signals 扩大信号 → 信号名清单（回退全量依据）。
+
+    与 WI-1 classify / WI-3.1 detect_blast_radius 同一数据源
+    （harness/contracts/risk-signals.json）：fullMarkers 子串命中（信号语义
+    与 classify_risk 一致）∪ contractSchemaPaths 精确命中（contract-schema）。
+    """
+    import harness_gate as hg  # 延迟 import：避免与 harness_fixback 的 import 环
+
+    normalized = [str(p).replace("\\", "/").lower() for p in paths if str(p).strip()]
+    if not normalized:
+        return []
+    contract = hg._load_risk_signals_contract()
+    hits: set[str] = set()
+    for signal, markers in contract["fullMarkers"].items():
+        for marker in markers:
+            token = str(marker).lower()
+            if any(token in path for path in normalized):
+                hits.add(signal)
+                break
+    schema_paths = {
+        str(p).replace("\\", "/").lower()
+        for p in contract.get("contractSchemaPaths", [])
+    }
+    if any(path in schema_paths for path in normalized):
+        hits.add("contract-schema")
+    return sorted(hits)
+
+
+_CONTEXT_FILE_CAP = 20
+
+
+def _context_files(
+    repo_root: Path, incremental: list[str]
+) -> tuple[list[str], str | None]:
+    """受影响上下文的保守圈定：增量源文件配对的测试文件。
+
+    不建依赖图（依赖图缺失时保守是 O2 允许的）；超阈值截断并给 note，
+    不伪造完整性，也不因此回退 full（上下文是加分项不是门禁）。
+    """
+    tests_root = Path(repo_root) / "tests"
+    stems = {
+        Path(p).stem
+        for p in incremental
+        if Path(p).stem and not Path(p).stem.startswith("test_")
+    }
+    found: set[str] = set()
+    if stems and tests_root.is_dir():
+        for stem in sorted(stems):
+            for candidate in sorted(tests_root.rglob(f"test_{stem}.py")):
+                found.add(
+                    candidate.relative_to(repo_root).as_posix()
+                )
+    note = None
+    out = sorted(found)
+    if len(out) > _CONTEXT_FILE_CAP:
+        out = out[:_CONTEXT_FILE_CAP]
+        note = f"受影响上下文超阈值（>{_CONTEXT_FILE_CAP}），已截断——如需完整上下文请人工补充"
+    return out, note
+
+
+def _open_findings(change_dir: Path) -> list[dict[str, Any]]:
+    current = status(change_dir)
+    risks = current.get("currentRisks")
+    return list(risks) if isinstance(risks, list) else []
+
+
+def _diff_scope_result(
+    change_dir: Path,
+    *,
+    mode: str,
+    reason: str | None,
+    change_base: str | None,
+    current_files: dict[str, str | None],
+    previous: dict[str, Any] | None,
+    incremental: list[str] | None = None,
+    context: list[str] | None = None,
+    context_note: str | None = None,
+) -> dict[str, Any]:
+    prev_scope = (previous or {}).get("diffScope") if isinstance(previous, dict) else None
+    previous_review = None
+    if isinstance(prev_scope, dict):
+        previous_review = {
+            "runId": (previous or {}).get("runId"),
+            "diffHash": prev_scope.get("diffHash"),
+            "capturedAt": prev_scope.get("capturedAt"),
+        }
+    result: dict[str, Any] = {
+        "ok": True,
+        "code": "REVIEW_DIFF_SCOPE",
+        "mode": mode,
+        "reason": reason,
+        "changeBase": change_base,
+        "previousReview": previous_review,
+        "openFindings": _open_findings(change_dir),
+    }
+    if mode == "incremental":
+        result["incrementalFiles"] = list(incremental or [])
+        result["contextFiles"] = list(context or [])
+        if context_note:
+            result["contextNote"] = context_note
+    else:
+        result["fullFiles"] = sorted(current_files)
+    return result
+
+
+def diff_scope(change_dir: Path) -> dict[str, Any]:
+    """WI-3.4：判定本轮评审输入是增量还是全量。
+
+    fail-closed 回退全量：无上一轮边界 / 上轮 head 不可解析 / 增量命中
+    扩大信号 / per-file 无差异但整体 diffHash 不一致（UNEXPLAINED_DRIFT）/
+    变更集计算出错（DIFF_ERROR）。
+    """
+    change_dir = Path(change_dir)
+    repo_root = Path(harness_paths.resolve_worktree_root(change_dir))
+    base = _read_change_base(change_dir)
+    try:
+        resolved_base, current_files = _current_change_set(repo_root, base)
+        diff_hash = _current_diff_hash(repo_root, resolved_base, change_dir)
+    except Exception as exc:
+        return _diff_scope_result(
+            change_dir,
+            mode="full",
+            reason="DIFF_ERROR",
+            change_base=base,
+            current_files={},
+            previous=None,
+            context_note=f"变更集计算失败: {exc}",
+        )
+    previous = _load_findings(change_dir)
+    prev_scope = (previous or {}).get("diffScope") if isinstance(previous, dict) else None
+    prev_files = prev_scope.get("files") if isinstance(prev_scope, dict) else None
+    if not isinstance(prev_files, dict):
+        return _diff_scope_result(
+            change_dir,
+            mode="full",
+            reason="NO_PREVIOUS_SCOPE",
+            change_base=resolved_base,
+            current_files=current_files,
+            previous=previous,
+        )
+    prev_head = prev_scope.get("head")
+    if (
+        isinstance(prev_head, str)
+        and prev_head.strip()
+        and not _head_resolvable(repo_root, prev_head)
+    ):
+        return _diff_scope_result(
+            change_dir,
+            mode="full",
+            reason="HEAD_UNRESOLVABLE",
+            change_base=resolved_base,
+            current_files=current_files,
+            previous=previous,
+        )
+    # 新出现/内容变化/删除（digest=None）都算增量；还原的文件自然退出
+    # 变更集不在 current_files，无需审。注意「删除」的 digest 是 None，
+    # 不能用 prev_files.get(path) != digest（None == None 会漏掉删除）。
+    incremental = sorted(
+        path for path, digest in current_files.items()
+        if path not in prev_files or prev_files[path] != digest
+    )
+    if not incremental and diff_hash is not None and diff_hash != prev_scope.get("diffHash"):
+        return _diff_scope_result(
+            change_dir,
+            mode="full",
+            reason="UNEXPLAINED_DRIFT",
+            change_base=resolved_base,
+            current_files=current_files,
+            previous=previous,
+        )
+    signals = _expansion_signals(incremental) if incremental else []
+    if signals:
+        return _diff_scope_result(
+            change_dir,
+            mode="full",
+            reason=f"EXPANDED_SIGNALS:{','.join(signals)}",
+            change_base=resolved_base,
+            current_files=current_files,
+            previous=previous,
+        )
+    context, context_note = _context_files(repo_root, incremental)
+    return _diff_scope_result(
+        change_dir,
+        mode="incremental",
+        reason=None,
+        change_base=resolved_base,
+        current_files=current_files,
+        previous=previous,
+        incremental=incremental,
+        context=context,
+        context_note=context_note,
+    )
+
+
+def _capture_diff_scope(
+    change_dir: Path,
+    previous: dict[str, Any] | None,
+    mode_override: str | None,
+) -> dict[str, Any]:
+    """write_findings 落盘时捕获被审内容身份（best-effort，失败不阻塞写入）。
+
+    mode：显式声明（stdin diffMode 字段 / CLI --mode）优先；缺省自动推断
+    ——上一轮 sidecar 有 diffScope 即 incremental，否则 full。
+    """
+    repo_root = Path(harness_paths.resolve_worktree_root(change_dir))
+    base = _read_change_base(change_dir)
+    files: dict[str, str | None] = {}
+    resolved_base = base
+    diff_hash = None
+    try:
+        resolved_base, files = _current_change_set(repo_root, base)
+        diff_hash = _current_diff_hash(repo_root, resolved_base, change_dir)
+    except Exception:
+        pass
+    prev_scope = (previous or {}).get("diffScope") if isinstance(previous, dict) else None
+    if mode_override in ("full", "incremental"):
+        mode = mode_override
+    else:
+        mode = "incremental" if isinstance(prev_scope, dict) else "full"
+    return {
+        "base": resolved_base,
+        "head": _current_head(repo_root),
+        "diffHash": diff_hash,
+        "files": files,
+        "mode": mode,
+        "capturedAt": _now_iso(),
+    }
 
 
 def status(change_dir: Path) -> dict[str, Any]:
@@ -721,7 +1055,12 @@ def cmd_write_findings(args: argparse.Namespace) -> int:
         doc = _input_document(args)
     except (ValueError, json.JSONDecodeError) as exc:
         return _emit({"ok": False, "code": "FINDINGS_INPUT_INVALID", "error": str(exc)}, as_json=True)
-    return _emit(write_findings(Path(args.change_dir), doc), as_json=True)
+    return _emit(
+        write_findings(
+            Path(args.change_dir), doc, diff_mode=getattr(args, "mode", None)
+        ),
+        as_json=True,
+    )
 
 
 def cmd_write_dispositions(args: argparse.Namespace) -> int:
@@ -848,6 +1187,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     return _emit(status(Path(args.change_dir)), as_json=True)
 
 
+def cmd_diff_scope(args: argparse.Namespace) -> int:
+    return _emit(diff_scope(Path(args.change_dir)), as_json=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_review.py")
     sub = parser.add_subparsers(dest="command_name", required=True)
@@ -869,6 +1212,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_findings.add_argument("--input", help="findings JSON 文件路径")
     p_findings.add_argument(
         "--stdin", action="store_true", help="从标准输入读 JSON，免落临时文件"
+    )
+    p_findings.add_argument(
+        "--mode",
+        choices=("full", "incremental"),
+        default=None,
+        help="WI-3.4：显式声明本轮评审模式（如实按 diff-scope 输出填写）；"
+        "stdin JSON 的 diffMode 字段优先；缺省自动推断",
     )
     p_findings.set_defaults(func=cmd_write_findings)
 
@@ -894,6 +1244,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status")
     p_status.add_argument("--change-dir", required=True)
     p_status.set_defaults(func=cmd_status)
+
+    p_scope = sub.add_parser(
+        "diff-scope",
+        help="WI-3.4：判定本轮评审输入是增量还是全量（含增量文件集/上下文/未解决发现）",
+    )
+    p_scope.add_argument("--change-dir", required=True)
+    p_scope.set_defaults(func=cmd_diff_scope)
 
     return parser
 

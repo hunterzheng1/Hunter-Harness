@@ -136,6 +136,8 @@ review:
 
 只审查本次 `git diff` 中的变更，不审查已有代码；diff 为空 → 直接返回"无变更可审查"。每个问题给出具体修复建议（文件:行号 + 建议做法）。
 
+**增量评审（WI-3.4）**：获取变更范围前必须先跑 `harness_review.py diff-scope --change-dir <change-dir> --json`。`mode=incremental` 时输入收敛为「增量文件 + 受影响上下文 + 既有未解决发现（openFindings 必复核）」；`mode=full` 时按全量审。公共 API/依赖/权限/全局配置/共享状态变化命中扩大信号会自动回退全量（fail-closed），不得自行绕过。写入 findings 时把 diff-scope 的 mode 如实传给 `write-findings --mode full|incremental`（或 stdin JSON 顶层 `diffMode` 字段）——sidecar 顶层 `diffScope`（schemaVersion 3）记录被审内容身份，供下轮增量判定。
+
 ### 二、严重级别三态
 
 RED=高风险建议（强烈建议处理），YELLOW=中低风险建议，OK=无问题。6维度逐文件审查（架构/安全/规范/兼容/测试/性能）—— 检查项见 `checklist.md`。判定标准见 `reference.md`「严重级别判定标准」。
