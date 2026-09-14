@@ -17,7 +17,8 @@ plan-evidence-input.json。设计约束（2026-09-07 批次 0 基线）：
 复用既有程序化 API（不复制逻辑）：
 - harness_change.migrate_change / resolve_change
 - harness_state.capture_current_state
-- harness_gate.classify_risk / apply_tier_override / gate_policy_document
+- harness_gate.classify_risk / apply_tier_override / persist_gate_policy
+  （WI-F2：meta/gate-policy 工作副本的唯一文档构建写入口）
 - harness_events.append_event
 - harness_ledger（record 等价逻辑，含 profile-input 展开）
 - harness_archive.execute_archive（record-only）
@@ -2219,17 +2220,18 @@ def cmd_finish(args: argparse.Namespace) -> int:
             classification,
         )
 
-    # ③ 写 gate-policy（plannedPhases=["task","archive"] 使 archive_auto_gate
-    #    认得 phase.end(task)——harness_archive.py:3480-3485 的 completed_phase
-    #    取 plannedPhases 中 archive 的前一个）。tier 用最终裁决值（含
-    #    declared floor / recorded_tier 保留）——归档的 P13 文案与
-    #    full-tier review 拦截都读这份文件的 tier。
+    # ③ 写 gate-policy 工作副本（唯一写入口 hg.persist_gate_policy——
+    #    WI-F2 单写入方）。plannedPhases=["task","archive"] 使
+    #    archive_auto_gate 认得 phase.end(task)——harness_archive.py:3480-3485
+    #    的 completed_phase 取 plannedPhases 中 archive 的前一个）。tier 用
+    #    最终裁决值（含 declared floor / recorded_tier 保留）——归档的
+    #    P13 文案与 full-tier review 拦截都读这份文件的 tier。
     classification.setdefault("tierOverride", None)
     classification["tier"] = tier
     classification["classifiedAt"] = now_iso()
-    policy_doc = hg.gate_policy_document(classification)
-    policy_doc["plannedPhases"] = [TASK_PHASE, "archive"]
-    hs.write_json(change_dir / "meta" / "gate-policy.json", policy_doc)
+    policy_doc = hg.persist_gate_policy(
+        change_dir, classification, planned_phases=[TASK_PHASE, "archive"]
+    )
 
     verifications: list[dict[str, Any]] = []
     if closure == "completed":
@@ -2450,7 +2452,9 @@ def cmd_finish(args: argparse.Namespace) -> int:
     #     归档失败时在下方回滚为 open，保证 recoveryAction 承诺的
     #     finish 重跑不被 TASK_ALREADY_FINISHED 挡住）
     task["status"] = closure
-    task["tier"] = tier
+    # task.json.tier 是 gate-policy 权威文档的投影（WI-F2）：数据源必须
+    # 是 persist_gate_policy 返回的文档，不是本函数的局部裁决变量。
+    task["tier"] = policy_doc["tier"]
     task["finishedAt"] = finished_at
     # R2：只有 completed 闭包才有本任务提交；abandoned/superseded 不产生
     # 提交，记 HEAD 会把无关提交误标成本任务成果。

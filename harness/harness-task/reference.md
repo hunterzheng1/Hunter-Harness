@@ -162,3 +162,22 @@ abandoned/superseded 闭包跳过 5-9 的验证与提交要求。
 `evidence/<verification>-<ts>.log`、`plans/<cn>-plan.md`、
 `logs/execution-log.md`。归档移走整个目录到
 `.harness/archive/<date>-<cn>/`。
+
+## tier 四处落盘的角色（WI-F2，2026-09-14）
+
+| 落点 | 角色 | 说明 |
+|---|---|---|
+| `meta/gate-policy.json` 的 `tier` | **唯一权威** | 归档 P13 文案、full-tier review 拦截、TS evidence-pack 等跨流程消费方都读这份；文档构建写入唯一入口是 `harness_gate.persist_gate_policy` |
+| `meta/task.json` 的 `tier` | 投影 | finish 终态写入时从 persist 返回的权威文档投影（同源保证），供 status/change 只读视图消费；不要手改 |
+| `meta/task.json` 的 `declaredTier` | 用户声明输入 | begin `--tier` 的 floor 语义，不是裁决值；裁决抬升它、它不压低裁决 |
+| `meta/risk-classification.json` | 分类证据快照 | classify post-run 落盘的信号→推导记录，无生产读方；不是 tier 权威 |
+
+## dependsOn 三处同名异义（WI-F2 消歧登记）
+
+| 位置 | 语义 |
+|---|---|
+| `meta/task.json` 的 `dependsOn` | 任务级并行依赖门（WI-3.3 用户面契约）：目标 change 达 completed 才允许 begin |
+| `requiredGateDag` 节点的 `dependsOn` | 阶段 DAG 内验证/阶段节点的前置依赖（harness_phase 与 TS evidence-pack 消费） |
+| profile `verificationGraph` 目标的 `dependsOn` | 验证目标图的执行先后（build-profile-v3 契约的 required 键） |
+
+三者只是同名，语义互不通用；字段改名属契约窗口事项（O6 决策点 6）。

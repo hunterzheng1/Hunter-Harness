@@ -1120,8 +1120,9 @@ def bootstrap_plan(
     classification = hg.classify_risk(change_dir, stage, workflow=workflow)
     classification.setdefault("tierOverride", None)
     classification["classifiedAt"] = _now().isoformat().replace("+00:00", "Z")
-    policy_path = change_dir / "meta" / "gate-policy.json"
-    _write_json_atomic(policy_path, hg.gate_policy_document(classification))
+    # WI-F2：gate-policy 工作副本的文档构建一律走 hg.persist_gate_policy
+    # （单写入方）；plannedPhases 由 configure-plan 流程后续补写。
+    hg.persist_gate_policy(change_dir, classification)
 
     identity = _plan_run_identity(change_dir)
     reused = identity is not None
@@ -1159,7 +1160,7 @@ def bootstrap_plan(
         "defaultPhases": list(classification.get("defaultPhases") or []),
         "conditionalPhases": list(classification.get("conditionalPhases") or []),
         "requiredValidations": list(classification.get("requiredValidations") or []),
-        "gatePolicyPath": str(policy_path),
+        "gatePolicyPath": str(change_dir / hg.GATE_POLICY_REL),
         "plannedPhases": prepared.get("plannedPhases"),
         "changeBase": git_state.get("base"),
         "head": git_state.get("head"),

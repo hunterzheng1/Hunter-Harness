@@ -318,7 +318,7 @@ status: approved
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅（派生） | ✅ |
 | `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅（派生） | ✅ |
 | `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅（派生） | ✅ |
-| `.harness/changes/<change>/meta/gate-policy.json` | ✅（**classify 写，非发布产物**） | ✅ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅（**classify 写，非发布产物**；WI-F2 起文档构建唯一入口 `harness_gate.persist_gate_policy`，bootstrap-plan/轻任务 finish 同走此口） | ✅ |
 | `.harness/changes/<change>/meta/plan-profile.json` | ✅（派生） | — |
 | `.harness/changes/<change>/meta/worktree.json` | ✅ | ✅ |
 | `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | ✅ |

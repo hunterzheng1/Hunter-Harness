@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 
@@ -419,6 +420,59 @@ class DeclaredTierTests(HarnessTaskFixture):
         self.assertEqual(rc, 3)
         self.assertEqual(out["code"], "TASK_TIER_UPGRADE_REQUIRED")
         self.assertEqual(out["field_path"], "meta/task.json.declaredTier")
+
+
+class TierProjectionTests(HarnessTaskFixture):
+    """WI-F2（O6）：task.json.tier 是 gate-policy 权威文档的投影。"""
+
+    def test_finish_persists_policy_via_gate_single_writer(self) -> None:
+        """finish 经 hg.persist_gate_policy 落盘，plannedPhases=[task, archive]。"""
+        self._begin("proj-delegation")
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        with mock.patch.object(
+            ht.hg, "persist_gate_policy", wraps=ht.hg.persist_gate_policy
+        ) as spy:
+            rc, out = self._finish("proj-delegation")
+        self.assertEqual(rc, 0, out)
+        spy.assert_called_once()
+        self.assertEqual(
+            spy.call_args.kwargs.get("planned_phases"), ["task", "archive"]
+        )
+
+    def test_task_tier_projected_from_policy_document(self) -> None:
+        """task.json.tier 的数据源是 persist 返回的权威文档，非局部变量。
+
+        wiring 证明：注入「返回文档与裁决值分歧」的不可能场景——投影必须
+        跟随权威文档（归档 P13 文案与 full-tier review 拦截读的是这份）。
+        """
+        rc, out = self._run(
+            "begin", "--project", str(self.project), "--change", "proj-tamper",
+            "--executor", "test", "--goal", "投影 wiring 证明",
+            "--acceptance", "验收条件", "--tier", "standard", "--json",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_BEGUN", out)
+        real_persist = ht.hg.persist_gate_policy
+
+        def tampered(change_dir, payload, **kwargs):
+            doc = real_persist(change_dir, payload, **kwargs)
+            doc["tier"] = "fast"  # 只改返回的文档对象，盘上文件保持裁决值
+            return doc
+
+        (self.project / "README.md").write_text("v2\n", encoding="utf-8")
+        with mock.patch.object(ht.hg, "persist_gate_policy", tampered):
+            rc, out = self._finish("proj-tamper")
+        self.assertEqual(rc, 0, out)
+        archive_dir = Path(out["archiveDir"])
+        task = json.loads(
+            (archive_dir / "meta" / "task.json").read_text(encoding="utf-8-sig")
+        )
+        policy = json.loads(
+            (archive_dir / "meta" / "gate-policy.json").read_text(encoding="utf-8-sig")
+        )
+        # 盘上权威文档保持裁决值；task.json.tier 跟随 persist 返回的文档。
+        self.assertEqual(policy["tier"], "standard")
+        self.assertEqual(task["tier"], "fast")
 
 
 class FinishBoundaryTests(HarnessTaskFixture):

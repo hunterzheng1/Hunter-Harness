@@ -1801,6 +1801,10 @@ def apply_tier_override(
     return result
 
 
+# WI-F2（O6）：meta/gate-policy.json 相对路径常量，写入口与读路径共用。
+GATE_POLICY_REL = Path("meta") / "gate-policy.json"
+
+
 def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
     """Cross-change contract: meta/gate-policy.json (schemaVersion=1)."""
     document = {
@@ -1825,6 +1829,35 @@ def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload.get(optional), dict):
             document[optional] = dict(payload[optional])
     return document
+
+
+def persist_gate_policy(
+    change_dir: Path,
+    payload: dict[str, Any],
+    *,
+    planned_phases: list[str] | None = None,
+) -> dict[str, Any]:
+    """meta/gate-policy.json「文档构建」的唯一写入口（WI-F2 单写入方）。
+
+    三处全量构建写点（cmd_classify 工作副本、harness_context
+    bootstrap-plan、harness_task.finish 轻任务链）一律经本函数落盘，
+    保证同一事实只有一个权威写入方。字段修补写点（change
+    allow_local_release、configure-plan 的 phasePlan）与 TS 工作副本
+    派生回写属不同写语义，不经本函数。
+
+    planned_phases 由调用方按流程注入：轻任务链传 ["task", "archive"]
+    （archive_auto_gate 的 completed_phase 取 plannedPhases 中 archive
+    的前一个）；classify/bootstrap 不传，plannedPhases 由 configure-plan
+    流程后续补写。
+
+    返回已落盘文档，供调用方投影派生字段——task.json.tier 必须取自
+    返回值而非调用方的局部变量（tier 单一权威 + 投影，WI-F2）。
+    """
+    policy_doc = gate_policy_document(payload)
+    if planned_phases is not None:
+        policy_doc["plannedPhases"] = list(planned_phases)
+    hs.write_json(change_dir / GATE_POLICY_REL, policy_doc)
+    return policy_doc
 
 
 def classify_defaults(
@@ -4158,11 +4191,9 @@ def cmd_classify(args: argparse.Namespace) -> int:
             )
             payload["writeGuarded"] = True
         else:
-            policy_doc = gate_policy_document(payload)
-            policy_path = change_dir / "meta" / "gate-policy.json"
-            hs.write_json(policy_path, policy_doc)
+            persist_gate_policy(change_dir, payload)
             payload["policyPersisted"] = True
-            payload["policyPath"] = str(policy_path)
+            payload["policyPath"] = str(change_dir / GATE_POLICY_REL)
             if finalized:
                 payload["warning"] = "--force：已发布 change 的工作副本已被重写"
     else:
