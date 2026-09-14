@@ -38,7 +38,7 @@ plan-evidence-input.json——`harness_task.py` 一条命令完成任务记录 �
 | ① 理解目标 | 从需求提炼一句话目标（成为 businessGoal）与至少一条可验证验收条件。缺陷任务先写失败测试作为回归证据 |
 | ② begin | `python <skills-root>/scripts/harness_task.py begin --project . --change <kebab-case-id> --executor <tool> --goal "<目标一句话>" --acceptance "<可验证条件>" [--tier fast\|standard] [--write-scope <路径>] [--depends-on <cn>] --json`（`--acceptance`/`--write-scope`/`--depends-on` 可重复）。`--tier` 声明档位下限：声明比裁决高时抬升裁决，反之不压低（classify 信号升级仍生效）；`--tier full` 直接拒绝（rc 3，不建 change 目录），转 `/harness-plan`。并行协调：`--write-scope` 声明写入范围（相对路径），与其他 open 任务声明相交 → TASK_SCOPE_CONFLICT 拒绝；`--depends-on` 声明依赖，目标未 completed → TASK_DEPENDENCY_UNMET/MISSING/CYCLE 拒绝。重跑幂等：复用同一 runId，不重复 phase.start；改口声明档位/范围/依赖 → 拒绝 |
 | ③ 自由探索/编辑/测试 | 正常编码。不写 plan-evidence-input.json、不调阶段 Skill、不手写 ledger/events JSON——全部由 finish 生成 |
-| ④ finish | `python <skills-root>/scripts/harness_task.py finish --project . --change <cn> --json`。一条命令完成：classify → 档位裁决 → 跑档位验证 → 写 ledger → 生成 plan.md → commit（不 push）→ 归档（record-only）。放弃任务用 `--closure abandoned --closure-reason "<中文原因>"`；不想自动提交用 `--no-commit` |
+| ④ finish | `python <skills-root>/scripts/harness_task.py finish --project . --change <cn> --json`。一条命令完成：classify → 档位裁决 → 跑档位验证 → 写 ledger → 生成 plan.md → 成果摘要落盘 → commit（不 push）→ 归档（record-only）。放弃任务用 `--closure abandoned --closure-reason "<中文原因>"`；不想自动提交用 `--no-commit`。**成果摘要（WI-E1）**：用 `--outcome-summary "<实际完成的行为>"` 如实填写（事实与 begin 的 goal 分字段，goal 绝不自动当成果；completed 缺省给 OUTCOME_SUMMARY_MISSING 警告），按需补 `--outcome-motivation`（取舍原因，无法证实的标 [推测]）、`--outcome-risk`/`--outcome-next`/`--outcome-unverified`（可重复；残余风险/下一步/未验证项，空白不凑数）。摘要权威是 `meta/outcome.json`（随归档保留），stdout summary 只是其派生展示 |
 | ⑤ 报告 | 把 finish 返回的 summary（完成内容/验证结果/残余风险/代码位置）原样报告给用户，附 archiveDir |
 
 ## 关键规则

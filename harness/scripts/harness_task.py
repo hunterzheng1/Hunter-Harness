@@ -179,6 +179,132 @@ def write_json_file(path: Path, data: Any) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# WI-E1（O3）：实际成果摘要——meta/outcome.json
+#
+# goal 与 outcome 分字段（禁止把 goal 复制成成功说明）；facts 全部由 finish
+# 既有数据派生（diff/验证/closure/commit），模型不可写；模型只经 finish
+# --outcome-* 参数补动机、取舍、残余风险与未验证项。空白不凑数：未提供的
+# 字段为 null/空数组，绝不拿 goal 回填。写失败必须显示报错（O4：磁盘写入
+# 失败显示未保存，不静默丢失）。
+# ---------------------------------------------------------------------------
+
+OUTCOME_REL = Path("meta") / "outcome.json"
+
+
+def _read_outcome(change_dir: Path) -> dict[str, Any] | None:
+    try:
+        doc = json.loads(
+            (Path(change_dir) / OUTCOME_REL).read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def write_outcome(
+    change_dir: Path,
+    *,
+    task: dict[str, Any],
+    closure: str,
+    closure_reason: str,
+    committed_hash: str | None,
+    product_paths: list[str],
+    verifications: list[dict[str, Any]],
+    finished_at: str,
+    outcome_input: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """写 meta/outcome.json（原子覆写，同参幂等——capturedAt 除外）。
+
+    返回 (error_envelope | None, warnings)。completed 缺 summary →
+    warning OUTCOME_SUMMARY_MISSING（不阻塞，不回填）。
+    """
+    doc = {
+        "schemaVersion": 1,
+        "changeId": Path(change_dir).name,
+        "closure": closure,
+        "goal": task.get("goal"),
+        "outcome": {
+            "summary": outcome_input.get("summary"),
+            "motivation": outcome_input.get("motivation"),
+            "residualRisks": list(outcome_input.get("residualRisks") or []),
+            "nextSteps": list(outcome_input.get("nextSteps") or []),
+            "unverifiedItems": list(outcome_input.get("unverifiedItems") or []),
+        },
+        "facts": {
+            "commit": committed_hash,
+            "changedFiles": sorted(
+                str(p).replace("\\", "/") for p in product_paths
+            ),
+            "verifications": [
+                {
+                    "name": str(v.get("verification") or v.get("name") or ""),
+                    "status": str(v.get("status") or ""),
+                    "exitCode": v.get("exitCode"),
+                }
+                for v in verifications
+            ],
+            "closureReason": closure_reason or None,
+            "finishedAt": finished_at,
+        },
+        "capturedAt": now_iso(),
+    }
+    warnings: list[str] = []
+    if closure == "completed" and not doc["outcome"]["summary"]:
+        warnings.append("OUTCOME_SUMMARY_MISSING")
+    try:
+        write_json_file(Path(change_dir) / OUTCOME_REL, doc)
+    except OSError as exc:
+        return (
+            error_envelope(
+                "OUTCOME_WRITE_FAILED",
+                f"成果摘要写入失败（{exc}）——任务保持 open，未静默丢失",
+                field_path="meta/outcome.json",
+                recovery_action="排除文件系统问题后重跑 finish",
+            ),
+            warnings,
+        )
+    return None, warnings
+
+
+def _summary_block(
+    change_dir: Path,
+    *,
+    verifications: list[dict[str, Any]],
+    no_verify_note: str,
+    default_risk: str,
+    code_location: str,
+    outcome_doc: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """stdout summary 是 meta/outcome.json 的派生展示（权威只有 outcome.json）。
+
+    完成内容/残余风险改读 outcome；缺失时给占位文案，绝不回退成 goal。
+    outcome_doc：归档后 change_dir 已被移走，调用方在归档前缓存传入；
+    缺省从盘读（恢复通道——目录被移回，outcome.json 随档在）。
+    """
+    if outcome_doc is None:
+        outcome_doc = _read_outcome(change_dir)
+    outcome = (outcome_doc or {}).get("outcome") or {}
+    summary_text = (
+        outcome.get("summary") or "（未记录成果摘要——见 meta/outcome.json）"
+    )
+    risks = [
+        str(r) for r in (outcome.get("residualRisks") or []) if str(r).strip()
+    ]
+    return {
+        "完成内容": summary_text,
+        "验证结果": (
+            "；".join(
+                f"{v['verification']}={v['status']}({v['durationMs']}ms)"
+                for v in verifications
+            )
+            or no_verify_note
+        ),
+        "残余风险": "；".join(risks) if risks else default_risk,
+        "代码位置": code_location,
+    }
+
+
 def load_task(change_dir: Path) -> dict[str, Any] | None:
     path = change_dir / TASK_REL
     if not path.is_file():
@@ -1670,20 +1796,15 @@ def _resume_terminal_finish(
             "planPath": str(plan_path),
             "archiveDir": archive_dir,
             "resumed": True,
-            "summary": {
-                "完成内容": task.get("goal"),
-                "验证结果": (
-                    "；".join(
-                        f"{v['verification']}={v['status']}({v['durationMs']}ms)"
-                        for v in verifications
-                    )
-                    or f"无（{closure} 闭包不重跑验证）"
-                ),
-                "残余风险": "恢复通道未重复验证/提交，仅补齐归档证据链",
-                "代码位置": (
+            "summary": _summary_block(
+                change_dir,
+                verifications=verifications,
+                no_verify_note=f"无（{closure} 闭包不重跑验证）",
+                default_risk="恢复通道未重复验证/提交，仅补齐归档证据链",
+                code_location=(
                     f"commit {commit}" if commit else "未提交（非 completed 闭包）"
                 ),
-            },
+            ),
             "durationMs": duration_ms,
         },
         as_json,
@@ -2272,12 +2393,46 @@ def cmd_finish(args: argparse.Namespace) -> int:
         ),
     )
 
+    # ⑩c WI-E1：成果摘要先落盘（facts 派生 + 模型 --outcome-* 输入）。
+    #     先于 task.json 终态写入——保证「终态已写 ⇒ outcome 必在」；
+    #     写失败保持 open 报错退出（O4：磁盘写入失败显示未保存）。
+    finished_at = now_iso()
+    outcome_input = {
+        "summary": (args.outcome_summary or "").strip() or None,
+        "motivation": (args.outcome_motivation or "").strip() or None,
+        "residualRisks": [
+            str(r).strip() for r in (args.outcome_risk or []) if str(r).strip()
+        ],
+        "nextSteps": [
+            str(r).strip() for r in (args.outcome_next or []) if str(r).strip()
+        ],
+        "unverifiedItems": [
+            str(r).strip() for r in (args.outcome_unverified or []) if str(r).strip()
+        ],
+    }
+    outcome_error, outcome_warnings = write_outcome(
+        change_dir,
+        task=task,
+        closure=closure,
+        closure_reason=closure_reason,
+        committed_hash=committed_hash if closure == "completed" else None,
+        product_paths=product_paths,
+        verifications=verifications,
+        finished_at=finished_at,
+        outcome_input=outcome_input,
+    )
+    if outcome_error is not None:
+        emit(outcome_error, as_json)
+        return 2
+    # 归档会移走 change 目录——emit 展示用的 outcome 在归档前缓存。
+    outcome_doc = _read_outcome(change_dir)
+
     # ⑪ 更新 task.json 终态（归档会移走整个目录，终态必须先写才能入档；
     #     归档失败时在下方回滚为 open，保证 recoveryAction 承诺的
     #     finish 重跑不被 TASK_ALREADY_FINISHED 挡住）
     task["status"] = closure
     task["tier"] = tier
-    task["finishedAt"] = now_iso()
+    task["finishedAt"] = finished_at
     # R2：只有 completed 闭包才有本任务提交；abandoned/superseded 不产生
     # 提交，记 HEAD 会把无关提交误标成本任务成果。
     task["commit"] = committed_hash if closure == "completed" else None
@@ -2299,20 +2454,15 @@ def cmd_finish(args: argparse.Namespace) -> int:
                 "resumed": resumed,
                 "verifications": verifications,
                 "planPath": str(plan_path),
-                "summary": {
-                    "完成内容": task.get("goal"),
-                    "验证结果": (
-                        "；".join(
-                            f"{v['verification']}={v['status']}({v['durationMs']}ms)"
-                            for v in verifications
-                        )
-                        or "无（非 completed 闭包）"
-                    ),
-                    "残余风险": (
-                        "--no-commit：变更未提交、未归档；工作区保持脏树"
-                    ),
-                    "代码位置": "未提交（工作区脏树）",
-                },
+                "summary": _summary_block(
+                    change_dir,
+                    verifications=verifications,
+                    no_verify_note="无（非 completed 闭包）",
+                    default_risk="--no-commit：变更未提交、未归档；工作区保持脏树",
+                    code_location="未提交（工作区脏树）",
+                    outcome_doc=outcome_doc,
+                ),
+                **({"warnings": outcome_warnings} if outcome_warnings else {}),
                 "nextAction": (
                     "手工提交后如需归档：harness_archive.py execute "
                     f"--change-dir \"{change_dir}\" "
@@ -2389,24 +2539,19 @@ def cmd_finish(args: argparse.Namespace) -> int:
             "planPath": str(plan_path),
             "archiveDir": archive_dir,
             "resumed": resumed,
-            "summary": {
-                "完成内容": task.get("goal"),
-                "验证结果": (
-                    "；".join(
-                        f"{v['verification']}={v['status']}({v['durationMs']}ms)"
-                        for v in verifications
-                    )
-                    or "无（非 completed 闭包）"
-                ),
-                "残余风险": (
-                    "record-only 归档未做发布评审；full 档信号已前置拒绝"
-                ),
-                "代码位置": (
+            "summary": _summary_block(
+                change_dir,
+                verifications=verifications,
+                no_verify_note="无（非 completed 闭包）",
+                default_risk="record-only 归档未做发布评审；full 档信号已前置拒绝",
+                code_location=(
                     f"commit {committed_hash}"
                     if committed_hash
                     else "未提交（工作区保留，用户处置）"
                 ),
-            },
+                outcome_doc=outcome_doc,
+            ),
+            **({"warnings": outcome_warnings} if outcome_warnings else {}),
             "durationMs": duration_ms,
         },
         as_json,
@@ -2570,6 +2715,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-commit",
         action="store_true",
         help="跳过自动 git commit（逃生口）",
+    )
+    p_finish.add_argument(
+        "--outcome-summary",
+        default=None,
+        help="WI-E1：实际完成的行为叙述（落盘 meta/outcome.json；"
+        "completed 缺省给 OUTCOME_SUMMARY_MISSING 警告，绝不回填 goal）",
+    )
+    p_finish.add_argument(
+        "--outcome-motivation",
+        default=None,
+        help="关键取舍与原因；无法证实的解释标注 [推测]",
+    )
+    p_finish.add_argument(
+        "--outcome-risk", action="append", default=[], help="残余风险（可重复）"
+    )
+    p_finish.add_argument(
+        "--outcome-next", action="append", default=[], help="必要下一步（可重复）"
+    )
+    p_finish.add_argument(
+        "--outcome-unverified",
+        action="append",
+        default=[],
+        help="声明过但未验证的项（可重复）",
     )
     p_finish.add_argument("--json", action="store_true")
     p_finish.set_defaults(func=cmd_finish)

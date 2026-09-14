@@ -1345,5 +1345,184 @@ class ScopeViolationFinishTests(ScopedTaskFixture):
         self.assertEqual(out["code"], "TASK_FINISHED", out)
 
 
+class OutcomeTests(HarnessTaskFixture):
+    """WI-E1（O3）：finish 成果摘要落盘 meta/outcome.json——goal 与
+    outcome 分字段，facts 派生模型不可写，空白不回填。"""
+
+    def _archived_outcome(self, out: dict) -> dict:
+        path = Path(out["archiveDir"]) / "meta" / "outcome.json"
+        self.assertTrue(path.is_file(), f"outcome.json 缺失: {path}")
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    def _change_outcome(self, change: str) -> dict:
+        path = (
+            self.project / ".harness" / "changes" / change / "meta" / "outcome.json"
+        )
+        self.assertTrue(path.is_file(), f"outcome.json 缺失: {path}")
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    def test_completed_full_params_writes_outcome(self) -> None:
+        self._begin("out-full", goal="实现 X")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "out-full",
+            "--outcome-summary", "实现了 X 的前半",
+            "--outcome-motivation", "先交付核心路径，后半依赖未就绪",
+            "--outcome-risk", "后半未做",
+            "--outcome-risk", "兼容性未测",
+            "--outcome-next", "补后半实现",
+            "--outcome-unverified", "性能未验证",
+        )
+        self.assertEqual(rc, 0, out)
+        doc = self._archived_outcome(out)
+        self.assertEqual(doc["schemaVersion"], 1)
+        self.assertEqual(doc["changeId"], "out-full")
+        self.assertEqual(doc["closure"], "completed")
+        # goal 原样引用，与 outcome.summary 分字段（目标≠结果可表达）。
+        self.assertEqual(doc["goal"], "实现 X")
+        self.assertEqual(doc["outcome"]["summary"], "实现了 X 的前半")
+        self.assertEqual(doc["outcome"]["motivation"], "先交付核心路径，后半依赖未就绪")
+        self.assertEqual(doc["outcome"]["residualRisks"], ["后半未做", "兼容性未测"])
+        self.assertEqual(doc["outcome"]["nextSteps"], ["补后半实现"])
+        self.assertEqual(doc["outcome"]["unverifiedItems"], ["性能未验证"])
+        facts = doc["facts"]
+        self.assertEqual(facts["commit"], out["commit"])
+        self.assertIn("check.py", facts["changedFiles"])
+        self.assertTrue(facts["verifications"])
+        self.assertTrue(facts["finishedAt"])
+        self.assertIsNone(facts["closureReason"])
+
+    def test_completed_without_summary_warns_not_backfill(self) -> None:
+        """completed 缺 --outcome-summary → warning；summary 为 null 不回填 goal。"""
+        self._begin("out-blank", goal="不应被复制成成果的目标")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish("out-blank")
+        self.assertEqual(rc, 0, out)
+        warnings = out.get("warnings") or []
+        self.assertIn("OUTCOME_SUMMARY_MISSING", warnings, out)
+        doc = self._archived_outcome(out)
+        self.assertIsNone(doc["outcome"]["summary"])
+        self.assertNotEqual(doc["outcome"]["summary"], doc["goal"])
+
+    def test_abandoned_outcome_keeps_goal_and_reason(self) -> None:
+        self._begin("out-abandon", goal="原计划")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "out-abandon",
+            "--closure", "abandoned",
+            "--closure-reason", "方向取消",
+            "--outcome-summary", "完成 30% 草稿后中止",
+        )
+        self.assertEqual(rc, 0, out)
+        doc = self._archived_outcome(out)
+        self.assertEqual(doc["closure"], "abandoned")
+        self.assertEqual(doc["goal"], "原计划")
+        self.assertEqual(doc["outcome"]["summary"], "完成 30% 草稿后中止")
+        self.assertIsNone(doc["facts"]["commit"])
+        self.assertEqual(doc["facts"]["closureReason"], "方向取消")
+
+    def test_no_commit_outcome_written_in_place(self) -> None:
+        """工作区交付（--no-commit）：outcome.json 落盘且 facts.commit 为 null。"""
+        self._begin("out-nocommit")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "out-nocommit", "--no-commit",
+            "--outcome-summary", "工作区交付待用户处置",
+        )
+        self.assertEqual(rc, 0, out)
+        doc = self._change_outcome("out-nocommit")
+        self.assertEqual(doc["closure"], "completed")
+        self.assertIsNone(doc["facts"]["commit"])
+        self.assertIn("check.py", doc["facts"]["changedFiles"])
+
+    def test_stdout_summary_derives_from_outcome(self) -> None:
+        """反模式消除：stdout「完成内容」来自 outcome.summary，不再是 goal。"""
+        self._begin("out-derive", goal="目标原文不应出现在完成内容")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "out-derive",
+            "--outcome-summary", "真实成果叙述",
+            "--outcome-risk", "遗留风险甲",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["summary"]["完成内容"], "真实成果叙述")
+        self.assertIn("遗留风险甲", out["summary"]["残余风险"])
+
+    def test_stdout_summary_placeholder_when_missing(self) -> None:
+        """未填成果摘要：stdout 占位文案，绝不回退成 goal 文本。"""
+        self._begin("out-placeholder", goal="绝不出现的 goal 文本")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish("out-placeholder")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("绝不出现的 goal 文本", out["summary"]["完成内容"])
+
+    def test_write_outcome_idempotent(self) -> None:
+        """同参重写内容一致（capturedAt 除外）——归档失败重跑不产生漂移。"""
+        self._begin("out-idem")
+        change_dir = self.project / ".harness" / "changes" / "out-idem"
+        task = json.loads(
+            (change_dir / "meta" / "task.json").read_text(encoding="utf-8-sig")
+        )
+        outcome_input = {
+            "summary": "S", "motivation": "M",
+            "residualRisks": ["R"], "nextSteps": ["N"], "unverifiedItems": ["U"],
+        }
+        kwargs = dict(
+            task=task, closure="completed", closure_reason="",
+            committed_hash="abc123", product_paths=["check.py"],
+            verifications=[{"verification": "unitTestFull", "status": "pass",
+                            "exitCode": 0, "durationMs": 5}],
+            finished_at="2026-09-14T00:00:00+08:00",
+            outcome_input=outcome_input,
+        )
+        err1, _w1 = ht.write_outcome(change_dir, **kwargs)
+        err2, _w2 = ht.write_outcome(change_dir, **kwargs)
+        self.assertIsNone(err1)
+        self.assertIsNone(err2)
+        text = (change_dir / "meta" / "outcome.json").read_text(encoding="utf-8-sig")
+        doc = json.loads(text)
+        doc.pop("capturedAt")
+        first = json.dumps(doc, sort_keys=True)
+        err3, _w3 = ht.write_outcome(change_dir, **kwargs)
+        self.assertIsNone(err3)
+        doc2 = json.loads(
+            (change_dir / "meta" / "outcome.json").read_text(encoding="utf-8-sig")
+        )
+        doc2.pop("capturedAt")
+        self.assertEqual(first, json.dumps(doc2, sort_keys=True))
+
+    def test_outcome_write_failure_blocks_finish(self) -> None:
+        """磁盘写失败显示未保存、不静默：finish 报错且任务保持 open。"""
+        self._begin("out-ioerr")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        blocker = (
+            self.project / ".harness" / "changes" / "out-ioerr" / "meta" / "outcome.json"
+        )
+        blocker.mkdir(parents=True)  # 同名目录 → 写入必失败
+        rc, out = self._finish("out-ioerr")
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(out["code"], "OUTCOME_WRITE_FAILED", out)
+        task = json.loads(
+            (self.project / ".harness" / "changes" / "out-ioerr" / "meta" / "task.json")
+            .read_text(encoding="utf-8-sig")
+        )
+        self.assertEqual(task["status"], "open", task)
+
+    def test_facts_derived_not_model_controllable(self) -> None:
+        """facts 派生真实性：commit 与 git HEAD 一致，模型参数无法伪造。"""
+        self._begin("out-facts")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "out-facts", "--outcome-summary", "声称完成了一切",
+        )
+        self.assertEqual(rc, 0, out)
+        doc = self._archived_outcome(out)
+        self.assertEqual(doc["facts"]["commit"], self._git("rev-parse", "HEAD"))
+        for item in doc["facts"]["verifications"]:
+            self.assertIn("name", item)
+            self.assertIn("status", item)
+            self.assertIn("exitCode", item)
+
+
 if __name__ == "__main__":
     unittest.main()
