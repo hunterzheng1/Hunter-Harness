@@ -1,8 +1,10 @@
 # O3/O4 实际成果摘要与异步资产闭环 — 设计文档（WI-E 批次）
 
-> 状态：**E1 已实施（2026-09-14）**；用户当日确认 §0 四项建议值全部采纳。
-> 红测 9 例先行 → 实现 → `test_harness_task` 68/68、doc-contract 8/8、
-> 全量回归 1627 绿。E2/E3 待另出详细设计后实施。
+> 状态：**E1、E2 已实施（2026-09-14，E2 详细设计见 §6）**；用户当日确认 §0 四项建议值全部采纳。
+> E1：红测 9 例先行 → 实现 → `test_harness_task` 68/68。
+> E2：红测 16+1 例先行（Python 15/契约 1）→ 实现（候选四键 + harness_assets.py
+> 回执 + 契约 optional 增量）→ 契约 271+110 绿、全量回归 1643 绿（doc-contract 含其中）。
+> E3 待另出详细设计后实施。
 > 本文落实任务书 `review-remediation-execution-2026-09-12.md`
 > §10（O3 摘要内容 / O4 异步处理与持久性），对应实施顺序表工作包 **E**。
 > 范围大且跨 Python/TS 两侧，建议按 §1 拆为三个 WI 分批实施，先经用户裁决。
@@ -139,3 +141,108 @@ harness_task.py finish ... \
 | `harness/scripts/tests/test_harness_task.py` | E1 红测约 9 例 |
 | `harness/harness-task/SKILL.md`/`reference.md` | 成果摘要参数与语义 |
 | 设计文档 | 本文（裁决后状态推进） |
+
+## 6. E2 资产元数据+消费追踪 — 详细设计（2026-09-14）
+
+### 6.1 勘察实证（决定设计的三个事实）
+
+1. `packages/contracts/src/content-sync.ts` 的 `knowledgeCandidateSchema` 是
+   `.strict()`——任何新键都会被 `CONTENT_SYNC_UNKNOWN_FIELD` 拒绝；且共享的
+   `schemaVersionSchema` 钉死字面量 `1`（`.pipe(z.literal(1))`）。
+2. 该 schema 的既有演化先例：`entry_type`/`body`/`keywords` 以 **optional 增量**
+   加入、注释明示「老归档不带它们时整条候选仍然有效，由消费端走降级路径」，
+   未升 schema_version。
+3. 跨语言字节锁已存在：`test_harness_knowledge_candidates.py` 锁 Python 产出
+   == `packages/contracts/test/fixtures/knowledge-candidates-v1-archive.json`，
+   TS 侧 `content-sync-contracts.test.ts` 对同文件 `knowledgeCandidateSchema.parse`。
+
+### 6.2 决策点与选定值（实施者裁决，依据 §0 已立语义）
+
+| # | 决策点 | 选定值 | 理由 |
+|---|--------|--------|------|
+| 1 | 版本机制 | **schema_version 保持 1，四字段 optional/nullable 增量** | 升 2 需动共享 `schemaVersionSchema`（pin 全链 schema），且 §6.1-2 先例已确立本记录的版本less 增量演化；老归档降级路径天然存在 |
+| 2 | 字段命名 | snake_case：`applicable_versions` / `validation_status` / `supersedes` / `expires_when` | 契约与 v1 记录全 snake_case（candidate_id/content_hash/…），任务书的 camelCase 仅为表述 |
+| 3 | 生成期取值 | `validation_status` 恒 `"unverified"`（新候选的事实状态，派生非凑数）；其余三字段恒 `null` | 生成期无真实来源可派生适用版本/替代/失效——空白不凑数（O3 明示），留 null 等消费回执与服务端标注 |
+| 4 | 发射策略 | 四键总是出现（缺省为 null） | 与 E1 outcome 缺省 null 先例一致，记录自描述；老归档缺键由消费端降级 |
+| 5 | 回执载体 | `.harness/state/local/asset-receipts/<candidate_id>.ndjson` 追加式（每行一条 receipt） | events.ndjson 不可用：归档后目录拒写且从不入包；state/local 天然按项目隔离（跨项目隔离必测项） |
+| 6 | 回执三态 | `verdict ∈ {retrieved, adopted, partially_adopted, rejected, verified_effective}`；`partially_adopted`/`rejected` 强制非空 `reason` | 同时覆盖任务书「被检索/被采用/被验证有效」与裁决表述「采纳/部分采纳/拒绝+原因」 |
+| 7 | validation_status 与 verdict 的关系 | **两根轴，不自动互相推导** | 一次 rejected 是「本任务不适用」≠ 知识失效；verified_effective → verified 的全局推导属服务端索引职责，本地不做静默状态迁移 |
+| 8 | 契约兼容 | contracts 加四 optional 字段；老 fixture 无键仍解析；远端旧服务端拒新键属「两仓契约变化」，远端闭环保持待验证（§10.2 末条） | 本地+契约测试先行 |
+
+### 6.3 候选记录新字段（Python 侧）
+
+四个构造函数（`_finding_candidate`/`_risk_candidate`/`_decision_candidate`/
+`_plan_candidate`）统一经 `_asset_fields()` 注入：
+
+```json
+"applicable_versions": null,
+"validation_status": "unverified",
+"supersedes": null,
+"expires_when": null
+```
+
+- `content_hash` **不变**（四字段不进 hash——hash 锁内容身份，元数据可演化）；
+- 既有 candidate_id / keywords / 派生逻辑一律不动（回归由既有 25 例保证）。
+
+### 6.4 消费回执 CLI（新脚本 `harness_assets.py`）
+
+```
+harness_assets.py receipt  --project . --candidate-id kc_... \
+    --verdict <五态> [--reason "..."] [--change <id>] [--detail "..."] --json
+harness_assets.py receipts --project . [--candidate-id kc_...] --json
+```
+
+- receipt 记录：`{schema_version:1, candidate_id, verdict, reason, change_id,
+  detail, recorded_at}`；追加写 `<candidate_id>.ndjson`；
+- 校验：candidate_id 匹配契约正则 `^kc_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$`；
+  verdict 五态枚举；partially_adopted/rejected 缺 reason →
+  `ASSET_RECEIPT_REASON_REQUIRED`（exit 2）；非法枚举/id →
+  `ASSET_RECEIPT_INVALID`；写盘失败 → `ASSET_RECEIPT_WRITE_FAILED`
+  （显示不静默，E1 语义）；
+- `receipts` 读回：按 recorded_at 升序返回该候选（或全部）回执——「适用/
+  不适用结果」本地可追踪（O4 验收要求）；
+- 接线点：`harness-knowledge-query/SKILL.md` 增加消费后回执步骤（记录每条
+  被实际采纳/部分采纳/拒绝的命中；该 skill 的「不建本地索引」禁令不受影响——
+  回执是审计记录不是索引，且路径不在 `.harness/knowledge`）。
+
+### 6.5 红测矩阵（E2）
+
+Python `test_harness_knowledge_candidates.py` 增补：
+| 场景 | 断言 |
+|------|------|
+| 四类构造函数（finding/risk/decision/plan） | 均含四键；validation_status=="unverified"，其余为 None |
+| content_hash 稳定 | F-001 的 hash 仍为 `ac69…4255e`（元数据不进 hash） |
+| schema_version 不变 | 恒为 1 |
+| 跨语言 fixture | 重新生成后 build() == fixture（字节锁更新） |
+
+Python 新 `test_harness_assets.py`：
+| 场景 | 断言 |
+|------|------|
+| receipt 写入+读回 | 字段完整、ndjson 追加（两条→两行、按时间序） |
+| verdict 非法 / candidate_id 非法 | ASSET_RECEIPT_INVALID，exit 2，不落盘 |
+| partially_adopted/rejected 缺 reason | ASSET_RECEIPT_REASON_REQUIRED，不落盘 |
+| adopted/retrieved/verified_effective 无 reason | 成功 |
+| 跨项目隔离 | A 项目写入，B 项目 receipts 读不到 |
+| 写失败（store 路径被文件占用） | ASSET_RECEIPT_WRITE_FAILED，exit 2，不静默 |
+
+TS `content-sync-contracts.test.ts` 增补：
+| 场景 | 断言 |
+|------|------|
+| 老 fixture 候选（无四键） | 仍解析成功（降级路径） |
+| 带四键全值 | 解析成功且值保留 |
+| validation_status 非枚举 / supersedes 错命名空间 / applicable_versions 非数组 / expires_when 空串 | 拒绝 |
+| 真正未知键 | 仍拒绝（strict 不破） |
+
+### 6.6 影响面（E2）
+
+| 文件 | 变更 |
+|------|------|
+| `harness/scripts/harness_knowledge_candidates.py` | 四构造函数注入 `_asset_fields()` + docstring |
+| `harness/scripts/harness_assets.py` | 新建：receipt/receipts 子命令 + ndjson 存储 |
+| `harness/scripts/tests/test_harness_knowledge_candidates.py` | E2 红测增补 |
+| `harness/scripts/tests/test_harness_assets.py` | 新建 |
+| `packages/contracts/src/content-sync.ts` | knowledgeCandidateSchema 加四 optional 字段 + validation_status 枚举 |
+| `packages/contracts/test/content-sync-contracts.test.ts` | 契约红测增补 |
+| `packages/contracts/test/fixtures/knowledge-candidates-v1-archive.json` | 确定性重生成（仅加四键） |
+| `harness/harness-knowledge-query/SKILL.md` | 消费后回执步骤 |
+| 设计文档 | 本文 §6 |

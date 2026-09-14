@@ -295,6 +295,70 @@ class MappingTableTests(unittest.TestCase):
         self.assertTrue(payload.endswith("\n"))
 
 
+class AssetMetadataTests(unittest.TestCase):
+    """WI-E2（O3/O4）：候选记录携带资产元数据四键。
+
+    契约（content-sync.ts knowledgeCandidateSchema）以 optional/nullable 增量
+    接收这四键；生成期 validation_status 恒 unverified（事实派生），其余三键
+    恒 None（空白不凑数——生成期无真实来源）。content_hash 不进这四键：
+    hash 锁内容身份，元数据可独立演化。
+    """
+
+    _KEYS = ("applicable_versions", "validation_status", "supersedes", "expires_when")
+
+    def _assert_asset_defaults(self, candidate: dict) -> None:
+        for key in self._KEYS:
+            self.assertIn(key, candidate, f"{candidate.get('summary')!r} 缺 {key}")
+        self.assertEqual(candidate["validation_status"], "unverified")
+        self.assertIsNone(candidate["applicable_versions"])
+        self.assertIsNone(candidate["supersedes"])
+        self.assertIsNone(candidate["expires_when"])
+
+    def test_summary_derived_candidates_carry_asset_fields(self) -> None:
+        candidates = build()
+        self.assertEqual(len(candidates), 4)
+        for candidate in candidates:
+            self._assert_asset_defaults(candidate)
+
+    def test_decision_candidates_carry_asset_fields(self) -> None:
+        candidates = hkc.build_knowledge_candidates(
+            {"decisions": [DECISIONS[0]]},
+            change_key="decisions-demo",
+            archive_id="decisions-demo",
+            producer_version="0.4.0",
+            created_at="2026-08-23T12:00:00.000Z",
+        )
+        self.assertEqual(len(candidates), 1)
+        self._assert_asset_defaults(candidates[0])
+
+    def test_plan_derived_candidates_carry_asset_fields(self) -> None:
+        candidates = hkc.build_plan_candidates(
+            _archive_dir_with_design(),
+            change_key="simple-mode-adoption",
+            archive_id="arc_test",
+            producer_version="1",
+            created_at="2026-09-06T00:00:00.000Z",
+        )
+        self.assertGreater(len(candidates), 0)
+        for candidate in candidates:
+            self._assert_asset_defaults(candidate)
+
+    def test_content_hash_ignores_asset_fields(self) -> None:
+        # hash 只锁内容身份（entry_type/summary/body/keywords）；
+        # F-001 的 hash 在加元数据前后必须逐字节一致。
+        by_title = {item["summary"]: item for item in build()}
+        self.assertEqual(
+            by_title["nonScannablePathPrefixes 把整棵归档树判为不可扫描"]["content_hash"],
+            "sha256:ac69cdb862059e882204a9574f5ac0fe226ae883ba37215758a0901e69d4255e",
+        )
+
+    def test_schema_version_stays_1(self) -> None:
+        # 版本less 增量演化（entry_type/body/keywords 先例）：strict 契约的
+        # 共享 schemaVersionSchema 钉死字面量 1，升版本会牵动全链 schema。
+        for candidate in build():
+            self.assertEqual(candidate["schema_version"], 1)
+
+
 DECISIONS = [
     {
         "id": "D-001",

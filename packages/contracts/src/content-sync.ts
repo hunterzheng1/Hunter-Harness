@@ -138,6 +138,18 @@ export const knowledgeCandidateStatusSchema: FrozenStringEnumSchema<
   typeof knowledgeCandidateStatusValues
 > = frozenStringEnumSchema(knowledgeCandidateStatusValues);
 
+// WI-E2（O3/O4，design-o3-o4-outcome-assets-2026-09-14 §6）：候选资产的
+// 验证状态轴，与上面的 ingest 生命周期 status 正交——status 是上传审核结果，
+// validation_status 是「这条知识是否被验证仍有效」的资产标注。
+const knowledgeCandidateValidationStatusValues = [
+  "unverified",
+  "verified",
+  "invalidated"
+] as const;
+export const knowledgeCandidateValidationStatusSchema: FrozenStringEnumSchema<
+  typeof knowledgeCandidateValidationStatusValues
+> = frozenStringEnumSchema(knowledgeCandidateValidationStatusValues);
+
 // 与 knowledge.ts 的 knowledgeIngestEntryTypeSchema 逐值对齐：候选携带的
 // entry_type 最终原样落到知识条目的 type 上，两处漂移会让桥在投影时
 // safeParse 失败并静默丢条目（见 semantic/knowledge-projection.ts）。
@@ -691,7 +703,14 @@ export const knowledgeCandidateSchema = z.object({
   // 它们时整条候选仍然有效，由消费端走降级路径。
   entry_type: knowledgeCandidateEntryTypeSchema.optional(),
   body: z.string().min(1).max(20_000).optional(),
-  keywords: z.array(z.string().min(1).max(80)).max(32).optional()
+  keywords: z.array(z.string().min(1).max(80)).max(32).optional(),
+  // WI-E2（O3/O4）资产元数据四键，与 entry_type/body/keywords 同款可选增量：
+  // 老归档不带它们时整条候选仍然有效，由消费端走降级路径；Python 侧自
+  // WI-E2 起总是发射（缺省为 null / "unverified"）。
+  applicable_versions: z.array(z.string().min(1).max(120)).max(64).nullable().optional(),
+  validation_status: knowledgeCandidateValidationStatusSchema.optional(),
+  supersedes: candidateIdSchema("kc").nullable().optional(),
+  expires_when: z.string().min(1).max(500).nullable().optional()
 }).strict();
 
 export const contentSyncValidationReasonCodeSchema = frozenStringEnumSchema([

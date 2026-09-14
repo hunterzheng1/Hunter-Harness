@@ -1779,6 +1779,65 @@ describe("stage 01 content and sync contracts", () => {
     }
   });
 
+  it("carries the optional v2 asset metadata fields (WI-E2)", async () => {
+    // design-o3-o4-outcome-assets-2026-09-14 §6：applicable_versions /
+    // validation_status / supersedes / expires_when 以 optional/nullable 增量
+    // 加入（entry_type/body/keywords 先例），schema_version 保持 1。
+    const fixture = await readCurrentFixture();
+    const candidates = fixture.candidates as Record<string, unknown>;
+    const base = knowledgeCandidateSchema.parse(candidates.knowledge_candidate);
+
+    // 老归档缺这四个键时必须继续解析成功（降级路径）。
+    expect(base.applicable_versions).toBeUndefined();
+    expect(base.validation_status).toBeUndefined();
+    expect(base.supersedes).toBeUndefined();
+    expect(base.expires_when).toBeUndefined();
+
+    const enriched = knowledgeCandidateSchema.parse({
+      ...base,
+      applicable_versions: ["0.2.x", "0.3.x"],
+      validation_status: "verified",
+      supersedes: "kc_older_candidate_01",
+      expires_when: "content-sync.ts 的 strict 白名单移除时"
+    });
+    expect(enriched.applicable_versions).toEqual(["0.2.x", "0.3.x"]);
+    expect(enriched.validation_status).toBe("verified");
+    expect(enriched.supersedes).toBe("kc_older_candidate_01");
+    expect(enriched.expires_when).toBe("content-sync.ts 的 strict 白名单移除时");
+
+    // null 表示「未声明」——生成期缺省值（空白不凑数），必须可解析。
+    const defaulted = knowledgeCandidateSchema.parse({
+      ...base,
+      applicable_versions: null,
+      validation_status: "unverified",
+      supersedes: null,
+      expires_when: null
+    });
+    expect(defaulted.validation_status).toBe("unverified");
+    expect(defaulted.supersedes).toBeNull();
+
+    for (const invalid of [
+      { validation_status: "fresh" },
+      { validation_status: "pending" },
+      { validationStatus: "verified" },
+      { supersedes: "pcc_wrong_namespace" },
+      { supersedes: "not-an-id" },
+      { applicable_versions: "0.2.x" },
+      { applicable_versions: [""] },
+      { expires_when: "" },
+      { applicableVersions: ["0.2.x"] }
+    ]) {
+      expect(knowledgeCandidateSchema.safeParse({ ...base, ...invalid }).success).toBe(false);
+    }
+
+    // strict 不破：四键之外的未知键仍然拒绝。
+    expect(knowledgeCandidateSchema.safeParse({
+      ...base,
+      validation_status: "verified",
+      unexpected: true
+    }).success).toBe(false);
+  });
+
   it("accepts the archive candidate generator's real output", async () => {
     // 该 fixture 由 harness/scripts/harness_knowledge_candidates.py 真实产出
     // （test_harness_knowledge_candidates.py 锁住 Python 侧字节）。这条测试是

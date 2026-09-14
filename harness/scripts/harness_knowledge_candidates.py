@@ -25,6 +25,13 @@ them too noisy or empty to be worth persisting.
 
 No LLM is involved. Every emitted field is copied or derived from a real
 summary-data field, so the output is reproducible and free of invention.
+
+WI-E2 (O3/O4, design-o3-o4-outcome-assets-2026-09-14 §6): every candidate also
+carries four asset-metadata keys — applicable_versions / validation_status /
+supersedes / expires_when (see _asset_fields()). The contract takes them as an
+optional/nullable increment (same evolution path as entry_type/body/keywords;
+schema_version stays 1). Consumption receipts land via harness_assets.py under
+.harness/state/local/asset-receipts/.
 """
 from __future__ import annotations
 
@@ -123,6 +130,24 @@ def _content_hash(entry_type: str, summary: str, body: str, keywords: list[str])
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# --- WI-E2（O3/O4）：资产元数据四键 -------------------------------------
+#
+# applicable_versions / validation_status / supersedes / expires_when
+# （design-o3-o4-outcome-assets-2026-09-14 §6）。契约侧以 optional/nullable
+# 增量接收（entry_type/body/keywords 先例，schema_version 保持 1）。
+# 生成期取值：validation_status 恒 "unverified"（新候选的事实状态，派生非
+# 凑数）；其余三键恒 None——生成期无真实来源可派生适用版本/替代关系/失效
+# 条件，空白不凑数（O3 明示），由消费回执与服务端索引后续标注。
+# 四键不进 content_hash：hash 锁内容身份，元数据可独立演化。
+def _asset_fields() -> dict[str, Any]:
+    return {
+        "applicable_versions": None,
+        "validation_status": "unverified",
+        "supersedes": None,
+        "expires_when": None,
+    }
+
+
 def _keywords(*values: str) -> list[str]:
     """Deduplicate, preserve order, and honour the contract's bounds."""
     seen: list[str] = []
@@ -207,6 +232,7 @@ def _finding_candidate(
         "entry_type": entry_type,
         "body": body,
         "keywords": keywords,
+        **_asset_fields(),
         "provenance": {
             "source_kind": "review",
             "source_ref": source_ref,
@@ -252,6 +278,7 @@ def _risk_candidate(
         "entry_type": "risk",
         "body": body,
         "keywords": keywords,
+        **_asset_fields(),
         "provenance": {
             "source_kind": "archive",
             "source_ref": f"archive:{archive_id}",
@@ -334,6 +361,7 @@ def _decision_candidate(
         "entry_type": entry_type,
         "body": body,
         "keywords": keywords,
+        **_asset_fields(),
         "provenance": {
             "source_kind": source,
             "source_ref": f"archive:{archive_id}#{record_id}" if record_id else f"archive:{archive_id}",
@@ -521,6 +549,7 @@ def _plan_candidate(
         "entry_type": entry_type,
         "body": body,
         "keywords": keywords,
+        **_asset_fields(),
         "provenance": {
             "source_kind": _PLAN_SOURCE_KIND,
             "source_ref": f"archive:{archive_id}",
