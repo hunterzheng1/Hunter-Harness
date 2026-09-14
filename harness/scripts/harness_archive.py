@@ -485,20 +485,20 @@ def compare_manifests(
 
 
 def load_ledger(change_dir: Path) -> dict[str, Any] | None:
-    for root in archive_read_roots(change_dir):
-        for rel in (
-            "evidence/verification-ledger.json",
-            "verification-ledger.json",
-        ):
-            path = root / rel
-            if not path.is_file():
-                continue
-            try:
-                data = read_json(path)
-                return data if isinstance(data, dict) else None
-            except (OSError, json.JSONDecodeError):
-                return None
-    return None
+    """读取验证账本（F1/O6 收敛：委托 harness_ledger 单一实现）。
+
+    候选路径与优先级由 harness_ledger.ledger_candidates 统一裁决
+    （state/evidence 优先，evidence/ 跨 root 优先于同 root 平铺——
+    取代旧实现按 root 优先的私有顺序）。语义保持：缺失/损坏/非 dict → None；
+    空 dict（"{}"）原样透传——record-only 归档 min-set 将其计为存在。
+    """
+    try:
+        data, found = hl.load_ledger(change_dir)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if found is None or not isinstance(data, dict):
+        return None
+    return data
 
 
 def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None]:

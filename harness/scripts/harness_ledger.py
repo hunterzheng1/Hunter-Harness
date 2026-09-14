@@ -1102,7 +1102,16 @@ def ensure_profile_input_target(
 
 
 def _state_dir(change_dir: Path) -> Path:
-    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+    contract = Path(change_dir).resolve()
+    # 标准布局（.harness/changes/<id>）按路径形态把项目根作为解析 cwd：
+    # 无 git 的恢复/解压目录也能解析 split state（对齐 harness_archive
+    # .find_project_root 长期行为，F1/O6 收敛 archive 旧 load_ledger 后
+    # 由此处统一承担该语义）；git 可用时 resolve_main_project_root 仍按
+    # common-dir 裁决，worktree 等形态行为不变。
+    cwd = contract
+    if contract.parent.name == "changes" and contract.parent.parent.name == ".harness":
+        cwd = contract.parents[2]
+    return Path(harness_paths.resolve_state_dir_for_contract(contract, cwd))
 
 
 def ledger_candidates(change_dir: Path) -> list[Path]:

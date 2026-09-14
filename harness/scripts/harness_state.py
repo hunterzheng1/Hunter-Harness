@@ -49,6 +49,12 @@ def read_json(path: Path) -> Any:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """原子 JSON 写（F1/O6：全仓唯一权威实现）。
+
+    temp+os.replace，LF、UTF-8 无 BOM；崩溃后不留半写文件。
+    harness_task/harness_gate 等统一委托本函数；harness_ledger.write_ledger
+    保留独立实现（账本需要额外 fsync 强化）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     # 强制 LF，UTF-8 无 BOM（与 harness_ledger/harness_profile 保持一致）。
@@ -58,7 +64,10 @@ def write_json(path: Path, data: Any) -> None:
         tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 

@@ -1121,7 +1121,7 @@ def bootstrap_plan(
     classification.setdefault("tierOverride", None)
     classification["classifiedAt"] = _now().isoformat().replace("+00:00", "Z")
     policy_path = change_dir / "meta" / "gate-policy.json"
-    hg._write_json(policy_path, hg.gate_policy_document(classification))
+    _write_json_atomic(policy_path, hg.gate_policy_document(classification))
 
     identity = _plan_run_identity(change_dir)
     reused = identity is not None

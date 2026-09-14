@@ -65,9 +65,9 @@ class OutboxFixture(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.project, ignore_errors=True)
 
-    def _enqueue(self, change: str = "demo-change", doc: dict | None = None, **kw):
+    def _enqueue(self, change: str = "demo-change", doc: dict | None = None, now=T0, **kw):
         return outbox.enqueue_outcome(
-            self.project, change, doc if doc is not None else OUTCOME, now=T0, **kw
+            self.project, change, doc if doc is not None else OUTCOME, now=now, **kw
         )
 
 
@@ -267,9 +267,13 @@ class DrainTests(OutboxFixture):
 class CapacityTests(OutboxFixture):
     def test_capacity_eviction_spills_oldest_pending(self) -> None:
         # 容量不足必测项：硬上限 + 溢出降级——最旧 pending 逐出为死信并留痕。
-        first, _ = self._enqueue(change="c1", max_entries=2)
-        self._enqueue(change="c2", max_entries=2)
-        third, replayed = self._enqueue(change="c3", max_entries=2)
+        # 逐出按 created_at 排序，必须给递增时间戳（同刻决胜键是随机 entry_id，
+        # 全用 T0 会让被逐出者不确定——本测试曾因此间歇失败）。
+        first, _ = self._enqueue(change="c1", max_entries=2, now=T0)
+        self._enqueue(change="c2", max_entries=2, now=T0 + timedelta(seconds=1))
+        third, replayed = self._enqueue(
+            change="c3", max_entries=2, now=T0 + timedelta(seconds=2)
+        )
         self.assertFalse(replayed)
         records = {r["payload"]["change_id"]: r for r in outbox.load_records(self.project)}
         # 死信是终端证据保留在盘上；活动额度 = pending c2/c3 两条

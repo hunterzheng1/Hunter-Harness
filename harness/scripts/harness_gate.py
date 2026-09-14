@@ -37,6 +37,7 @@ import harness_paths as hp  # noqa: E402
 import harness_plan_finalize as hpf  # noqa: E402
 import harness_review as hr  # noqa: E402
 import harness_runtime as hruntime  # noqa: E402
+import harness_state as hs  # noqa: E402
 import harness_workflow_policy as hwp  # noqa: E402
 import harness_test_guard as htg  # noqa: E402
 
@@ -262,18 +263,6 @@ def record_gate_warning(
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
     return entry
-
-
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8", newline="\n")
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _git_text(cwd: Path, *args: str) -> str | None:
@@ -512,7 +501,7 @@ def write_phase_capsule(
     change_dir: Path, phase: str, run_id: str, capsule: dict[str, Any]
 ) -> Path:
     path = _phase_capsule_path(change_dir, phase, run_id)
-    _write_json(path, capsule)
+    hs.write_json(path, capsule)
     return path
 
 
@@ -1733,7 +1722,7 @@ def classify_risk(
             "foreignPaths": sorted(set(foreign_paths)),
         }
     if stage == "post-run":
-        _write_json(change_dir / "meta" / "risk-classification.json", payload)
+        hs.write_json(change_dir / "meta" / "risk-classification.json", payload)
     result = _apply_required_gate_contract(payload, workflow, capabilities)
     configured_sequence = _load_configured_final_sequence(main_project, change_dir)
     if configured_sequence is not None:
@@ -4171,7 +4160,7 @@ def cmd_classify(args: argparse.Namespace) -> int:
         else:
             policy_doc = gate_policy_document(payload)
             policy_path = change_dir / "meta" / "gate-policy.json"
-            _write_json(policy_path, policy_doc)
+            hs.write_json(policy_path, policy_doc)
             payload["policyPersisted"] = True
             payload["policyPath"] = str(policy_path)
             if finalized:
@@ -4265,7 +4254,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     item["status"] = "approved"
     item["approvedAt"] = hc.now_iso()
     item["approvedBy"] = args.reviewer
-    _write_json(path, checkpoints)
+    hs.write_json(path, checkpoints)
     payload = {
         "ok": True,
         "code": "CHECKPOINT_APPROVED",

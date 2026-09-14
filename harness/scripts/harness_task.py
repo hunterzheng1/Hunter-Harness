@@ -165,21 +165,6 @@ def read_json_file(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def write_json_file(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8", newline="\n")
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-
 # ---------------------------------------------------------------------------
 # WI-E1（O3）：实际成果摘要——meta/outcome.json
 #
@@ -254,7 +239,7 @@ def write_outcome(
     if closure == "completed" and not doc["outcome"]["summary"]:
         warnings.append("OUTCOME_SUMMARY_MISSING")
     try:
-        write_json_file(Path(change_dir) / OUTCOME_REL, doc)
+        hs.write_json(Path(change_dir) / OUTCOME_REL, doc)
     except OSError as exc:
         return (
             error_envelope(
@@ -877,7 +862,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
             # begin 时刻脏树基线：finish 的外来路径检测基准（非循环）。
             "dirtyBaseline": capture_dirty_baseline(project),
         }
-        write_json_file(change_dir / TASK_REL, task_doc)
+        hs.write_json(change_dir / TASK_REL, task_doc)
     else:
         task_doc = existing_task
         # 既有任务补声明：之前 begin 未带参数、现在带了 → 补写
@@ -893,7 +878,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
             task_doc["dependsOn"] = depends_on
             task_dirty = True
         if task_dirty:
-            write_json_file(change_dir / TASK_REL, task_doc)
+            hs.write_json(change_dir / TASK_REL, task_doc)
 
     # phase.start 幂等：已有未关闭的 task phase.start 则复用，不重复追加。
     # attempt 不硬编码：append_with_auto_seal 自动取 phase 内最大 attempt+1
@@ -1700,7 +1685,7 @@ def _resume_terminal_finish(
         task["status"] = "open"
         task["finishedAt"] = None
         task["commit"] = None
-        write_json_file(change_dir / TASK_REL, task)
+        hs.write_json(change_dir / TASK_REL, task)
         return None
 
     tier = str(task.get("tier") or "fast")
@@ -1930,7 +1915,7 @@ def _record_verification_side_effects(
     merged = sorted(recorded | set(new_paths))
     if merged != sorted(recorded):
         task["verificationSideEffects"] = merged
-        write_json_file(change_dir / TASK_REL, task)
+        hs.write_json(change_dir / TASK_REL, task)
 
 
 def cmd_finish(args: argparse.Namespace) -> int:
@@ -2244,7 +2229,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     classification["classifiedAt"] = now_iso()
     policy_doc = hg.gate_policy_document(classification)
     policy_doc["plannedPhases"] = [TASK_PHASE, "archive"]
-    hg._write_json(change_dir / "meta" / "gate-policy.json", policy_doc)
+    hs.write_json(change_dir / "meta" / "gate-policy.json", policy_doc)
 
     verifications: list[dict[str, Any]] = []
     if closure == "completed":
@@ -2471,7 +2456,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
     # 提交，记 HEAD 会把无关提交误标成本任务成果。
     task["commit"] = committed_hash if closure == "completed" else None
     task["closureReason"] = closure_reason or None
-    write_json_file(change_dir / TASK_REL, task)
+    hs.write_json(change_dir / TASK_REL, task)
 
     # ⑫ 归档（record-only；completed 之外不要求 ledger——:2986-2991）。
     #     --no-commit 时跳过：无提交范围，归档必被
@@ -2527,7 +2512,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
         task["status"] = "open"
         task["finishedAt"] = None
         task["commit"] = None
-        write_json_file(change_dir / TASK_REL, task)
+        hs.write_json(change_dir / TASK_REL, task)
         blockers = [
             str(item.get("code") or item.get("message") or item)
             for item in (archive_payload.get("issues")
