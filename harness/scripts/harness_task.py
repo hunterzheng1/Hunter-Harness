@@ -45,6 +45,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_archive as ha  # noqa: E402
+import harness_asset_outbox  # noqa: E402
 import harness_change as hchg  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_gate as hg  # noqa: E402
@@ -939,6 +940,16 @@ def cmd_begin(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # WI-E3（O4）：下次启动续跑钩子——reap 过期租约 + asset-outbox 摘要。
+    # best-effort：队列损坏只记 warning，不阻塞 begin（参照 12-m3 reconcile）。
+    try:
+        asset_outbox_summary: dict[str, Any] = harness_asset_outbox.maintenance(project)
+    except Exception as exc:  # noqa: BLE001 —— best-effort 钩子不得阻塞 begin
+        asset_outbox_summary = {
+            "warning": "ASSET_OUTBOX_MAINTENANCE_FAILED",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
     emit(
         {
             "ok": True,
@@ -947,6 +958,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
             "changeDir": str(change_dir),
             "changeCreated": created,
             "runId": run_id,
+            "assetOutbox": asset_outbox_summary,
             "goal": task_doc.get("goal"),
             "acceptance": task_doc.get("acceptance"),
             "declaredTier": task_doc.get("declaredTier"),
@@ -2426,6 +2438,28 @@ def cmd_finish(args: argparse.Namespace) -> int:
         return 2
     # 归档会移走 change 目录——emit 展示用的 outcome 在归档前缓存。
     outcome_doc = _read_outcome(change_dir)
+
+    # WI-E3（O4）：outcome 资产同进程原子入队 asset-outbox——
+    # 「终态已写 ⇒ outcome 在且资产已入队」。payload 内嵌完整文档（自包含，
+    # 归档移走目录后仍可交付）。入队失败显示不静默（E1 语义）：任务保持
+    # open；重跑 finish 由幂等键去重，不会重复入队。
+    try:
+        if outcome_doc is None:
+            raise harness_asset_outbox.AssetOutboxError(
+                harness_asset_outbox.ASSET_OUTBOX_WRITE_FAILED,
+                "outcome.json 写入后读回为空",
+            )
+        harness_asset_outbox.enqueue_outcome(project, change, outcome_doc)
+    except harness_asset_outbox.AssetOutboxError as exc:
+        emit(
+            error_envelope(
+                "ASSET_OUTBOX_ENQUEUE_FAILED",
+                f"outcome 资产入队失败：{exc.message}——任务保持 open，未静默丢失",
+                recovery_action="处理 asset-outbox（outbox-drain/清理死信）后重跑 finish；幂等键去重不重复入队",
+            ),
+            as_json,
+        )
+        return 2
 
     # ⑪ 更新 task.json 终态（归档会移走整个目录，终态必须先写才能入档；
     #     归档失败时在下方回滚为 open，保证 recoveryAction 承诺的

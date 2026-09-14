@@ -1,10 +1,13 @@
 # O3/O4 实际成果摘要与异步资产闭环 — 设计文档（WI-E 批次）
 
-> 状态：**E1、E2 已实施（2026-09-14，E2 详细设计见 §6）**；用户当日确认 §0 四项建议值全部采纳。
+> 状态：**E1、E2、E3 已实施（2026-09-14，详细设计见 §6/§7）**；用户当日确认 §0 四项建议值全部采纳。
 > E1：红测 9 例先行 → 实现 → `test_harness_task` 68/68。
 > E2：红测 16+1 例先行（Python 15/契约 1）→ 实现（候选四键 + harness_assets.py
 > 回执 + 契约 optional 增量）→ 契约 271+110 绿、全量回归 1643 绿（doc-contract 含其中）。
-> E3 待另出详细设计后实施。
+> E3：红测 20 例先行（outbox 模块 17 + finish/begin 接线 3）→ 实现
+> （harness_asset_outbox.py + finish 原子入队 + begin 续跑钩子 + outbox-status/drain CLI）。
+> **远端闭环保持待验证**：资产在 asset-outbox 中为 pending 并显式标注
+> （drain 无传输配置时不领取不烧 attempts）；远端属两仓契约变化（§10.2 末条）。
 > 本文落实任务书 `review-remediation-execution-2026-09-12.md`
 > §10（O3 摘要内容 / O4 异步处理与持久性），对应实施顺序表工作包 **E**。
 > 范围大且跨 Python/TS 两侧，建议按 §1 拆为三个 WI 分批实施，先经用户裁决。
@@ -246,3 +249,64 @@ TS `content-sync-contracts.test.ts` 增补：
 | `packages/contracts/test/fixtures/knowledge-candidates-v1-archive.json` | 确定性重生成（仅加四键） |
 | `harness/harness-knowledge-query/SKILL.md` | 消费后回执步骤 |
 | 设计文档 | 本文 §6 |
+
+## 7. E3 异步资产闭环（Python asset-outbox）— 详细设计（2026-09-14）
+
+### 7.1 决策点与选定值
+
+| # | 决策点 | 选定值 | 理由 |
+|---|--------|--------|------|
+| 1 | 存储布局 | `.harness/state/local/asset-outbox/records/<entry_id>.json` + `journal/<entry_id>.ndjson` | 对齐 v2「记录 + 独立迁移 journal」；journal 先行写（write-ahead），记录覆写失败时 journal 即 ambiguous 证据（必测项⑤的本地支撑） |
+| 2 | 记录 schema | schema_version 1（Python 队列首版，不冒充 TS v2）；entry_id `asset_outbox_<24hex>`；payload **内嵌完整 outcome 文档** + payload_sha256 | finish 入队时归档尚未发生、目录随后被移走——payload 必须自包含，不引用将被移动的路径 |
+| 3 | 幂等键 | `sha256("asset-outbox\|outcome\|<change_id>\|<payload_sha256>")` | finish 失败重跑→replayed 不重复入队；内容冲突（同 change 不同 outcome）→键不同→不误判去重（必测项⑦冲突知识） |
+| 4 | 状态机 | pending → leased →（ack→delivered \| nack(retryable)→retry_wait \| nack(terminal)→dead_letter \| attempts 耗尽→dead_letter）；retry_wait 到期可被 claim；reap 回收过期 lease | 对齐 v2 claim/ack/nack/reap 四动词 |
+| 5 | 租约 | capability=CSPRNG hex(32)，盘上只存 sha256(capability)（v2 同款「capability 只返回一次」）；TTL 默认 60s | 领取后崩溃→租约过期→reap→可重投（必测项④） |
+| 6 | 退避 | base 1s 指数封顶 60s；**MAX_ATTEMPTS=5** 进死信 | TS v2 MAX_ATTEMPTS=100 面向重型 zip；资产是小 JSON，快速死信更早暴露系统性故障（维持 §4 原定值） |
+| 7 | 容量 | 硬上限 MAX_ENTRIES=1000，**按活动记录计数**（pending/leased/retry_wait；dead_letter 与 delivered 是终端证据不占额度）；溢出降级：逐出最旧 pending → dead_letter(reason=CAPACITY_EVICTION，journal 留痕) 腾位；无 pending 可逐（全 leased）才 ASSET_OUTBOX_CAPACITY_EXCEEDED | 无远端稳态下队列单调增长：若死信也占额度，逐出后额度不释放、每次 finish 恒失败；活动计数+逐出降级让队列收敛，且逐出显式可见（status 列死信） |
+| 8 | 传输 | 注入式 `deliver(record)->receipt`；默认无配置 → drain **不领取不烧 attempts**，显式报 `pending_remote_unconfigured` + 记录保持「待验证」 | 远端闭环无环境时保持待验证并显式标注（任务书 §10.2 末条）；真实远端属两仓契约变化，不在本批 |
+| 9 | finish 接线 | outcome 落盘成功后、task.json 终态写前，同进程 enqueue；入队失败 → finish 报错任务保持 open（E1「写失败显示不静默」） | 「终态已写 ⇒ outcome 在且资产已入队」原子链 |
+| 10 | begin 钩子 | cmd_begin 成功后 best-effort maintenance：reap 过期租约 + 无远端配置时仅统计；异常只记 warning 不阻塞 begin | 「下次启动续跑」参照 12-m3 reconcile；begin 是任务生命周期必经点 |
+| 11 | CLI | `harness_assets.py outbox-status` / `outbox-drain [--owner <id>] [--limit <n>]` | 与 receipt/receipts 同脚本，队列操作前缀区分 |
+| 12 | delivered 处置 | 保留不自动删（本地已交付证据）；清理策略后续批次 | 死信/已交付都可被 status 审计 |
+
+### 7.2 drain 流程
+
+```
+maintenance(project):  reap 过期 lease（journal 记 reap）
+drain(project, transport):
+  1. maintenance
+  2. transport is None → {delivered:0, pending_remote_unconfigured:N, remote:"unconfigured"}，不领取
+  3. claim_due（pending ∪ retry_wait 到期，按 created_at 升序，limit）
+  4. 逐条 deliver → 成功：journal(ack,committed) + record=delivered(存 receipt)
+                 失败：journal(nack) + retry_wait(next_attempt_at=退避) 或 dead_letter
+  5. 记录覆写失败 → journal 先行条目保留（ambiguous），记录留在盘上原态，下次 reap 后重投
+```
+
+### 7.3 必测矩阵 → 测试映射
+
+| 任务书必测项 | 测试 |
+|------|------|
+| 离线交付 | transport=None → 不领取、报 pending_remote_unconfigured、记录保持 pending |
+| 队列重启 | enqueue 后换新模块视角重读 → claim 可见（纯盘状态） |
+| 重复消费 | 同幂等键二次 enqueue → replayed 不新增；delivered 后再同键 enqueue 仍 replayed |
+| 领取后崩溃 | claim 后无 ack/nack、租约过期 → reap → 再次可 claim |
+| 远端成功但本地回执失败 | deliver 成功 + 记录覆写注入一次性故障 → journal 有 ack 先行条目、记录仍 leased；重投后 transport 收到同幂等键的重复交付（消费方幂等去重的本地佐证） |
+| 容量不足 | 上限=2 时第三次 enqueue 逐出最旧 pending（dead_letter+CAPACITY_EVICTION）；全部 leased 时 enqueue 报 CAPACITY_EXCEEDED |
+| 冲突知识 | 同 change 不同 outcome → 幂等键不同 → 两条独立入队 |
+| 敏感内容剔除 | kind 白名单（仅 outcome）；未知 kind → ASSET_OUTBOX_RECORD_INVALID 拒入队 |
+| 跨项目隔离 | A/B 两 project root 互不可见 |
+| 退避与死信 | nack 后 next_attempt_at 未来不可 claim；attempts 耗尽 → dead_letter 不再 claim |
+| finish 原子入队 | finish 完成 → outbox 有一条 outcome 资产（payload 与 outcome.json 一致）；入队失败（容量+全 leased 注入）→ finish 报错、任务保持 open |
+| begin 钩子 | begin 后 outbox 摘要出现在输出；outbox 损坏只 warning 不阻塞 begin |
+
+### 7.4 影响面（E3）
+
+| 文件 | 变更 |
+|------|------|
+| `harness/scripts/harness_asset_outbox.py` | 新建：记录/租约/退避/journal/容量/maintenance/drain |
+| `harness/scripts/harness_assets.py` | 增 outbox-status / outbox-drain 子命令 |
+| `harness/scripts/harness_task.py` | finish 原子入队 + begin 钩子 |
+| `harness/scripts/tests/test_harness_asset_outbox.py` | 新建（上表 12 项） |
+| `harness/scripts/tests/test_harness_task.py` | finish 入队/失败保持 open、begin 钩子 3 例 |
+| `harness/harness-task/SKILL.md`+`reference.md` | finish 资产入队语义、begin 续跑摘要 |
+| 设计文档 | 本文 §7 |

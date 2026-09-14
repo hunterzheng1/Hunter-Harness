@@ -112,6 +112,7 @@ finish 在执行前先生成验证计划（`_plan_verifications`），摘要项�
 | VERIFICATION_FAILED | 验证命令 exit≠0（ledger 已记失败） | 修复后重跑 finish（ledger 覆盖） |
 | GIT_COMMIT_FAILED | git add/commit 失败 | 手工检查 git status；或 `--no-commit` 跳过 |
 | ARCHIVE_FAILED | 归档被阻断（task.json 已回滚 open） | 按 problems[] 处理后重跑 finish 补归档 |
+| ASSET_OUTBOX_ENQUEUE_FAILED | finish 的 outcome 资产入队 asset-outbox 失败（任务保持 open，WI-E3） | `harness_assets.py outbox-status` 查队列（容量/死信），处理后重跑 finish（幂等键去重不重复入队） |
 | TASK_FINISHED_NO_ARCHIVE | `--no-commit` 成功但未提交未归档 | 手工提交后如需归档见 nextAction 命令 |
 | POLICY_LOAD_FAILED | workflow-policy.json 加载失败 | 检查 `.harness/config/workflow-policy.json` |
 | PROJECT_ROOT_INVALID | 项目未初始化（无 .harness/） | `npx hunter-harness init --profile general` |

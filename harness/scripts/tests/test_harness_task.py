@@ -1524,5 +1524,109 @@ class OutcomeTests(HarnessTaskFixture):
             self.assertIn("exitCode", item)
 
 
+class AssetOutboxWiringTests(HarnessTaskFixture):
+    """WI-E3（O4）：finish 同进程原子入队 outcome 资产；begin 续跑钩子。"""
+
+    def _outbox_records(self) -> list[dict]:
+        records_dir = (
+            self.project / ".harness" / "state" / "local"
+            / "asset-outbox" / "records"
+        )
+        if not records_dir.is_dir():
+            return []
+        return [
+            json.loads(p.read_text(encoding="utf-8-sig"))
+            for p in sorted(records_dir.glob("*.json"))
+        ]
+
+    def test_finish_enqueues_outcome_asset_atomically(self) -> None:
+        """finish 完成 ⇒ outbox 恰有一条 outcome 资产，payload 与归档
+        outcome.json 逐字节一致（payload 自包含，不引用被移走的路径）。"""
+        self._begin("e3-enqueue", goal="资产入队")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish(
+            "e3-enqueue", "--outcome-summary", "完成了入队接线",
+        )
+        self.assertEqual(rc, 0, out)
+        records = self._outbox_records()
+        self.assertEqual(len(records), 1, records)
+        record = records[0]
+        self.assertEqual(record["kind"], "outcome")
+        self.assertEqual(record["state"], "pending")
+        self.assertEqual(record["payload"]["change_id"], "e3-enqueue")
+        archived = json.loads(
+            (Path(out["archiveDir"]) / "meta" / "outcome.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        self.assertEqual(record["payload"]["outcome"], archived)
+
+    def test_finish_enqueue_failure_keeps_task_open(self) -> None:
+        """入队失败显示不静默（E1 语义）：finish 报错、任务保持 open。"""
+        self._begin("e3-enqueue-fail")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        original = ht.harness_asset_outbox.enqueue_outcome
+
+        def boom(*args, **kwargs):
+            raise ht.harness_asset_outbox.AssetOutboxError(
+                "ASSET_OUTBOX_CAPACITY_EXCEEDED", "测试注入：队列满"
+            )
+
+        ht.harness_asset_outbox.enqueue_outcome = boom
+        try:
+            rc, out = self._finish(
+                "e3-enqueue-fail", "--outcome-summary", "入队会失败",
+            )
+        finally:
+            ht.harness_asset_outbox.enqueue_outcome = original
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out["code"], "ASSET_OUTBOX_ENQUEUE_FAILED", out)
+        task = json.loads(
+            (self._change_dir("e3-enqueue-fail") / "meta" / "task.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        self.assertEqual(task["status"], "open", task)
+        # 恢复后重跑 finish 应成功且幂等键去重（最终只有一条资产）
+        rc, out = self._finish(
+            "e3-enqueue-fail", "--outcome-summary", "入队会失败",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self._outbox_records()), 1)
+
+    def test_begin_reports_outbox_summary_and_survives_corruption(self) -> None:
+        """begin 续跑钩子：输出带 assetOutbox 摘要；队列损坏只 warning。"""
+        self._begin("e3-hook", goal="钩子")
+        (self.project / "check.py").write_text("print('v2')\n", encoding="utf-8")
+        rc, out = self._finish("e3-hook", "--outcome-summary", "留一条待交付")
+        self.assertEqual(rc, 0, out)
+
+        rc, out = self._run(
+            "begin", "--project", str(self.project), "--change", "e3-hook-2",
+            "--executor", "test", "--goal", "下个任务", "--acceptance", "x",
+            "--json",
+        )
+        self.assertEqual(rc, 0, out)
+        summary = out.get("assetOutbox") or {}
+        self.assertEqual((summary.get("counts") or {}).get("pending"), 1, out)
+        self.assertEqual(summary.get("remote"), "unconfigured")
+
+        # 队列损坏（垃圾记录）不阻塞 begin，显式 warning
+        broken = (
+            self.project / ".harness" / "state" / "local"
+            / "asset-outbox" / "records" / "asset_outbox_broken.json"
+        )
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("{not json", encoding="utf-8")
+        rc, out = self._run(
+            "begin", "--project", str(self.project), "--change", "e3-hook-3",
+            "--executor", "test", "--goal", "再下个任务", "--acceptance", "x",
+            "--json",
+        )
+        self.assertEqual(rc, 0, out)
+        summary = out.get("assetOutbox") or {}
+        self.assertEqual(summary.get("warning"), "ASSET_OUTBOX_MAINTENANCE_FAILED", out)
+
+
 if __name__ == "__main__":
     unittest.main()

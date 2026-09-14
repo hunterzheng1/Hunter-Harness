@@ -31,6 +31,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_asset_outbox as outbox  # noqa: E402
+
 SCHEMA_VERSION = 1
 
 CANDIDATE_ID_RE = re.compile(r"^kc_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$")
@@ -181,10 +187,41 @@ def cmd_receipts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_outbox_status(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    try:
+        _emit(outbox.status(project))
+    except (outbox.AssetOutboxError, OSError, json.JSONDecodeError) as exc:
+        return _error(
+            "ASSET_OUTBOX_STORE_CORRUPT",
+            f"asset-outbox 读取失败（{type(exc).__name__}: {exc}）",
+            "检查 .harness/state/local/asset-outbox 下的 records/journal 是否被写坏",
+        )
+    return 0
+
+
+def cmd_outbox_drain(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    # 远端传输尚未配置（两仓契约变化，远端闭环保持待验证）：
+    # transport=None → drain 不领取不烧 attempts，显式标注待验证。
+    try:
+        result = outbox.drain(
+            project, transport=None, owner_id=args.owner, limit=args.limit,
+        )
+    except (outbox.AssetOutboxError, OSError, json.JSONDecodeError) as exc:
+        return _error(
+            "ASSET_OUTBOX_DRAIN_FAILED",
+            f"asset-outbox drain 失败（{type(exc).__name__}: {exc}）",
+            "检查队列存储；记录覆写失败时 journal 留有未对账条目（status 可查 ambiguous）",
+        )
+    _emit(result)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="harness_assets.py",
-        description="知识资产消费三态回执（WI-E2，O3/O4）",
+        description="知识资产消费回执（WI-E2）与资产出站队列（WI-E3，O3/O4）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -203,6 +240,18 @@ def main(argv: list[str] | None = None) -> int:
     receipts.add_argument("--candidate-id", help="只看该候选；缺省列出全部")
     receipts.add_argument("--json", action="store_true")
     receipts.set_defaults(func=cmd_receipts)
+
+    status_parser = sub.add_parser("outbox-status", help="asset-outbox 队列视图")
+    status_parser.add_argument("--project", default=".")
+    status_parser.add_argument("--json", action="store_true")
+    status_parser.set_defaults(func=cmd_outbox_status)
+
+    drain_parser = sub.add_parser("outbox-drain", help="交付到期资产（无远端时显式标注待验证）")
+    drain_parser.add_argument("--project", default=".")
+    drain_parser.add_argument("--owner", default="harness-assets-cli")
+    drain_parser.add_argument("--limit", type=int, default=100)
+    drain_parser.add_argument("--json", action="store_true")
+    drain_parser.set_defaults(func=cmd_outbox_drain)
 
     args = parser.parse_args(argv)
     return args.func(args)
