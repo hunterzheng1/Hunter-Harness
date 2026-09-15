@@ -185,38 +185,25 @@ class ReceiptIsolationTests(unittest.TestCase):
             shutil.rmtree(project_b, ignore_errors=True)
 
 
-class OutboxCliTests(HarnessAssetsFixture):
-    """WI-E3：outbox-status / outbox-drain CLI 冒烟。"""
+class OutboxFacadeRetiredTests(HarnessAssetsFixture):
+    """O6-F6 退役守卫：outbox 门面已迁 harness_asset_outbox.py（status/drain），
 
-    def test_outbox_status_empty(self) -> None:
-        rc, payload = self._run(
-            "outbox-status", "--project", str(self.project), "--json",
-        )
-        self.assertEqual(rc, 0, payload)
-        self.assertEqual(payload["code"], "ASSET_OUTBOX_STATUS")
-        self.assertEqual(payload["records"], [])
-        self.assertEqual(payload["capacity"]["used"], 0)
+    本脚本只承载消费回执（receipt/receipts）；旧子命令必须被 argparse 拒绝。
+    """
 
-    def test_outbox_drain_without_remote_marks_pending(self) -> None:
-        # finish 之外手动造一条待交付记录，验证 CLI drain 的显式待验证标注。
-        import harness_asset_outbox as outbox_mod
+    def _expect_rejected(self, *argv: str) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                hass.main(list(argv))
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("invalid choice", stderr.getvalue())
 
-        outbox_mod.enqueue_outcome(
-            self.project, "cli-change",
-            {"schemaVersion": 1, "goal": "g", "outcome": {"summary": "s"}},
-        )
-        rc, payload = self._run(
-            "outbox-drain", "--project", str(self.project), "--json",
-        )
-        self.assertEqual(rc, 0, payload)
-        self.assertEqual(payload["code"], "ASSET_OUTBOX_REMOTE_UNCONFIGURED")
-        self.assertEqual(payload["pending_remote_unconfigured"], 1)
-        self.assertEqual(payload["verification"], "pending")
-        rc, payload = self._run(
-            "outbox-status", "--project", str(self.project), "--json",
-        )
-        self.assertEqual(rc, 0)
-        self.assertEqual(payload["counts"]["pending"], 1)
+    def test_outbox_status_subcommand_removed(self) -> None:
+        self._expect_rejected("outbox-status", "--project", str(self.project))
+
+    def test_outbox_drain_subcommand_removed(self) -> None:
+        self._expect_rejected("outbox-drain", "--project", str(self.project))
 
 
 if __name__ == "__main__":

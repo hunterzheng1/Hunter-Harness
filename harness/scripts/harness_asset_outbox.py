@@ -23,13 +23,19 @@ journal，再覆写记录（记录带 last_operation_id）。记录覆写失败�
 容量策略：活动记录（pending/leased/retry_wait）硬上限 MAX_ENTRIES；溢出时逐出
 最旧 pending 为 dead_letter(reason=CAPACITY_EVICTION)；无 pending 可逐才报
 ASSET_OUTBOX_CAPACITY_EXCEEDED。dead_letter/delivered 是终端证据不占额度。
+
+CLI 归属（O6-F6）：投递语义的 status/drain 子命令由本模块自带 main() 承载
+（python harness_asset_outbox.py status|drain）；消费回执语义（receipt/receipts）
+在 harness_assets.py——两通道是不同生命周期事实，模块各管各的（决策点 7）。
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -549,3 +555,79 @@ def status(project: Path, *, now: datetime | None = None) -> dict[str, Any]:
         "capacity": {"max_entries": MAX_ENTRIES, "used": active},
         "now": _iso(at),
     }
+
+
+# --- CLI（O6-F6：投递语义门面自 harness_assets.py 迁入）--------------------
+
+
+def _emit(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _error(code: str, message: str, recovery_action: str) -> int:
+    _emit(
+        {
+            "ok": False,
+            "code": code,
+            "error": {"code": code, "message": message, "recovery_action": recovery_action},
+        }
+    )
+    return 2
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    try:
+        _emit(status(project))
+    except (AssetOutboxError, OSError, json.JSONDecodeError) as exc:
+        return _error(
+            "ASSET_OUTBOX_STORE_CORRUPT",
+            f"asset-outbox 读取失败（{type(exc).__name__}: {exc}）",
+            "检查 .harness/state/local/asset-outbox 下的 records/journal 是否被写坏",
+        )
+    return 0
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    # 远端传输尚未配置（两仓契约变化，远端闭环保持待验证）：
+    # transport=None → drain 不领取不烧 attempts，显式标注待验证。
+    try:
+        result = drain(
+            project, transport=None, owner_id=args.owner, limit=args.limit,
+        )
+    except (AssetOutboxError, OSError, json.JSONDecodeError) as exc:
+        return _error(
+            "ASSET_OUTBOX_DRAIN_FAILED",
+            f"asset-outbox drain 失败（{type(exc).__name__}: {exc}）",
+            "检查队列存储；记录覆写失败时 journal 留有未对账条目（status 可查 ambiguous）",
+        )
+    _emit(result)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="harness_asset_outbox.py",
+        description="资产出站队列（WI-E3，O3/O4）：投递语义的队列视图与到期交付",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    status_parser = sub.add_parser("status", help="asset-outbox 队列视图")
+    status_parser.add_argument("--project", default=".")
+    status_parser.add_argument("--json", action="store_true")
+    status_parser.set_defaults(func=cmd_status)
+
+    drain_parser = sub.add_parser("drain", help="交付到期资产（无远端时显式标注待验证）")
+    drain_parser.add_argument("--project", default=".")
+    drain_parser.add_argument("--owner", default="harness-asset-outbox-cli")
+    drain_parser.add_argument("--limit", type=int, default=100)
+    drain_parser.add_argument("--json", action="store_true")
+    drain_parser.set_defaults(func=cmd_drain)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -52,6 +52,6 @@ plan-evidence-input.json——`harness_task.py` 一条命令完成任务记录 �
 | 状态恢复 | 任何时刻 `harness_task.py status --project . --change <cn> --json` 查看档位/已记验证/未提交 diff/下一步；跨代际统一视图 `harness_change.py status --change <cn> --json`（轻任务与完整流程同构，批次 2 WI-3） |
 | 并行协调（WI-3.3） | `--write-scope`/`--depends-on` 是 begin 时的协调事实，task.json 固化、运行中不可改（改 = abandon 后以新声明重开）。冲突方 finish 后重试即串行（begin 拒绝零副作用）。声明 scope 的任务 finish 实际 diff 越界 → TASK_SCOPE_VIOLATION 停止（不提交，改动留工作区）；未声明 scope 的任务不参与冲突检测，begin 响应 `unscopedOpenChanges` 提示存量未声明 open 任务 |
 | 产物 | 只写 `.harness/changes/<cn>/`；plan.md、execution-log、ledger、events 全部由脚本生成，禁止手写 |
-| 资产出站（WI-E3） | finish 落盘 outcome.json 后会把成果资产**同进程原子入队** `.harness/state/local/asset-outbox/`（幂等键去重，重跑 finish 不重复）；入队失败 → finish 报错、任务保持 open（修复后重跑 finish）。远端交付走 `harness_assets.py outbox-drain`（租约/退避/死信）；未配置远端时队列保持 pending 并显式标注待验证，begin 输出 `assetOutbox` 摘要（含 reap 回收） |
+| 资产出站（WI-E3） | finish 落盘 outcome.json 后会把成果资产**同进程原子入队** `.harness/state/local/asset-outbox/`（幂等键去重，重跑 finish 不重复）；入队失败 → finish 报错、任务保持 open（修复后重跑 finish）。远端交付走 `harness_asset_outbox.py drain`（租约/退避/死信）；未配置远端时队列保持 pending 并显式标注待验证，begin 输出 `assetOutbox` 摘要（含 reap 回收） |
 
 错误码表、档位映射、Windows 路径陷阱 → `reference.md`

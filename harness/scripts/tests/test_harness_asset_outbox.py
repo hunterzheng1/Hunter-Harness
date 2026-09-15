@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -304,6 +306,46 @@ class StatusTests(OutboxFixture):
         self.assertEqual(status["capacity"]["max_entries"], outbox.MAX_ENTRIES)
         self.assertEqual(status["capacity"]["used"], 2)
         self.assertFalse(status["records"][0]["ambiguous"])
+
+
+class CliTests(OutboxFixture):
+    """O6-F6：status/drain CLI 归属本模块（迁出 harness_assets.py）。"""
+
+    def _run(self, *argv: str) -> tuple[int, dict]:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = outbox.main(list(argv))
+        text = buffer.getvalue().strip()
+        return rc, json.loads(text) if text else {}
+
+    def test_cli_status_empty(self) -> None:
+        rc, payload = self._run("status", "--project", str(self.project), "--json")
+        self.assertEqual(rc, 0, payload)
+        self.assertEqual(payload["code"], "ASSET_OUTBOX_STATUS")
+        self.assertEqual(payload["records"], [])
+        self.assertEqual(payload["capacity"]["used"], 0)
+
+    def test_cli_drain_without_remote_marks_pending(self) -> None:
+        self._enqueue(change="cli-change")
+        rc, payload = self._run("drain", "--project", str(self.project), "--json")
+        self.assertEqual(rc, 0, payload)
+        self.assertEqual(payload["code"], "ASSET_OUTBOX_REMOTE_UNCONFIGURED")
+        self.assertEqual(payload["pending_remote_unconfigured"], 1)
+        self.assertEqual(payload["verification"], "pending")
+        rc, payload = self._run("status", "--project", str(self.project), "--json")
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["counts"]["pending"], 1)
+
+    def test_cli_drain_owner_and_limit_flags(self) -> None:
+        self._enqueue(change="c1")
+        self._enqueue(change="c2", doc=_outcome("另一条"))
+        rc, payload = self._run(
+            "drain", "--project", str(self.project), "--owner", "cli-owner",
+            "--limit", "1", "--json",
+        )
+        self.assertEqual(rc, 0, payload)
+        # transport=None 不领取不烧 attempts，两条都保持 pending
+        self.assertEqual(payload["pending_remote_unconfigured"], 2)
 
 
 if __name__ == "__main__":

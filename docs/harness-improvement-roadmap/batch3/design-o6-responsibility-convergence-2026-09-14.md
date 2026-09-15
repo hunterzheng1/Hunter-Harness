@@ -1,7 +1,7 @@
 # O6 内部职责收敛与旧路径退役 — 设计文档（工作包 F）
 
-> 状态：**F1、F2、F3 已实施（2026-09-14/15）**；F4 已提前完成（与 F2 同批登记）；
-> F5、F6 待实施。决策点 6（dependsOn 改名）经 F2 勘察复核发现前提不成立，
+> 状态：**F1–F6 全部已实施（2026-09-14/15）**。决策点 6（dependsOn 改名）
+> 经 F2 勘察复核发现前提不成立，
 > 经重裁决定为 **B：永久仅文档消歧**——见 §0 表内批注。
 > 本文落实任务书 `review-remediation-execution-2026-09-12.md` §12（O6），
 > 对应实施顺序表工作包 **F**。
@@ -20,7 +20,7 @@
 | 4 | 验证事实三层拷贝收敛 | A. ledger 唯一权威，outcome.facts / summary-data 只留引用　B. 保守：只消除 load_ledger 双实现，拷贝保留　C. outcome schema v2 去拷贝 | **B 先行，C 记入 backlog**（outcome.json schema v1 是 E1 刚发布的跨进程契约，summary-data 是归档包跨仓契约；立即改 schema 牵动两仓。先消双实现这个纯内部重复，引用化待下次契约窗口） |
 | 5 | 收据统一层力度 | A. 物理合并五载体为一个收据层　B. 登记边界：每载体明确权威范围 + 命名规范，不物理合并 | **B**（五载体生命周期/写入时机各异——gate-warnings 是降级审计、plan-finalization 是 v2 发布收据、review-carryover 是评审结转、projection-receipt 是投影对账、transitions 是阶段事件；物理合并风险大收益低。「同一事实一个权威」的要求它们各自满足，问题只是无登记） |
 | 6 | `dependsOn` 三处同名异义 | A. gate DAG 依赖改名（task.json dependsOn 保留）　B. 不改 | ~~**A**~~ **重裁决=B 永久仅文档消歧（2026-09-14 用户裁定）**：原理由「纯内部重构」经 F2 勘察复核证伪——① gate DAG 节点 `dependsOn` 是持久化契约（requiredGateDag 写入 gate-policy.json；harness_phase.py 运行时消费+缺依赖校验；TS plan-evidence-pack.ts:955 运行时消费+重建；历史文件只读兼容链）；② profile `verificationGraph` 目标 `dependsOn` 是 `build-profile-v3.schema.json` 的 required 键（用户面契约），且经 `verification_target_identity` 进入证据身份哈希。两处改名均须走契约窗口 + 读兼容层，超出「内部重构」。**最终处置：字段名永久不动**，三义消歧登记表已落 harness-task/reference.md（F2），F4 命名规范登记表覆盖 |
-| 7 | 资产双通道边界 | A. 文档明确语义分界：asset-receipts=消费语义（被采用/拒绝），asset-outbox=投递语义（送达远端），二者不同事实不算重复　B. 合并 | **A**（勘察确认二者是不同生命周期事实；真正要修的是 cmd_outbox_status/drain 门面寄居 harness_assets.py 的模块划分，F6 微调即可） |
+| 7 | 资产双通道边界 | A. 文档明确语义分界：asset-receipts=消费语义（被采用/拒绝），asset-outbox=投递语义（送达远端），二者不同事实不算重复　B. 合并 | **A**（勘察确认二者是不同生命周期事实；真正要修的是 cmd_outbox_status/drain 门面寄居 harness_assets.py 的模块划分，F6 微调即可）——✅ 已完成：F6（2026-09-15）门面迁位，`harness_asset_outbox.py` 自带 `status`/`drain` CLI，`harness_assets.py` 回归纯消费回执（旧子命令 argparse 拒绝，退役守卫锁定） |
 | 8 | CLI stdout 违规治理范围 | A. 本工作包只治理 push-pull.ts republish 解析（最重一例）　B. 连同 codegraph-status.ts 一起 | **A**（codegraph-status 解析的是外部工具 codegraph 的 stdout，不是 harness Python 子命令，不属 O6「内部」职责范围；记录备查即可） |
 
 ## 1. 八类事实归属矩阵（勘察实证）
@@ -185,7 +185,7 @@
 | **F3 验证事实治理** ✅ 已实施（commit 见下） | ledger 解释者收敛 `harness_ledger` 单点权威：读取器 `load_validations`（宽容：缺/坏/非 dict 一律 {}）+ 判定器 `all_validations_ok`（终态完整性）/ `find_reusable_evidence`（REUSE 身份匹配）；task.py `_terminal_ledger_state`/`_ledger_verifications` 与 verification.py REUSE 分支全委托（篡改注入 wiring 锁定）；**勘察修正**：verification.py 零生产调用方（休眠协议机器，消费载荷扁平收据契约而非盘上 validations）；拷贝引用化按决策点 4 记 backlog（outcome schema v2 待下次契约窗口） | 内部重构 | F1 |
 | **F4 收据登记** | reference 文档建「收据登记表」：载体/写入方/语义/保留理由；dependsOn 等命名规范 | 文档 + 可选轻代码 | 无 |
 | **F5 归档投递收敛** | TS v2/local-authority 退役（决策点 2）；v1 退役迁移（决策点 3）；push-pull republish stdout 治理 | **跨语言、风险最高** | F1 |
-| **F6 资产通道边界** | outbox 门面命令迁位或文档钉边界；assets/outbox 职责说明 | 轻量 | E3 已就位 |
+| **F6 资产通道边界** ✅ 已实施（2026-09-15） | outbox 门面迁位：`harness_asset_outbox.py` 自带 `status`/`drain` 子命令（参数面不变），`harness_assets.py` 删除 outbox-status/outbox-drain 回归纯回执；SKILL/reference/finish 恢复指引同步更新；退役守卫断言旧子命令被拒 | 轻量 | E3 已就位 |
 
 每批沿用既有工作方式：TDD（减法批次先写「旧路径不存在/新路径唯一」的
 契约测试）→ 全量回归 + doc-contract → 单独提交 → 追加当日记忆。

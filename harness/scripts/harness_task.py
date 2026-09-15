@@ -2422,7 +2422,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
             error_envelope(
                 "ASSET_OUTBOX_ENQUEUE_FAILED",
                 f"outcome 资产入队失败：{exc.message}——任务保持 open，未静默丢失",
-                recovery_action="处理 asset-outbox（outbox-drain/清理死信）后重跑 finish；幂等键去重不重复入队",
+                recovery_action="处理 asset-outbox（harness_asset_outbox.py drain/清理死信）后重跑 finish；幂等键去重不重复入队",
             ),
             as_json,
         )
