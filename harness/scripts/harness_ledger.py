@@ -1154,6 +1154,59 @@ def load_ledger(change_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:
     return data, path
 
 
+def load_validations(change_dir: Path) -> dict[str, Any]:
+    """盘上 ledger validations 的唯一宽容读取器（F3/O6）。
+
+    任何失败（无账本 / 坏 JSON / 非 dict / validations 非 dict）一律
+    返回 {}——调用方不需要区分缺失与损坏，只需要「没有可用验证事实」。
+    """
+    path = find_ledger_path(change_dir)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    validations = data.get("validations")
+    return validations if isinstance(validations, dict) else {}
+
+
+def all_validations_ok(validations: Any) -> bool:
+    """终态账本完整性判定（F3/O6 唯一权威）：非空且每条目 status 全 OK。"""
+    if not isinstance(validations, dict) or not validations:
+        return False
+    return all(
+        isinstance(entry, dict) and entry.get("status") == "OK"
+        for entry in validations.values()
+    )
+
+
+def find_reusable_evidence(
+    entries: list[dict[str, Any]],
+    *,
+    evidence_id: str,
+    target_id: str,
+    product_identity: str,
+) -> dict[str, Any] | None:
+    """REUSE 身份匹配判定（F3/O6 唯一权威）。
+
+    命中条件：evidenceId 精确相等 + targetId（缺省回退 verification 键）
+    精确相等 + productIdentity 精确相等 + status=="OK"；按列表序取首个。
+    """
+    for item in entries:
+        if (
+            str(item.get("evidenceId") or "") == evidence_id
+            and str(item.get("targetId") or item.get("verification") or "")
+            == target_id
+            and str(item.get("productIdentity") or "") == product_identity
+            and item.get("status") == "OK"
+        ):
+            return item
+    return None
+
+
 def write_ledger(path: Path, data: dict[str, Any]) -> None:
     """Atomic ledger write: temp -> fsync -> replace (ledger v3)."""
     path.parent.mkdir(parents=True, exist_ok=True)

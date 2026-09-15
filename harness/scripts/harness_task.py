@@ -1617,33 +1617,13 @@ def _git_commit_scoped(
 
 def _terminal_ledger_state(change_dir: Path) -> bool:
     """终态任务的验证账本完整性：存在、可解析、至少一条且全部 OK。"""
-    ledger_path = hl.find_ledger_path(change_dir)
-    if ledger_path is None:
-        return False
-    try:
-        ledger = read_json_file(ledger_path)
-    except (OSError, ValueError):
-        return False
-    validations = ledger.get("validations") if isinstance(ledger, dict) else None
-    if not isinstance(validations, dict) or not validations:
-        return False
-    return all(
-        isinstance(entry, dict) and entry.get("status") == "OK"
-        for entry in validations.values()
-    )
+    return hl.all_validations_ok(hl.load_validations(change_dir))
 
 
 def _ledger_verifications(change_dir: Path) -> list[dict[str, Any]]:
     """从 ledger 重建 verifications 摘要（恢复路径不重跑验证）。"""
-    ledger_path = hl.find_ledger_path(change_dir)
-    if ledger_path is None:
-        return []
-    try:
-        ledger = read_json_file(ledger_path)
-    except (OSError, ValueError):
-        return []
-    validations = ledger.get("validations") if isinstance(ledger, dict) else None
-    if not isinstance(validations, dict):
+    validations = hl.load_validations(change_dir)
+    if not validations:
         return []
     return [
         {

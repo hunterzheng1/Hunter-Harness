@@ -6,10 +6,17 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import sys
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_ledger as hl  # noqa: E402
 
 
 _COVERAGE_RANK = {"incremental": 0, "module": 1, "module-am": 2, "full": 3}
@@ -251,17 +258,12 @@ def _target_decision(
         evidence_id = str(reuse.get("evidenceId") or "").strip()
         evidence_product = str(reuse.get("productIdentity") or "").strip()
         target_id = str(target.get("id") or "")
-        ledger_match = next(
-            (
-                item
-                for item in verification_ledger
-                if str(item.get("evidenceId") or "") == evidence_id
-                and str(item.get("targetId") or item.get("verification") or "")
-                == target_id
-                and str(item.get("productIdentity") or "") == product_identity
-                and item.get("status") == "OK"
-            ),
-            None,
+        # F3/O6：REUSE 身份匹配语义收敛 harness_ledger 单一权威判定器
+        ledger_match = hl.find_reusable_evidence(
+            verification_ledger,
+            evidence_id=evidence_id,
+            target_id=target_id,
+            product_identity=product_identity,
         )
         if (
             str(target.get("reusePolicy") or "") != "ledger-exact"

@@ -1,7 +1,7 @@
 # O6 内部职责收敛与旧路径退役 — 设计文档（工作包 F）
 
-> 状态：**F1、F2 已实施（2026-09-14）**；§0 决策点已由用户裁决采纳建议值；
-> F3～F6 待实施。决策点 6（dependsOn 改名）经 F2 勘察复核发现前提不成立，
+> 状态：**F1、F2、F3 已实施（2026-09-14/15）**；F4 已提前完成（与 F2 同批登记）；
+> F5、F6 待实施。决策点 6（dependsOn 改名）经 F2 勘察复核发现前提不成立，
 > 经重裁决定为 **B：永久仅文档消歧**——见 §0 表内批注。
 > 本文落实任务书 `review-remediation-execution-2026-09-12.md` §12（O6），
 > 对应实施顺序表工作包 **F**。
@@ -75,7 +75,13 @@
   607/738/1283/1660/2981/3068/5591/6325，自带候选路径逻辑）。🔴
 - **独立解释者**：`harness_task._ledger_verifications`（:1650）vs
   `harness_verification.py` REUSE 判定（:251-272，自实现 evidenceId/
-  productIdentity 匹配语义）。🔴 同一证据两套解读。
+  productIdentity 匹配语义）。🔴 ~~同一证据两套解读~~
+  **F3 勘察修正**：后者实为休眠协议机器——全仓零生产调用方（CLI-only），
+  消费载荷内扁平收据列表（evidenceId/targetId/productIdentity/status
+  契约），与盘上 validations 条目模式（command/scope/*Hash/status/
+  durationMs，无 evidenceId/productIdentity）并非同一表示。准确表述：
+  同一证据语义的两种表示，一生一休眠；判定语义仍须收编单一权威，
+  防未来接线时分叉。
 - **派生拷贝链**：ledger → outcome.facts.verifications（task.py:240-247）
   → summary-data 聚合（archive.py:5551+）。三层同事实。
 - **判定**：🔴 双实现 + 双解释者 + 三层拷贝 → F1（双实现）/ F3（拷贝，决策点 4）。
@@ -160,7 +166,7 @@
 | 1 | ~~gate-policy.json 文档构建双写入方~~ **F2 已收敛** | `harness_gate.persist_gate_policy` 唯一入口（classify/bootstrap-plan/task finish 三写点）；字段修补与 TS 回写为异质写语义已登记 | F2 ✅ |
 | 2 | TS archive-outbox v2 / local-authority 空转 | 零生产调用方、测试独占、barrel 未导出 | F5（决策点 2） |
 | 3 | ~~load_ledger 双实现~~ **F1 已收敛** | harness_archive.load_ledger 委托 harness_ledger；候选优先级统一为 ledger 权威顺序（evidence/ 跨 root 优先） | F1 ✅ |
-| 4 | ledger 双解释者 | task.py:1650 vs verification.py:251-272 | F3 |
+| 4 | ~~ledger 双解释者~~ **F3 已收敛** | 共享读取器 `hl.load_validations` + 判定器 `hl.all_validations_ok` / `hl.find_reusable_evidence` 为唯一权威；task.py 两生产解释者与 verification.py REUSE 分支委托（篡改注入 wiring 锁定）；勘察修正：verification.py 零生产调用方（休眠协议机器），两者实为两种表示而非同一证据两套解读 | F3 ✅ |
 | 5 | 验证事实三层拷贝 | ledger→outcome.facts→summary-data | F3（决策点 4） |
 | 6 | ~~原子写重复 + 私有跨用~~ **F1 已收敛 task/gate/context**；其余 7 份保留（§1.9 依赖环约束） | — | F1 ✅ / backlog |
 | 7 | 归档投递双轨 | Python republish(:10892) vs TS outbox v1 半接线 | F5（决策点 3） |
@@ -176,7 +182,7 @@
 |----|------|------|------|
 | **F1 基础设施去重** ✅ 已实施（commit 见下） | 原子写收敛 harness_state（task/gate 调用点迁移 + 删除两份实现）；archive.load_ledger 委托 harness_ledger（{}透传保持 min-set 语义）；task/context 消除 hg._write_json 私有跨用；**附带修复**：`harness_ledger._state_dir` 补无 git 环境的项目根路径形态推导（对齐 archive.find_project_root 长期行为，修复委托暴露的解析分叉）；E3 容量测试时间戳同刻抖动修正 | 纯内部重构，零行为变化 | 无 |
 | **F2 tier 单一权威** ✅ 已实施（commit 见下） | gate-policy 文档构建收敛 `persist_gate_policy` 单入口（classify/bootstrap/finish 三写点 + 源码守卫红测）；tier 收敛为「一处权威 + 投影」（task.json.tier 投影自 persist 返回的权威文档，篡改注入 wiring 测试锁定）；字段修补/TS 回写异质写语义登记；dependsOn 改名**经重裁决取消**（决策点 6 前提证伪，最终裁定 B：永久仅文档消歧，三义登记表已落 harness-task/reference.md） | 内部重构 | F1 |
-| **F3 验证事实治理** | ledger 双解释者收敛（共享读取器/判定器）；拷贝引用化记入 backlog（决策点 4） | 内部重构 | F1 |
+| **F3 验证事实治理** ✅ 已实施（commit 见下） | ledger 解释者收敛 `harness_ledger` 单点权威：读取器 `load_validations`（宽容：缺/坏/非 dict 一律 {}）+ 判定器 `all_validations_ok`（终态完整性）/ `find_reusable_evidence`（REUSE 身份匹配）；task.py `_terminal_ledger_state`/`_ledger_verifications` 与 verification.py REUSE 分支全委托（篡改注入 wiring 锁定）；**勘察修正**：verification.py 零生产调用方（休眠协议机器，消费载荷扁平收据契约而非盘上 validations）；拷贝引用化按决策点 4 记 backlog（outcome schema v2 待下次契约窗口） | 内部重构 | F1 |
 | **F4 收据登记** | reference 文档建「收据登记表」：载体/写入方/语义/保留理由；dependsOn 等命名规范 | 文档 + 可选轻代码 | 无 |
 | **F5 归档投递收敛** | TS v2/local-authority 退役（决策点 2）；v1 退役迁移（决策点 3）；push-pull republish stdout 治理 | **跨语言、风险最高** | F1 |
 | **F6 资产通道边界** | outbox 门面命令迁位或文档钉边界；assets/outbox 职责说明 | 轻量 | E3 已就位 |
