@@ -428,60 +428,16 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     expect(vi.mocked(deps.stderr).mock.calls.join("")).toContain("网络暂不可用");
   });
 
-  it("keeps explicit Archive publish outside ordinary preview and never builds a package", async () => {
-    const archiveResponse = {
-      schema_version: 1 as const, operation: "archive_publish" as const,
-      retry: { retryable: false, reason_code: null },
-      result: { outcome: "stored" as const, sync_receipt: {}, ack: {}, cleanup_intent: null }
-    } as never;
-    const dispatch = vi.fn(async () => archiveResponse);
-    const deps = {
-      ...dependencies(dispatch),
-      pushPullArchive: vi.fn(async () => ({
-        claim: { entry_id: "outbox-1" }, source_ref: { ...sourceRef, change_key: "change-7" },
-        retention_policy: "retain"
-      }))
-    } as unknown as CliDependencies;
-
-    expect(await runCli([
-      "harness-push", "--scope", "archive", "--change", "change-7", "--yes", "--json"
-    ], deps)).toBe(0);
-
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "archive_publish",
-      claim: { entry_id: "outbox-1" }
-    }));
-    expect(JSON.stringify(vi.mocked(dispatch).mock.calls)).not.toContain("preview");
-    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
-      schema_version: 1,
-      command: "push",
-      dry_run: false,
-      ok: true,
-      exit_code: 0,
-      project_id: "prj_cli",
-      summary: { status: "stored" },
-      items: [{ outcome: "stored" }],
-      warnings: [],
-      errors: []
-    });
-  });
-
-  it("previews Archive locally without acquiring a claim or dispatching transport", async () => {
+  it("previews Archive locally without dispatching transport", async () => {
     const dispatch = vi.fn();
-    const resolveArchive = vi.fn();
-    const deps = {
-      ...dependencies(dispatch),
-      pushPullArchive: resolveArchive
-    } as unknown as CliDependencies;
+    const deps = dependencies(dispatch);
 
-    // A dry run still must not take a lease, but it can report what a real run
-    // would find instead of failing with a bare code.
+    // O6 F5b：outbox claim 链已退役；dry-run 只经 republish --dry-run 预览。
     expect(await runCli([
       "harness-push", "--scope", "archive", "--change", "change-7",
       "--dry-run", "--json", "--non-interactive"
     ], deps)).toBe(0);
 
-    expect(resolveArchive).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
     expect(deps.fetch).not.toHaveBeenCalled();
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
@@ -492,24 +448,17 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
   });
 
-  it("republishes a sealed archive when no outbox claim is pending", async () => {
+  it("republishes a sealed archive through the Python authority path", async () => {
     const dispatch = vi.fn();
-    const resolveArchive = vi.fn(async () => {
-      throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
-    });
     const republishArchive = vi.fn(async () => ({
       ok: true,
       reasonCode: "ARCHIVE_REPUBLISH_COMPLETE",
       archiveSource: "sealed",
       selectedChange: "change-7",
-      fileCount: 2,
-      sizeBytes: 128,
-      buildCount: 1,
       durationMs: 4
     }));
     const deps = {
       ...dependencies(dispatch),
-      pushPullArchive: resolveArchive,
       republishArchive
     } as unknown as CliDependencies;
 
@@ -520,12 +469,13 @@ describe("Stage 03 Push/Pull CLI commands", () => {
 
     expect(dispatch).not.toHaveBeenCalled();
     expect(republishArchive).toHaveBeenCalledWith("change-7", false);
-    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
+    const output = JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""));
+    expect(output).toMatchObject({
       ok: true,
       archive_source: "sealed",
-      selected_change: "change-7",
-      build_count: 1
+      selected_change: "change-7"
     });
+    expect(output).not.toHaveProperty("build_count");
   });
 
   it("fails closed in the default unavailable Port without old HTTP fallback", async () => {

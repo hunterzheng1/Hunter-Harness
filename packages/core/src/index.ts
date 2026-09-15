@@ -31,20 +31,10 @@ export * from "./proposal/diff.js";
 export * from "./proposal/preview.js";
 export * from "./push/credentials.js";
 export * from "./push/push.js";
-export type {
-  ArchiveRemoteAdapter,
-  ArchiveRemotePublishResult
-} from "./archive-remote-adapter/index.js";
-export { createArchiveRemoteAdapter } from "./archive-remote-adapter/index.js";
-export { createArchiveOutbox } from "./archive-outbox/index.js";
 export { createArchivePackageBuilder } from "./archive-package-builder/index.js";
 export { InMemoryArchivePackagePort } from "./archive-package-builder/index.js";
 export { sha256Bytes } from "./fs/hash.js";
 export { stableJson } from "./archive-package-builder/stable.js";
-export type {
-  ArchiveOutboxClaim,
-  ArchiveRetentionPolicy
-} from "./archive-outbox/index.js";
 export type { SourceRef } from "./remote-sync/index.js";
 export {
   InMemoryRemoteSyncV1,
@@ -115,8 +105,6 @@ export type {
   PushPullOrchestration,
   PushPullPreview
 } from "./push-pull-orchestration/types.js";
-export { normalizeArchiveRemoteRequest } from "./archive-remote-adapter/compatibility.js";
-export { snapshotArchiveRemotePublishResult } from "./archive-remote-adapter/validation.js";
 export * from "./plan-decision/index.js";
 export * from "./planning-context/module.js";
 export * from "./plan-artifacts/index.js";

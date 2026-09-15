@@ -8,8 +8,6 @@ import { isProxy } from "node:util/types";
 import {
   uuidV7,
   runPythonJson,
-  type ArchiveOutboxClaim,
-  type ArchiveRetentionPolicy,
   RemoteSyncError,
   type SourceRef
 } from "@hunter-harness/core";
@@ -18,7 +16,6 @@ import { remoteSyncHttpErrorCodeSchema } from "@hunter-harness/contracts";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 import type {
   PushPullCliPort,
-  PushPullCliRequest,
   PushPullCliResult
 } from "../push-pull-adapter/index.js";
 import type { CommandDependencies } from "./configure.js";
@@ -45,6 +42,42 @@ async function findArchiveScript(dependencies: CommandDependencies): Promise<str
   return resolve(candidates[0] as string);
 }
 
+/**
+ * Python `harness_archive.py republish --json` 的权威载荷契约（O6 F5b 决策点 8）。
+ * CLI 只做 fail-closed 校验与透传：业务判定（ok/reasonCode/noChanges/
+ * selectedChange）全部以 payload 为准，不伪造字段、不回退到 CLI 参数。
+ */
+interface ArchiveRepublishPayload {
+  ok: boolean;
+  changeKey?: string;
+  selectedChange?: string;
+  noChanges?: boolean;
+  reasonCode?: string;
+}
+
+function parseArchiveRepublishPayload(value: unknown): ArchiveRepublishPayload {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || isProxy(value)) {
+    throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.ok !== "boolean") throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
+  for (const key of ["changeKey", "selectedChange", "reasonCode"] as const) {
+    if (record[key] !== undefined && typeof record[key] !== "string") {
+      throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
+    }
+  }
+  if (record.noChanges !== undefined && typeof record.noChanges !== "boolean") {
+    throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
+  }
+  return {
+    ok: record.ok,
+    ...(typeof record.changeKey === "string" ? { changeKey: record.changeKey } : {}),
+    ...(typeof record.selectedChange === "string" ? { selectedChange: record.selectedChange } : {}),
+    ...(typeof record.noChanges === "boolean" ? { noChanges: record.noChanges } : {}),
+    ...(typeof record.reasonCode === "string" ? { reasonCode: record.reasonCode } : {})
+  };
+}
+
 export async function runRepublishArchive(
   change: string,
   dryRun: boolean,
@@ -64,19 +97,24 @@ export async function runRepublishArchive(
     args: ["republish", "--change", change, ...(dryRun ? ["--dry-run"] : []), "--json"],
     onStderr: dependencies.stderr,
     budget: { wallTimeoutMs: 180_000, stallTimeoutMs: 60_000, heartbeatMs: 10_000, terminateGraceMs: 2_000 },
-    parse: (value) => value
+    parse: parseArchiveRepublishPayload
   });
-  const payload = result.value !== null && typeof result.value === "object"
-    ? result.value as Record<string, unknown>
-    : {};
-  const ok = payload.ok === true && result.process.exitCode === 0;
+  const payload = result.value;
+  if (payload === null) {
+    // 运行时缺失 / 子进程崩溃 / 载荷畸形：传输层失败，无业务判定可透传
+    return {
+      ok: false, reasonCode: result.reasonCode, archiveSource: "sealed",
+      durationMs: Date.now() - started
+    };
+  }
   return {
-    ...payload,
-    ok,
-    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : result.reasonCode,
+    ok: payload.ok && result.process.exitCode === 0,
+    ...(payload.reasonCode !== undefined || result.reasonCode !== "OK"
+      ? { reasonCode: payload.reasonCode ?? result.reasonCode } : {}),
     archiveSource: "sealed",
-    selectedChange: typeof payload.changeKey === "string" ? payload.changeKey : change,
-    buildCount: 1,
+    ...(payload.selectedChange !== undefined || payload.changeKey !== undefined
+      ? { selectedChange: payload.selectedChange ?? payload.changeKey } : {}),
+    ...(payload.noChanges !== undefined ? { noChanges: payload.noChanges } : {}),
     durationMs: Date.now() - started
   };
 }
@@ -96,22 +134,13 @@ export interface PushPullCommandOptions {
   sensitiveReason?: string;
 }
 
-export interface ArchivePublishInput {
-  claim: ArchiveOutboxClaim;
-  source_ref: SourceRef;
-  retention_policy: ArchiveRetentionPolicy;
-}
-
 export interface ArchiveRepublishResult {
   ok: boolean;
   reasonCode?: string;
   archiveSource: "sealed";
-  selectedChange: string;
-  fileCount?: number;
-  sizeBytes?: number;
-  buildCount?: number;
+  selectedChange?: string;
+  noChanges?: boolean;
   durationMs?: number;
-  [key: string]: unknown;
 }
 
 export interface PushPullCommandDependencies extends CommandDependencies {
@@ -120,7 +149,6 @@ export interface PushPullCommandDependencies extends CommandDependencies {
     direction: "push" | "pull";
     branch?: string;
   }>) => Promise<SourceRef>;
-  pushPullArchive: ((change: string) => Promise<ArchivePublishInput>) | undefined;
   republishArchive: ((change: string, dryRun: boolean) => Promise<ArchiveRepublishResult>) | undefined;
 }
 
@@ -328,11 +356,6 @@ function formatSecurityFindings(
 }
 
 function renderDisplay(response: PushPullCliResult): string {
-  if (response.operation === "archive_publish") {
-    return response.result.outcome === "stored"
-      ? "归档包已上传到 Hunter Platform。\n"
-      : `归档包未上传：${response.retry.reason_code ?? response.result.outcome}。\n`;
-  }
   const detailLines = response.operation === "preview" && response.direction === "pull" &&
     response.result.remote_version !== undefined
     ? [
@@ -502,8 +525,7 @@ async function runArchive(
     throw new Error("PUSH_PULL_ARCHIVE_CHANGE_REQUIRED");
   }
   const change = options.change.trim();
-  // The frozen Archive seam requires a live outbox claim, so a dry run must not
-  // acquire a lease. It can still report what a real run would find.
+  // dry-run 只预览、不上传；republish --dry-run 是权威预览链。
   if (options.dryRun === true) {
     const matches = await localArchiveDirs(dependencies.cwd, change);
     if ((matches.length > 0 || change === "latest") && dependencies.republishArchive !== undefined) {
@@ -516,8 +538,7 @@ async function runArchive(
           warnings: [], errors: result.ok ? [] : [{ code: result.reasonCode ?? "ARCHIVE_REPUBLISH_FAILED", message: "归档补传预览失败" }],
           outcome: result.noChanges === true ? "no_changes" : result.ok ? "preview" : "failed",
           archive_source: result.archiveSource,
-          selected_change: result.selectedChange,
-          build_count: result.buildCount ?? 0,
+          ...(result.selectedChange !== undefined ? { selected_change: result.selectedChange } : {}),
           duration_ms: result.durationMs ?? 0
         })
         : JSON.stringify(result) + "\n");
@@ -537,66 +558,26 @@ async function runArchive(
       : archiveRepublishHint(change, matches));
     return 0;
   }
-  if (dependencies.pushPullArchive === undefined) throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
-  let input: ArchivePublishInput;
-  try {
-    input = await dependencies.pushPullArchive(change);
-  } catch (error) {
-    // An absent claim is the normal state for anything already published; it is
-    // not an outage, and telling the operator "unavailable" hides the real route.
-    if (error instanceof Error && error.message === "PUSH_PULL_ARCHIVE_UNAVAILABLE") {
-      if (dependencies.republishArchive !== undefined) {
-        const result = await dependencies.republishArchive(change, false);
-        const exitCode = result.ok ? 0 : 1;
-        dependencies.stdout(options.json === true
-          ? serializeCliResult({
-            schema_version: 1, command: "push", request_id: uuidV7(), dry_run: false,
-            ok: result.ok, exit_code: exitCode, project_id: null,
-            summary: { planned: 1, applied: result.ok ? 1 : 0 }, items: [result],
-            warnings: [], errors: result.ok ? [] : [{ code: result.reasonCode ?? "ARCHIVE_REPUBLISH_FAILED", message: "归档补传失败" }],
-            outcome: result.noChanges === true ? "no_changes" : result.ok ? "stored" : "failed",
-            archive_source: result.archiveSource,
-            selected_change: result.selectedChange,
-            build_count: result.buildCount ?? 0,
-            duration_ms: result.durationMs ?? 0
-          })
-          : JSON.stringify(result) + "\n");
-        return exitCode;
-      }
-      dependencies.stderr(archiveRepublishHint(change, await localArchiveDirs(dependencies.cwd, change)));
-      throw new Error("PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM", { cause: error });
-    }
-    throw error;
+  // O6 F5b：TS outbox claim→publish→ack 链零生产调用方，已整体退役；
+  // Python republish 是归档投递的唯一权威链。
+  if (dependencies.republishArchive === undefined) {
+    dependencies.stderr(archiveRepublishHint(change, await localArchiveDirs(dependencies.cwd, change)));
+    throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
   }
-  if (options.yes !== true) {
-    if (options.nonInteractive === true) throw new Error("PUSH_PULL_CONFIRMATION_REQUIRED");
-    if (!/^(?:y|yes)$/i.test((await dependencies.prompt(
-      `确认上传既有归档包 ${change}？[y/N]：`
-    )).trim())) return 2;
-  }
-  const response = await dependencies.pushPull.dispatch({
-    schema_version: 1, operation: "archive_publish", ...input
-  } as PushPullCliRequest);
-  if (response.operation !== "archive_publish") throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
-  const exitCode = response.retry.retryable ? 4 : response.result.outcome === "stored" ? 0 : 5;
-  if (options.json === true) {
-    dependencies.stdout(serializeCliResult({
-      schema_version: 1,
-      command: "push",
-      request_id: uuidV7(),
-      dry_run: false,
-      ok: exitCode === 0,
-      exit_code: exitCode,
-      project_id: input.source_ref.project_id,
-      summary: { status: response.result.outcome },
-      items: [response.result],
-      warnings: response.retry.retryable && response.retry.reason_code !== null
-        ? [response.retry.reason_code] : [],
-      errors: exitCode === 5
-        ? [{ code: response.retry.reason_code ?? "ARCHIVE_PUBLISH_FAILED",
-            message: "归档包未上传" }] : []
-    }));
-  } else dependencies.stdout(renderDisplay(response));
+  const result = await dependencies.republishArchive(change, false);
+  const exitCode = result.ok ? 0 : 1;
+  dependencies.stdout(options.json === true
+    ? serializeCliResult({
+      schema_version: 1, command: "push", request_id: uuidV7(), dry_run: false,
+      ok: result.ok, exit_code: exitCode, project_id: null,
+      summary: { planned: 1, applied: result.ok ? 1 : 0 }, items: [result],
+      warnings: [], errors: result.ok ? [] : [{ code: result.reasonCode ?? "ARCHIVE_REPUBLISH_FAILED", message: "归档补传失败" }],
+      outcome: result.noChanges === true ? "no_changes" : result.ok ? "stored" : "failed",
+      archive_source: result.archiveSource,
+      ...(result.selectedChange !== undefined ? { selected_change: result.selectedChange } : {}),
+      duration_ms: result.durationMs ?? 0
+    })
+    : JSON.stringify(result) + "\n");
   return exitCode;
 }
 

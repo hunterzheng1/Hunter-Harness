@@ -1,16 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFile } from "node:fs/promises";
-
-import {
-  InMemoryArchiveOutboxPort,
-  createArchiveOutbox,
-  stableHash as outboxStableHash
-} from "../../core/src/archive-outbox/index.js";
-import {
-  sha256Bytes,
-  stableHash as packageStableHash,
-  type ArchivePackageReceipt
-} from "../../core/src/archive-package-builder/index.js";
 
 import {
   PushPullCliAdapterError,
@@ -28,41 +16,6 @@ const interaction = {
   source_mode: "current" as const,
   scopes: ["rules"] as const
 };
-
-async function claimedPackage() {
-  const bytes = new TextEncoder().encode("immutable archive bytes");
-  const fixture = JSON.parse(await readFile(new URL(
-    "../../core/test/fixtures/archive-package-builder-v2-current.json", import.meta.url
-  ), "utf8")) as ArchivePackageReceipt;
-  const { receipt_hash: ignored, ...body } = fixture;
-  void ignored;
-  const current = { ...body, package_sha256: sha256Bytes(bytes), package_size_bytes: bytes.byteLength };
-  const receipt = { ...current, receipt_hash: packageStableHash(current) } as ArchivePackageReceipt;
-  const port = new InMemoryArchiveOutboxPort({ clock: () => new Date("2026-08-13T11:00:00.000Z") });
-  const outbox = createArchiveOutbox({
-    port,
-    package_verifier: { async verify(input) {
-      const expected_immutable_identity = outboxStableHash(input);
-      const evidence = {
-        schema_version: 1 as const, verdict: "verified" as const,
-        package_operation_id: input.package_receipt.package_operation_id,
-        receipt_hash: input.package_receipt.receipt_hash,
-        package_sha256: input.package_receipt.package_sha256,
-        manifest_sha256: input.package_receipt.manifest_sha256,
-        local_zip_ref_id: input.local_zip_ref.ref_id,
-        local_zip_size_bytes: input.local_zip_ref.size_bytes,
-        expected_immutable_identity, verified_at: "2026-08-13T10:30:00.000Z"
-      };
-      const evidence_hash = outboxStableHash(evidence);
-      return { ...evidence, evidence_hash,
-        verification_id: `archive_outbox_package_verification:${evidence_hash.slice(7)}` as const };
-    } }
-  });
-  const record = await outbox.enqueue({ package_receipt: receipt,
-    local_zip_ref: { ref_id: "local_zip:cli", package_sha256: receipt.package_sha256,
-      size_bytes: bytes.byteLength } });
-  return { outbox, claim: await outbox.claim(record.entry_id, "cli-test", 60_000) };
-}
 
 function orchestration() {
   return {
@@ -241,39 +194,6 @@ describe("PushPullCliPort", () => {
       result: { confirmation_id: "confirmation-1" }
     });
     expect(module.confirmPush).toHaveBeenCalledWith("preview-1", decision);
-  });
-
-  it("keeps archive publish as an independent optional capability", async () => {
-    const module = orchestration();
-    const setup = await claimedPackage();
-    const publishClaim = vi.fn(async () => ({
-      outcome: "retry_scheduled" as const, reason_code: "REMOTE_UNAVAILABLE",
-      nack: await setup.outbox.nack(setup.claim, "REMOTE_UNAVAILABLE", true),
-      cleanup_intent: null
-    }));
-    const port = createPushPullCliPort({
-      orchestration: module,
-      archive: { publishClaim, declineUpload: vi.fn() } as never
-    });
-    const claim = setup.claim;
-    const source_ref = { project_id: claim.record.project_id, branch_name: "main",
-      commit_sha: "abc", client_id: "cli_alpha", change_key: claim.record.change_identity };
-
-    const result = await port.dispatch({
-      schema_version: 1,
-      operation: "archive_publish",
-      claim,
-      source_ref,
-      retention_policy: "retain"
-    } as never);
-
-    expect(result).toMatchObject({
-      operation: "archive_publish",
-      retry: { retryable: true, reason_code: "REMOTE_UNAVAILABLE" },
-      result: { outcome: "retry_scheduled" }
-    });
-    expect(publishClaim).toHaveBeenCalledOnce();
-    expect(module.buildPushPreview).not.toHaveBeenCalled();
   });
 
   it("fails closed asynchronously when the requested capability is unavailable", async () => {
@@ -481,39 +401,4 @@ describe("PushPullCliPort", () => {
     expect(confirmGetter).not.toHaveBeenCalled();
   });
 
-  it("rejects a hostile Archive output without reading it", async () => {
-    const setup = await claimedPackage();
-    const outputGetter = vi.fn(() => "retry_scheduled");
-    const hostileOutput = Object.defineProperty({}, "outcome",
-      { enumerable: true, get: outputGetter });
-    const publishClaim = vi.fn(async () => hostileOutput as never);
-    const port = createPushPullCliPort({
-      archive: { publishClaim, declineUpload: vi.fn() } as never
-    });
-    await expect(port.dispatch({
-      schema_version: 1, operation: "archive_publish", claim: setup.claim,
-      source_ref: { project_id: setup.claim.record.project_id, branch_name: "main",
-        commit_sha: "abc", client_id: "cli_alpha", change_key: setup.claim.record.change_identity },
-      retention_policy: "retain"
-    })).rejects.toMatchObject({ code: "PUSH_PULL_CLI_OUTPUT_INVALID" });
-    expect(outputGetter).not.toHaveBeenCalled();
-  });
-
-  it("rejects an incomplete archive claim before the Archive Port", async () => {
-    const publishClaim = vi.fn();
-    const port = createPushPullCliPort({
-      archive: { publishClaim, declineUpload: vi.fn() } as never
-    });
-    await expect(port.dispatch({
-      schema_version: 1,
-      operation: "archive_publish",
-      claim: { entry_id: "archive_outbox:missing", lease: {}, record: {} },
-      source_ref: {
-        project_id: "prj_alpha", branch_name: "main", commit_sha: "abc",
-        client_id: "cli_alpha", change_key: "change-1"
-      },
-      retention_policy: "retain"
-    })).rejects.toMatchObject({ code: "PUSH_PULL_CLI_INPUT_INVALID" });
-    expect(publishClaim).not.toHaveBeenCalled();
-  });
 });

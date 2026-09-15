@@ -1,7 +1,6 @@
 import { isProxy } from "node:util/types";
 
 import type {
-  ArchiveRemoteAdapter,
   PushPullDecisionInput,
   PushPullDirection,
   PushPullInteractionInput,
@@ -9,12 +8,10 @@ import type {
   SourceRef
 } from "@hunter-harness/core";
 import {
-  normalizeArchiveRemoteRequest,
   readPushPullDecisionOutput,
   readPushPullExecutionOutput,
   readPushPullPreviewOutput,
-  explainPushPullPreviewOutput,
-  snapshotArchiveRemotePublishResult
+  explainPushPullPreviewOutput
 } from "@hunter-harness/core";
 
 import { PushPullCliAdapterError } from "./errors.js";
@@ -233,20 +230,14 @@ const noRetry = Object.freeze({ retryable: false, reason_code: null });
 
 export function createPushPullCliPort(dependencies: PushPullCliDependencies): PushPullCliPort {
   const orchestration = dependency(dependencies, "orchestration") as PushPullOrchestration | undefined;
-  const archive = dependency(dependencies, "archive") as ArchiveRemoteAdapter | undefined;
   const buildPushPreview = method(orchestration, "buildPushPreview");
   const buildPullPreview = method(orchestration, "buildPullPreview");
   const confirmPush = method(orchestration, "confirmPush");
   const resolvePull = method(orchestration, "resolvePull");
   const executePush = method(orchestration, "executePush");
   const executePull = method(orchestration, "executePull");
-  const publishClaim = method(archive, "publishClaim");
-  const declineUpload = method(archive, "declineUpload");
   if (orchestration !== undefined && [buildPushPreview, buildPullPreview, confirmPush, resolvePull,
     executePush, executePull].some((candidate) => candidate === undefined)) {
-    throw new PushPullCliAdapterError("PUSH_PULL_CLI_DEPENDENCY_INVALID");
-  }
-  if (archive !== undefined && (publishClaim === undefined || declineUpload === undefined)) {
     throw new PushPullCliAdapterError("PUSH_PULL_CLI_DEPENDENCY_INVALID");
   }
   const confirmations = new Map<string, Readonly<{
@@ -341,31 +332,6 @@ export function createPushPullCliPort(dependencies: PushPullCliDependencies): Pu
         return Object.freeze({ schema_version: 1, operation, direction: direction as PushPullDirection,
           verification: Object.freeze({ status: "verified" as const, preview_hash: result.preview_hash }),
           retry: Object.freeze({ retryable: result.status === "retryable", reason_code }), result });
-      }
-      if (operation === "archive_publish") {
-        if (!exact(request,
-          ["schema_version", "operation", "claim", "source_ref", "retention_policy"])) {
-          throw new PushPullCliAdapterError("PUSH_PULL_CLI_INPUT_INVALID");
-        }
-        const normalized = normalizeArchiveRemoteRequest({
-          schema_version: 1,
-          claim: valueAt(request, "claim"),
-          source_ref: valueAt(request, "source_ref"),
-          retention_policy: valueAt(request, "retention_policy")
-        });
-        if (!normalized.ok || normalized.readiness !== "ready") {
-          throw new PushPullCliAdapterError("PUSH_PULL_CLI_INPUT_INVALID");
-        }
-        if (publishClaim === undefined) throw new PushPullCliAdapterError("PUSH_PULL_CLI_UNAVAILABLE", true);
-        const rawResult = await publishClaim.call(archive, normalized.claim, normalized.source_ref,
-          normalized.retention_policy);
-        const result = snapshotArchiveRemotePublishResult(rawResult, normalized.claim,
-          normalized.retention_policy);
-        if (result === undefined) throw new PushPullCliAdapterError("PUSH_PULL_CLI_OUTPUT_INVALID");
-        const retryable = result.outcome === "retry_scheduled";
-        const reason_code = result.outcome === "stored" ? null : result.reason_code;
-        return Object.freeze({ schema_version: 1, operation,
-          retry: Object.freeze({ retryable, reason_code }), result });
       }
       throw new PushPullCliAdapterError("PUSH_PULL_CLI_INPUT_INVALID");
     }

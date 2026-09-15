@@ -18,8 +18,6 @@ import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-final
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
 import { runPlanReviewRecord, type PlanReviewRecordOptions } from "./commands/plan-review-record.js";
 import { runPlanPublish, type PlanPublishOptions } from "./commands/plan-publish.js";
-import { runArchiveOutboxGc, type ArchiveOutboxGcOptions } from "./commands/archive-outbox-gc.js";
-import { composeArchiveProduction } from "./archive-production/compose.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   runArchiveUpload,
@@ -97,7 +95,6 @@ import {
   resolvePushPullSource,
   runPushPull,
   runRepublishArchive,
-  type ArchivePublishInput,
   type ArchiveRepublishResult,
   type PushPullCommandOptions
 } from "./commands/push-pull.js";
@@ -120,14 +117,12 @@ export interface CliDependencies extends Partial<CommandDependencies> {
     direction: "push" | "pull";
     branch?: string;
   }>) => Promise<SourceRef>;
-  pushPullArchive?: (change: string) => Promise<ArchivePublishInput>;
   republishArchive?: (change: string, dryRun: boolean) => Promise<ArchiveRepublishResult>;
 }
 
 interface ResolvedCliDependencies extends CommandDependencies {
   pushPull: PushPullCliPort;
   pushPullSource: NonNullable<CliDependencies["pushPullSource"]>;
-  pushPullArchive: CliDependencies["pushPullArchive"] | undefined;
   republishArchive: NonNullable<CliDependencies["republishArchive"]>;
 }
 
@@ -266,53 +261,22 @@ async function defaultDependencies(
     promptSecret: overrides.promptSecret ?? overrides.prompt ?? promptSecret,
     fetch: overrides.fetch ?? globalThis.fetch,
     env,
-    // 06B-3 W4：archive 生产组合单实例（adapter 的 zip_reader 与 claim 供应共享项目上下文）
-    ...(overrides.pushPullArchive === undefined && remoteOrchestration !== undefined
-      ? (() => {
-          const archiveComposition = composeArchiveProduction({
-            projectRoot: overrides.cwd ?? process.cwd(),
-            publisher: remoteSyncModule as never,
-            resolveSource: () =>
-              resolvePushPullSource(overrides.cwd ?? process.cwd(), { direction: "push" })
-          });
-          return {
-            pushPull: overrides.pushPull ?? createPushPullCliPort({
-              orchestration: remoteOrchestration,
-              archive: archiveComposition.remoteAdapter as never
-            }),
-            pushPullSource: overrides.pushPullSource ?? ((input) =>
-              resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
-            pushPullArchive: archiveComposition.pushPullArchive
-            ,republishArchive: overrides.republishArchive ?? ((change, dryRun) =>
-              runRepublishArchive(change, dryRun, {
-                cwd: overrides.cwd ?? process.cwd(),
-                resourcesRoot: overrides.resourcesRoot ?? process.cwd(),
-                stdout: () => undefined,
-                stderr: (value) => process.stderr.write(value),
-                prompt: async () => "",
-                fetch: globalThis.fetch,
-                env
-              }))
-          };
-        })()
-      : {
-          pushPull: overrides.pushPull ?? createPushPullCliPort(
-            remoteOrchestration === undefined ? {} : { orchestration: remoteOrchestration }
-          ),
-          pushPullSource: overrides.pushPullSource ?? ((input) =>
-            resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
-          pushPullArchive: overrides.pushPullArchive
-          ,republishArchive: overrides.republishArchive ?? ((change, dryRun) =>
-            runRepublishArchive(change, dryRun, {
-              cwd: overrides.cwd ?? process.cwd(),
-              resourcesRoot: overrides.resourcesRoot ?? process.cwd(),
-              stdout: () => undefined,
-              stderr: (value) => process.stderr.write(value),
-              prompt: async () => "",
-              fetch: globalThis.fetch,
-              env
-            }))
-        }),
+    // O6 F5b：archive outbox 生产接线已退役，pushPull 端口只保留 orchestration
+    pushPull: overrides.pushPull ?? createPushPullCliPort(
+      remoteOrchestration === undefined ? {} : { orchestration: remoteOrchestration }
+    ),
+    pushPullSource: overrides.pushPullSource ?? ((input) =>
+      resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
+    republishArchive: overrides.republishArchive ?? ((change, dryRun) =>
+      runRepublishArchive(change, dryRun, {
+        cwd: overrides.cwd ?? process.cwd(),
+        resourcesRoot: overrides.resourcesRoot ?? process.cwd(),
+        stdout: () => undefined,
+        stderr: (value) => process.stderr.write(value),
+        prompt: async () => "",
+        fetch: globalThis.fetch,
+        env
+      })),
     ...(overrides.terminalColumns !== undefined
       ? { terminalColumns: overrides.terminalColumns }
       : typeof process.stdout.columns === "number"
@@ -503,15 +467,6 @@ export async function runCli(
         { ...program.opts<ArchiveUploadOptions>(), ...options },
         dependencies
       );
-    });
-  const outbox = archive.command("outbox").description("Archive outbox 维护（06B-3 生产接线）");
-  outbox.command("gc")
-    .description("回收终态 outbox 记录引用的 CAS 对象（默认 dry-run，必须显式 --entry 或 --retain-days）")
-    .option("--apply", "实际执行删除（默认只预览）", false)
-    .option("--entry <id...>", "显式 entry_id 列表")
-    .option("--retain-days <n>", "只回收 updated_at 早于 n 天的终态记录")
-    .action(async (options: ArchiveOutboxGcOptions) => {
-      exitCode = await runArchiveOutboxGc(options, dependencies);
     });
   const knowledge = program.command("knowledge")
     .description("访问远端项目知识库（无本地索引或离线回退）");

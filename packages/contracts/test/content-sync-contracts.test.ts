@@ -166,9 +166,6 @@ const legacyFixturePath = fileURLToPath(
 const contentSyncSourcePath = fileURLToPath(
   new URL("../src/content-sync.ts", import.meta.url)
 );
-const archiveOutboxFixturePath = fileURLToPath(
-  new URL("../../core/test/fixtures/archive-outbox-v1-current.json", import.meta.url)
-);
 
 async function readCurrentFixture(): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(currentFixturePath, "utf8")) as Record<string, unknown>;
@@ -182,35 +179,6 @@ describe("stage 01 content and sync contracts", () => {
   it("keeps the shared content-sync contract free of Node builtins", async () => {
     const source = await readFile(contentSyncSourcePath, "utf8");
     expect(source).not.toMatch(/from\s+["']node:/u);
-  });
-
-  it("accepts and exactly echoes the canonical ArchiveOutbox request identity", async () => {
-    const fixture = await readCurrentFixture();
-    const queued = (fixture.archive_ingest_receipts as Record<string, Record<string, unknown>>)
-      .queued;
-    const outbox = JSON.parse(await readFile(archiveOutboxFixturePath, "utf8")) as {
-      request_id: string;
-      idempotency_key: string;
-    };
-    const receipt = {
-      ...queued,
-      request_id: outbox.request_id,
-      idempotency_key: outbox.idempotency_key
-    };
-
-    expect(archiveIngestReceiptSchema.safeParse(receipt).success).toBe(true);
-    expect(readArchiveIngestReceipt(JSON.stringify(receipt))).toEqual({
-      ok: true,
-      value: receipt
-    });
-    expect(archiveIngestReceiptSchema.safeParse({
-      ...receipt,
-      request_id: `archive_request:${"A".repeat(64)}`
-    }).success).toBe(false);
-    expect(archiveIngestReceiptSchema.safeParse({
-      ...receipt,
-      idempotency_key: `kex_${"1".repeat(64)}`
-    }).success).toBe(false);
   });
 
   it("reads canonical archive ingest receipts and fails closed on drift or hostile input", async () => {
