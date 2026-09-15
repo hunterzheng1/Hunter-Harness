@@ -14,8 +14,6 @@ import type { Sha256 } from "../archive-engine/types.js";
  *   JSON.stringify 输出），archive-engine / archive-package-builder / map-v2 用。
  * - `rawStableJson`：字符串拼接模式（**不过滤** undefined 值），
  *   instruction-governance 用（其历史输出即如此，直接改 canonical 会漂移既有哈希）。
- * - `strictLocalAuthorityHash`：raw 模式但遇 undefined / 非有限数抛错，
- *   archive-outbox/local-authority 用。
  *
  * 各子系统的 stable.ts 现在只是本模块的兼容转发层，行为与历史实现逐字节一致。
  */
@@ -59,24 +57,6 @@ export function rawStableJson(value: unknown): string {
 /** raw 模式的 sha256 稳定哈希。 */
 export function rawStableHash(value: unknown): Sha256 {
   return `sha256:${createHash("sha256").update(rawStableJson(value)).digest("hex")}`;
-}
-
-/** local-authority 严格模式：undefined / 非有限数直接拒绝（历史行为即抛错）。 */
-export function strictLocalAuthorityHash(value: unknown): Sha256 {
-  return `sha256:${createHash("sha256").update(rawStrictCanonical(value)).digest("hex")}`;
-}
-
-function rawStrictCanonical(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(rawStrictCanonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) =>
-      `${JSON.stringify(key)}:${rawStrictCanonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  }
-  throw new Error("LOCAL_ARCHIVE_AUTHORITY_INPUT_INVALID");
 }
 
 export function deepFreeze<T>(value: T): T {
