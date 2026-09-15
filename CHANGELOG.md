@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.4.19] — hunter-harness
+
+> O6 责任收敛 TS 侧落地：archive-outbox v1/v2 双双退役，Python republish 成为
+> 唯一归档投递权威。hunter-harness 0.4.18 → 0.4.19，bundle 0.2.82（见下）。
+> 验证：release:preflight（sync + lint + typecheck + 增量测试 + bundle）全绿。
+
+### Changed
+
+- **归档投递权威收敛**（O6-F5b，d2844db）：TS archive-outbox v1 全链退役
+  （claim→publish→ack/nack 命令派发、outbox-gc 命令、production-ports/cas-store/
+  fs-outbox-port/compatibility，净删 4658 行），Python `harness_archive.py
+  republish --json` 成为唯一权威投递路径；CLI republish 仅 fail-closed 校验后
+  透传 payload（不补 buildCount、不回落 selectedChange、不吞畸形输出），
+  cli/core 两侧新增退役守卫测试防回潮。
+- **空转实现清理**（O6-F5a，39c03ec）：退役 archive-outbox v2 与
+  local-authority（自引入起零生产调用方），其模式已由 Python asset-outbox 继承。
+- **outbox 门面迁位配套**（O6-F6，8a17cae）：outbox-status/drain 门面迁入
+  harness_asset_outbox.py，CLI 侧契约与文档引用同步更新。
+
+## [0.4.22] — workflow-harness
+
+> 评审整改闭环（R1-R5）+ O3/O4 资产化 + O6 责任收敛全批落地：
+> workflow-harness 0.4.21 → 0.4.22，bundle 0.2.81 → 0.2.82。
+> hunter-harness 0.4.19 同批发布。
+> 验证：Python 全量 1711/1711 绿 + vitest 160 文件 / 2180 测试 +
+> release:preflight 全绿。
+
+### Added
+
+- **任务实际成果摘要**（WI-E1，2886bc3）：goal 与 outcome 分字段，
+  事实派生模型不可写。
+- **任务依赖与并行写入冲突检测**（WI-3.3，697ace4）：begin 声明写入范围，
+  finish 越界即停止。
+- **增量评审复用**（WI-3.4，9965bb5）：diff-scope 判定 + findings v3
+  评审边界记录。
+- **知识候选资产化**（WI-E2/E3，dcec4a0/a6bfc61）：候选元数据四键 +
+  消费三态回执；Python asset-outbox 落地，finish 原子入队。
+
+### Changed
+
+- **O6 责任收敛全批**（64f1f95→8a17cae）：原子写/账本读取单一权威
+  （WI-F1）、tier 单一权威与 gate-policy 单写入方（WI-F2）、ledger 解释者
+  收敛 harness_ledger 单点（F3）、archive-outbox v2/v1 双双退役（F5a/F5b）、
+  outbox 门面迁位 harness_asset_outbox.py 且 assets 回归纯消费回执（F6）。
+
+### Fixed
+
+- **轻任务链缺陷整改**（R1-R3/O1，1b8a6a6）：风险升级绕过封堵、非完成
+  闭包不提交、归档中断可恢复；缺陷回归红测先行（3f5a6ac）。
+- **CI 证据绑定加固**（R4/R5，c4a08bc）：证据绑定工作区产品树、分片聚合
+  与覆盖档位充分性校验。
+
 ## [0.4.18] — hunter-harness
 
 > 证据驱动交付批次 1-3 的 CLI 侧落地：full 档权威链、风险信号单一权威、
