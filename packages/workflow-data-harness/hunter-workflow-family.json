@@ -1,46 +1,71 @@
 {
   "schema_version": 1,
-  "family_slug": "harness",
-  "display_name": "Harness",
-  "required_profiles": [
-    "general",
-    "java"
-  ],
-  "bundle_version": "0.2.82",
-  "content_sha256": "sha256:ec5b1fc79ba6215437b495b070be6658135bd775a23bdf5858d20f3af479857d",
-  "minimumCliVersion": "0.4.13",
-  "workflowPackageVersion": "0.4.22",
-  "capabilities": [
-    "sync@2",
-    "rules-sync@1",
-    "rules-review@1",
-    "knowledge-sync@3",
-    "build-profile@3",
-    "verification-graph@1",
-    "execution-session@1",
-    "external-convergence@1",
-    "codegraph-status@2",
-    "doctor-capability@1",
-    "registry-governance@1",
-    "remote-sync-push@1",
-    "remote-sync-pull@1"
-  ],
+  "family_id": "hunter-harness",
+  "bundle_version": "1.0.0",
+  "minimumCliVersion": "1.0.0",
+  "workflowPackage": "@hunter-harness/workflow-harness",
+  "workflowPackageVersion": "1.0.0",
+  "bundleHash": "96446d991db6",
+  "releaseTrain": "v1",
+  "projectionLayout": {
+    "mode": "files",
+    "canonicalRoot": "harness",
+    "bundlesRoot": "harness/bundles",
+    "manifestsRoot": "harness/manifests"
+  },
   "requires": {
-    "minimumCliVersion": "0.4.13",
+    "minimumCliVersion": "1.0.0",
     "capabilities": [
+      "sync@1",
       "sync@2",
-      "rules-sync@1",
-      "rules-review@1",
+      "knowledge-sync@2",
       "knowledge-sync@3",
       "build-profile@3",
       "verification-graph@1",
       "execution-session@1",
       "external-convergence@1",
+      "codegraph-status@1",
       "codegraph-status@2",
       "doctor-capability@1",
       "registry-governance@1",
+      "progress-sync@1",
+      "headless-stage@1",
       "remote-sync-push@1",
       "remote-sync-pull@1"
     ]
-  }
+  },
+  "capabilities": [
+    "sync@1",
+    "sync@2",
+    "knowledge-sync@2",
+    "knowledge-sync@3",
+    "build-profile@3",
+    "verification-graph@1",
+    "execution-session@1",
+    "external-convergence@1",
+    "codegraph-status@1",
+    "codegraph-status@2",
+    "doctor-capability@1",
+    "registry-governance@1",
+    "progress-sync@1",
+    "headless-stage@1",
+    "remote-sync-push@1",
+    "remote-sync-pull@1"
+  ],
+  "compatibilityPolicy": {
+    "mode": "gate",
+    "reasonCode": "BLOCKED_CAPABILITY_MISMATCH",
+    "message": "workflow bundle requires newer hunter-harness CLI"
+  },
+  "gates": [
+    "init",
+    "plan",
+    "tasks",
+    "execute",
+    "review",
+    "submit",
+    "archive"
+  ],
+  "cliVersion": "1.0.0",
+  "syncedAt": "2026-09-16T05:36:43.053Z"
 }

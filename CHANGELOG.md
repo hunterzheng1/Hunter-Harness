@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0] — hunter-harness
+
+- **BREAKING**：安装零选择——移除 agent/profile 选择（`--agents`/`--profile`/`--codebuddy-surface`），技能固定投影 `.agents/skills/` 并无条件双写 `.codebuddy/skills/`；指令收敛为 AGENTS.md 单文件受管块（删除 CLAUDE.md/CODEBUDDY.md 受管块）；删除静态 rules 投影（`.harness/rules`、`.claude/rules`）与 `rules-sync`/`instructions`/`rules-review` 命令；归档后自动把高置信规则候选幂等刷新进 AGENTS.md「经验规则」受管段；sync 体检删除 knowledge/rules 伪组件并不再生成 CLAUDE.md；instructions 提案流与知识 asset-receipts 回执整链删除（03980aa；决策明细见 `docs/decisions/2026-09-15-v2-slimming.md`）
+- **新增** `hunter-harness uninstall`：按 manifest + 历史适配器根清单精确删除所有历史版本写入的受管内容（`.agents`/`.claude`/`.cursor`/`.pi`/`.codebuddy` 受管文件、AGENTS.md/CLAUDE.md/CODEBUDDY.md 受管段落、`.mcp.json` harness 条目、`.harness/`）；默认 dry-run，`--yes` 执行，`--keep-data` 保留运行数据，`--global` 清理用户级目录
+- **迁移**：硬切割不兼容 0.x——旧项目执行 `hunter-harness uninstall --yes && hunter-harness init`；旧配置文件中的废弃字段自动剥离并打印 deprecation warning；init/refresh 检测到 0.x 投影残留时给出 uninstall 引导
+- **skill-cli**：install 固定双写 codex+codebuddy（`--agent` 仅可收窄至其一，其余值 exit 3）；upload 的 `--agent`（claude-code/codex/cursor）保留
+
+## [1.0.0] — workflow-harness
+
+- **BREAKING**：移除 Installation Profile 维度（general/java），数据包拍平为单一 bundle；java bundles/manifests 与 `adapt-agent-bundle.mjs` 全链删除；family.json 更名 `hunter-workflow-family.json`（03980aa）
+- `bundle_version` / `workflowPackageVersion` / `minimumCliVersion` 同步 1.0.0，与 0.x CLI/数据包通过 minimumCliVersion 门禁互相拒绝
+
 ## [0.4.19] — hunter-harness
 
 > O6 责任收敛 TS 侧落地：archive-outbox v1/v2 双双退役，Python republish 成为
