@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.1] — hunter-harness
+
+- **修复** `uninstall`：兼容 0.x 旧版安装状态（schema 1-4）——0.x 的 files 记录与 v5 同构且按 bundle 全量清单生成，可直接按状态精确删除，覆盖 `contracts/` 等无前缀附属内容；状态不可解析时退化为 `harness-` 前缀清扫，并对 skills 根下无法验证所有权的 bundle 附属残留给出提示（0b1e238）
+
 ## [1.0.0] — hunter-harness
 
 - **BREAKING**：安装零选择——移除 agent/profile 选择（`--agents`/`--profile`/`--codebuddy-surface`），技能固定投影 `.agents/skills/` 并无条件双写 `.codebuddy/skills/`；指令收敛为 AGENTS.md 单文件受管块（删除 CLAUDE.md/CODEBUDDY.md 受管块）；删除静态 rules 投影（`.harness/rules`、`.claude/rules`）与 `rules-sync`/`instructions`/`rules-review` 命令；归档后自动把高置信规则候选幂等刷新进 AGENTS.md「经验规则」受管段；sync 体检删除 knowledge/rules 伪组件并不再生成 CLAUDE.md；instructions 提案流与知识 asset-receipts 回执整链删除（03980aa；决策明细见 `docs/decisions/2026-09-15-v2-slimming.md`）
