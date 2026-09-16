@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.2] — hunter-harness
+
+- **修复** `uninstall`：0.x 投影面的前缀清扫补齐 `.claude/agents`、`.codebuddy/agents`、`.codebuddy/commands`、`.cursor/commands`、`.codebuddy/.rules`（codebuddy rules 的点前缀双写变体）——0.x adapter 在这些根写入 `harness-*` 文件，而它们此前不在清扫根内，状态缺失时残留无法被删除（02fcda7）
+- **修复** `init`/`refresh` 的旧版投影残留提示同步覆盖上述根（含 `.cursor/rules`），并识别旧版 skills 根下无前缀的 bundle 附属内容（`contracts/`、`scripts/` 等）（02fcda7）
+
 ## [1.0.1] — hunter-harness
 
 - **修复** `uninstall`：兼容 0.x 旧版安装状态（schema 1-4）——0.x 的 files 记录与 v5 同构且按 bundle 全量清单生成，可直接按状态精确删除，覆盖 `contracts/` 等无前缀附属内容；状态不可解析时退化为 `harness-` 前缀清扫，并对 skills 根下无法验证所有权的 bundle 附属残留给出提示（0b1e238）
