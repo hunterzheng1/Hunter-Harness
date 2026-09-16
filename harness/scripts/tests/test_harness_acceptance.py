@@ -35,20 +35,16 @@ class AcceptanceStatsRealTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_skill_counts_match_independent_build_count(self) -> None:
-        # generic build skill count
-        generic = self.tmp / "generic"
-        hd.cmd_build(SKILLS_ROOT, generic, None)
-        independent_generic = len(list(generic.glob("harness-*/SKILL.md")))
-        self.assertEqual(ha.count_skills(generic), independent_generic)
-
-        java = self.tmp / "java"
-        hd.cmd_build(SKILLS_ROOT, java, "java")
-        independent_java = len(list(java.glob("harness-*/SKILL.md")))
-        self.assertEqual(ha.count_skills(java), independent_java)
-        # Java build = 12 base（run/test 已于 0.4.9 并入 harness-execute；
-        # harness-task 于批次 1 加入）+ 2 java-only overlay skills
-        # (harness-apidoc, harness-package)
-        self.assertEqual(independent_java, 14)
+        # v1.0 单一规范树：codex/codebuddy 两个 surface 内容相同。
+        for surface in ("codex", "codebuddy"):
+            build = self.tmp / surface
+            hd.cmd_build(SKILLS_ROOT, build, surface)
+            independent = len(list(build.glob("harness-*/SKILL.md")))
+            self.assertEqual(ha.count_skills(build), independent)
+        # 12 个核心 skill（run/test 已于 0.4.9 并入 harness-execute；
+        # harness-task 于批次 1 加入；java-only 的 harness-apidoc/harness-package
+        # 随 1.0 退役）
+        self.assertEqual(independent, 12)
 
     def test_source_skill_lines_are_real_disk_values(self) -> None:
         lines = ha.source_skill_lines(SKILLS_ROOT)
@@ -62,7 +58,7 @@ class AcceptanceStatsRealTests(unittest.TestCase):
 
     def test_scan_forbidden_detects_and_reports_clean(self) -> None:
         generic = self.tmp / "generic"
-        hd.cmd_build(SKILLS_ROOT, generic, None)
+        hd.cmd_build(SKILLS_ROOT, generic, "codex")
         scan = ha.scan_forbidden(generic)
         # a clean runtime build has no forbidden patterns / UDP tokens
         self.assertEqual(scan["forbiddenPatterns"], [], msg=scan)
@@ -72,8 +68,8 @@ class AcceptanceStatsRealTests(unittest.TestCase):
     def test_collect_file_hashes_detects_byte_identity(self) -> None:
         a = self.tmp / "a"
         b = self.tmp / "b"
-        hd.cmd_build(SKILLS_ROOT, a, None)
-        hd.cmd_build(SKILLS_ROOT, b, None)
+        hd.cmd_build(SKILLS_ROOT, a, "codex")
+        hd.cmd_build(SKILLS_ROOT, b, "codex")
         self.assertEqual(ha.collect_file_hashes(a), ha.collect_file_hashes(b))
         # tamper one file -> hashes differ
         skill = next(a.glob("harness-*/SKILL.md"))
@@ -118,7 +114,7 @@ class AcceptanceStatsRealTests(unittest.TestCase):
         self.assertNotIn("finalSummaryNotFabricated", report["d13"])
         # skillCounts are real (build_once is not patched)
         generic = self.tmp / "g"
-        hd.cmd_build(SKILLS_ROOT, generic, None)
+        hd.cmd_build(SKILLS_ROOT, generic, "codex")
         self.assertEqual(report["skillCounts"]["core"], len(list(generic.glob("harness-*/SKILL.md"))))
         # archive must not be mutated
         self.assertFalse(report["archiveMutated"], "acceptance must not modify .harness/archive/**")

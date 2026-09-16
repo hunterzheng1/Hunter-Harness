@@ -870,7 +870,7 @@ class HarnessContextTest(unittest.TestCase):
             self.assertEqual(configured["plannedPhases"], ["plan", "execute", "archive"])
             self.assertEqual(
                 [item["phase"] for item in configured["skippedPhases"]],
-                ["review", "package", "apidoc", "submit"],
+                ["review", "submit"],
             )
 
             prepared = CONTEXT.prepare_context(

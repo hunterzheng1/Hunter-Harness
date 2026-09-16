@@ -61,10 +61,10 @@ describe("Remote Sync HTTP v1 shared contract", () => {
       skipped: []
     };
     const file = {
-      path: ".harness/rules/a.md",
+      path: ".harness/codebase/map/architecture.md",
       content_hash: `sha256:${"3".repeat(64)}`,
       size: 3,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       upload_ref: { ref_id: `bounded_upload:${"A".repeat(43)}`, sha256: `sha256:${"3".repeat(64)}`, size_bytes: 3 }
     };
     expect(remoteSyncPushPrepareHttpRequestSchema.safeParse({ ...base, files: [file] }).success).toBe(true);
@@ -125,17 +125,17 @@ describe("Remote Sync HTTP v1 shared contract", () => {
     const snapshot = {
       source, snapshot_id: "snapshot_1", revision: "4", project_version: "pv_4",
       commit_sha: "commit_4", artifact_id: "art_4", manifest_hash: hash,
-      files: [{ path: ".harness/rules/a.md", content_hash: hash, size: 2, content_kind: "rule" }]
+      files: [{ path: ".harness/codebase/map/architecture.md", content_hash: hash, size: 2, content_kind: "architecture" }]
     };
     expect(remoteSyncRemoteSnapshotHttpResponseSchema.safeParse(snapshot).success).toBe(true);
     expect(remoteSyncRemoteSnapshotHttpResponseSchema.safeParse({
       ...snapshot, files: [{ ...snapshot.files[0], content: "YQo=" }]
     }).success).toBe(false);
     expect(remoteSyncContentStreamHttpRequestSchema.safeParse({
-      source, path: ".harness/rules/a.md", snapshot_id: "snapshot_1", expected_revision: "4"
+      source, path: ".harness/codebase/map/architecture.md", snapshot_id: "snapshot_1", expected_revision: "4"
     }).success).toBe(true);
     expect(remoteSyncContentStreamHttpRequestSchema.safeParse({
-      source, path: ".harness/rules/a.md"
+      source, path: ".harness/codebase/map/architecture.md"
     }).success).toBe(false);
     expect(remoteSyncContentStreamHttpChunkSchema.safeParse({
       sequence: 0, offset: 0, size: 1, chunk_hash: hash, final: true
@@ -162,9 +162,9 @@ describe("Remote Sync HTTP v1 shared contract", () => {
     const prepare = {
       source, lease, expected_revision: "4", preview_hash: hash, idempotency_key: "push_1",
       payload_hash: hash,
-      files: [{ path: ".harness/rules/a.md", content_hash: hash, size: 2, content_kind: "rule",
+      files: [{ path: ".harness/codebase/map/architecture.md", content_hash: hash, size: 2, content_kind: "architecture",
         upload_ref: { ref_id: `bounded_upload:${"A".repeat(43)}`, sha256: hash, size_bytes: 2 } }],
-      operations: [{ path: ".harness/rules/a.md", content_kind: "rule", action: "modify", remote_hash: hash }],
+      operations: [{ path: ".harness/codebase/map/architecture.md", content_kind: "architecture", action: "modify", remote_hash: hash }],
       skipped: []
     };
     expect(remoteSyncPushPrepareHttpRequestSchema.safeParse(prepare).success).toBe(true);

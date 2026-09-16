@@ -26,8 +26,6 @@ export const PLAN_PHASES = [
   "plan",
   "execute",
   "review",
-  "package",
-  "apidoc",
   "submit",
   "merge",
   "archive"

@@ -319,8 +319,9 @@ export async function synchronizeArtifacts(
       {
         base_project_version: baseline.complete_project_version,
         base_manifest_hash: sha256Bytes(canonicalJson(baseline)),
-        adapter: options.project.adapters.enabled[0] ?? "claude-code",
-        profile: options.project.project.profiles[0] ?? "general"
+        // v1.0: fixed single projection identity (canonical surface + general profile).
+        adapter: "codex",
+        profile: "general"
       },
       options.requestId
     );

@@ -50,8 +50,6 @@ describe("guarded default CLI", () => {
     const output = outputCapture();
 
     expect(await runCli([
-      "--profile",
-      "general",
       "--non-interactive",
       "--yes",
       "--recovery-root",
@@ -73,7 +71,7 @@ describe("guarded default CLI", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-explicit-init-"));
     const first = outputCapture();
     expect(await runCli([
-      "init", "--profile", "general", "--non-interactive", "--yes", "--json"
+      "init", "--non-interactive", "--yes", "--json"
     ], {
       cwd: root,
       ...first.dependencies
@@ -85,7 +83,7 @@ describe("guarded default CLI", () => {
 
     const second = outputCapture();
     expect(await runCli([
-      "init", "--profile", "general", "--non-interactive", "--yes", "--json"
+      "init", "--non-interactive", "--yes", "--json"
     ], {
       cwd: root,
       ...second.dependencies
@@ -103,7 +101,7 @@ describe("guarded default CLI", () => {
     // 种子：init 只做一次，拷贝复用；本用例关注的是二次裸命令的字节稳定性。
     await seededInit(root, "guarded-default-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes", "--json"
+        "--non-interactive", "--yes", "--json"
       ], {
         cwd: seedRoot,
         ...first.dependencies
@@ -139,7 +137,7 @@ describe("guarded default CLI", () => {
     const init = outputCapture();
     await seededInit(root, "guarded-default-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...init.dependencies
@@ -169,13 +167,13 @@ describe("guarded default CLI", () => {
     const init = outputCapture();
     await seededInit(root, "guarded-default-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...init.dependencies
       }), init.stderr.join("")).toBe(0);
     });
-    const target = join(root, ".claude", "agents", "harness-reviewer.md");
+    const target = join(root, ".agents", "skills", "harness-review", "SKILL.md");
     await writeFile(target, "operator-owned content\n");
     const output = outputCapture();
 
@@ -189,7 +187,7 @@ describe("guarded default CLI", () => {
     const parsed = JSON.parse(output.stdout.join(""));
     expect(parsed.summary.conflicts).toBeGreaterThan(0);
     expect(parsed.items).toContainEqual(expect.objectContaining({
-      target_path: ".claude/agents/harness-reviewer.md",
+      target_path: ".agents/skills/harness-review/SKILL.md",
       status: "preserved"
     }));
   });
@@ -202,8 +200,6 @@ describe("guarded default CLI", () => {
     const output = outputCapture();
 
     expect(await runCli([
-      "--profile",
-      "general",
       "--non-interactive",
       "--yes",
       "--recovery-root",

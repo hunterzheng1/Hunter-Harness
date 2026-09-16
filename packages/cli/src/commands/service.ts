@@ -45,8 +45,8 @@ async function findServiceScript(
   name: string
 ): Promise<string> {
   const candidates = [
-    join(dependencies.resourcesRoot, "harness", "bundles", "general", "codex", "scripts", name),
-    join(dependencies.resourcesRoot, "harness", "bundles", "general", "claude-code", "scripts", name),
+    join(dependencies.resourcesRoot, "harness", "bundles", "codex", "scripts", name),
+    join(dependencies.resourcesRoot, "harness", "bundles", "codebuddy", "scripts", name),
     join(dependencies.resourcesRoot, "scripts", name),
     join(dependencies.cwd, "harness", "scripts", name),
     join(dependencies.cwd, name)

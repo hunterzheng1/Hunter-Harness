@@ -65,30 +65,30 @@ describe("PushPullOrchestration v1", () => {
     // 跨层回归：扫描停用契约给 security_scan 加了 scan_performed，而 CLI 侧
     // readPushPullPreviewOutput 仍要求旧 5 键集合——所有 preview 被自家校验器
     // 拒绝为 PUSH_PULL_CLI_OUTPUT_INVALID。此处用真实模块产出喂真实校验器。
-    const rule = file(".harness/rules/a.md", "rule", "rule\n");
+    const rule = file(".harness/codebase/map/a.md", "architecture", "rule\n");
     const { interaction } = engine({ local_files: [rule], remote_files: [] });
-    const pushPreview = await interaction.buildPushPreview(input(["rules"]));
-    expect(readPushPullPreviewOutput(pushPreview, "push", input(["rules"]))).toBeDefined();
-    const pullPreview = await interaction.buildPullPreview(input(["rules"]));
-    expect(readPushPullPreviewOutput(pullPreview, "pull", input(["rules"]))).toBeDefined();
+    const pushPreview = await interaction.buildPushPreview(input(["architecture"]));
+    expect(readPushPullPreviewOutput(pushPreview, "push", input(["architecture"]))).toBeDefined();
+    const pullPreview = await interaction.buildPullPreview(input(["architecture"]));
+    expect(readPushPullPreviewOutput(pullPreview, "pull", input(["architecture"]))).toBeDefined();
   });
 
   it("maps a selected push scope and preserves the explicit unmarked identity", async () => {
-    const rule = file(".harness/rules/a.md", "rule", "rule\n");
+    const rule = file(".harness/codebase/map/a.md", "architecture", "rule\n");
     const instruction = file("AGENTS.md", "instruction", "instructions\n");
     const { interaction } = engine({ local_files: [rule, instruction], remote_files: [] });
 
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
 
     expect(preview).toMatchObject({
       schema_version: 1,
       direction: "push",
       source_ref: { branch_name: "unmarked" },
-      scopes: ["rules"],
+      scopes: ["architecture"],
       outcome: "ready"
     });
     expect(preview.operations).toEqual([
-      expect.objectContaining({ path: rule.path, content_kind: "rule", action: "add" })
+      expect.objectContaining({ path: rule.path, content_kind: "architecture", action: "add" })
     ]);
     expect(preview.display_zh.summary).toContain("上传到 Hunter Platform");
     const machine = structuredClone(preview) as { display_zh?: unknown };
@@ -97,18 +97,18 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("expands push all without archive while default pull stays regular and read-only", async () => {
-    const regular = file(".harness/rules/a.md", "rule", "remote rule\n");
+    const regular = file(".harness/codebase/map/a.md", "architecture", "remote rule\n");
     const branch = file("src/feature.txt", "branch_file", "remote branch\n");
     const { interaction, port } = engine({ remote_files: [regular, branch], local_files: [] });
 
     const pull = await interaction.buildPullPreview(input());
-    expect(pull.scopes).toEqual(["architecture", "config", "instructions", "rules"]);
+    expect(pull.scopes).toEqual(["architecture", "config", "instructions"]);
     expect(pull.operations.map((item) => item.path)).toEqual([regular.path]);
     expect(port.localFiles(source_ref)).toEqual([]);
 
     const push = await interaction.buildPushPreview(input(["all"]));
     expect(push.scopes).toEqual([
-      "architecture", "branch_files", "config", "instructions", "rules"
+      "architecture", "branch_files", "config", "instructions"
     ]);
     expect(push.scopes).not.toContain("archive");
     await expect(interaction.buildPushPreview(input(["archive"]))).rejects.toMatchObject({
@@ -117,7 +117,7 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("finishes a zero-item push locally without confirmation, write, or empty version", async () => {
-    const shared = file(".harness/rules/a.md", "rule", "same\n");
+    const shared = file(".harness/codebase/map/a.md", "architecture", "same\n");
     const { interaction, port } = engine({
       base_version: "pv_1",
       baseline_files: [shared],
@@ -125,7 +125,7 @@ describe("PushPullOrchestration v1", () => {
       remote_files: [shared]
     });
 
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     const result = interaction.confirmPush(preview.preview_hash, {
       action: "continue",
       idempotency_key: "unused-no-change",
@@ -159,14 +159,14 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("keeps ordinary pull deletions and restores only with bound artifact/version evidence", async () => {
-    const deleted = file(".harness/rules/deleted.md", "rule", "remote\n");
+    const deleted = file(".harness/codebase/map/deleted.md", "architecture", "remote\n");
     const { interaction, port } = engine({
       base_version: "pv_1",
       baseline_files: [deleted],
       local_files: [],
       remote_files: [deleted]
     });
-    const preview = await interaction.buildPullPreview(input(["rules"]));
+    const preview = await interaction.buildPullPreview(input(["architecture"]));
     expect(preview.operations).toEqual([
       expect.objectContaining({ path: deleted.path, action: "restore" })
     ]);
@@ -183,7 +183,7 @@ describe("PushPullOrchestration v1", () => {
     ]);
     expect(port.localFiles(source_ref)).toEqual([]);
 
-    const next = await interaction.buildPullPreview(input(["rules"]));
+    const next = await interaction.buildPullPreview(input(["architecture"]));
     if (next.remote_version === undefined) throw new Error("restore source must be present");
     expect(() => interaction.resolvePull(next.preview_hash, {
       action: "continue",
@@ -211,15 +211,15 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("preserves rename source_path through preview and receipt", async () => {
-    const oldFile = file(".harness/rules/old.md", "rule", "same\n");
-    const newFile = file(".harness/rules/new.md", "rule", "same\n");
+    const oldFile = file(".harness/codebase/map/old.md", "architecture", "same\n");
+    const newFile = file(".harness/codebase/map/new.md", "architecture", "same\n");
     const { interaction } = engine({
       base_version: "pv_1",
       baseline_files: [oldFile],
       local_files: [oldFile],
       remote_files: [newFile]
     });
-    const preview = await interaction.buildPullPreview(input(["rules"]));
+    const preview = await interaction.buildPullPreview(input(["architecture"]));
     expect(preview.operations).toEqual([
       expect.objectContaining({ action: "rename", path: newFile.path, source_path: oldFile.path })
     ]);
@@ -236,9 +236,9 @@ describe("PushPullOrchestration v1", () => {
   it("上传不查敏感信息：confirm 无需 scan_overrides，execute 直接完成", async () => {
     // 停用契约（2026-08）：security_scan 恒为 disabled-for-publication，
     // block 策略参数不再生效；confirm 不要求 scan_overrides。
-    const sensitive = file(".harness/rules/review.md", "rule", "password=supersecret\n");
+    const sensitive = file(".harness/codebase/map/review.md", "architecture", "password=supersecret\n");
     const { interaction, port } = engine({ local_files: [sensitive], remote_files: [] }, "block");
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     expect(preview.security_scan).toMatchObject({
       scan_performed: false,
       scanner_version: "disabled-for-publication",
@@ -269,12 +269,12 @@ describe("PushPullOrchestration v1", () => {
 
   it("扫描已停用：findings 恒空且 confirm 无需扫描确认", async () => {
     const secret = file(
-      ".harness/rules/secret.md",
-      "rule",
+      ".harness/codebase/map/secret.md",
+      "architecture",
       "Authorization: Bearer secret-token-value-1234567890"
     );
     const { interaction, port } = engine({ local_files: [secret], remote_files: [] });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     // 停用契约：不再计算 findings，上传不做敏感检查。
     expect(preview.security_scan).toMatchObject({
       scan_performed: false,
@@ -296,12 +296,12 @@ describe("PushPullOrchestration v1", () => {
 
   it("block 策略参数不再产生 hard-block：execute 不被 SYNC_SENSITIVE 拒绝", async () => {
     const secret = file(
-      ".harness/rules/secret.md",
-      "rule",
+      ".harness/codebase/map/secret.md",
+      "architecture",
       "Authorization: Bearer secret-token-value-1234567890"
     );
     const { interaction, port } = engine({ local_files: [secret], remote_files: [] }, "block");
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     expect(preview.security_scan).toMatchObject({
       blocked: false,
       hard_blocked: false,
@@ -320,13 +320,13 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("supports conflict continue/review/stop without executing review or stop", async () => {
-    const base = file(".harness/rules/conflict.md", "rule", "base\n");
-    const local = file(base.path, "rule", "local\n");
-    const remote = file(base.path, "rule", "remote\n");
+    const base = file(".harness/codebase/map/conflict.md", "architecture", "base\n");
+    const local = file(base.path, "architecture", "local\n");
+    const remote = file(base.path, "architecture", "remote\n");
     const { interaction, port } = engine({
       base_version: "pv_1", baseline_files: [base], local_files: [local], remote_files: [remote]
     });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     expect(preview.outcome).toBe("needs_resolution");
 
     expect(interaction.confirmPush(preview.preview_hash, {
@@ -354,9 +354,9 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("never calls RemoteSync execution for review, stop, no_changes, or forged confirmation", async () => {
-    const base = file(".harness/rules/conflict.md", "rule", "base\n");
-    const local = file(base.path, "rule", "local\n");
-    const remote = file(base.path, "rule", "remote\n");
+    const base = file(".harness/codebase/map/conflict.md", "architecture", "base\n");
+    const local = file(base.path, "architecture", "local\n");
+    const remote = file(base.path, "architecture", "remote\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1", baseline_files: [base], local_files: [local], remote_files: [remote]
@@ -376,7 +376,7 @@ describe("PushPullOrchestration v1", () => {
         return core.pull(scopes, source, confirmation);
       }
     });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     interaction.confirmPush(preview.preview_hash, {
       action: "review", idempotency_key: "review-zero-call", conflict_decisions: []
     });
@@ -391,14 +391,14 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("lets RemoteSync reject a confirmation whose trusted preview became stale", async () => {
-    const local = file(".harness/rules/a.md", "rule", "local\n");
+    const local = file(".harness/codebase/map/a.md", "architecture", "local\n");
     const { interaction, port } = engine({ local_files: [local], remote_files: [] });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue", idempotency_key: "stale-confirmation", conflict_decisions: []
     });
     if (confirmed.status !== "confirmed") throw new Error("push should be confirmed");
-    port.setRemoteFiles(source_ref, [file(".harness/rules/concurrent.md", "rule", "remote\n")]);
+    port.setRemoteFiles(source_ref, [file(".harness/codebase/map/concurrent.md", "architecture", "remote\n")]);
 
     await expect(interaction.executePush(confirmed.confirmation_id)).rejects.toMatchObject({
       code: "SYNC_PREVIEW_STALE"
@@ -407,9 +407,9 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("rejects a forged or cross-direction confirmation before RemoteSync execution", async () => {
-    const local = file(".harness/rules/a.md", "rule", "local\n");
+    const local = file(".harness/codebase/map/a.md", "architecture", "local\n");
     const { interaction, port } = engine({ local_files: [local], remote_files: [] });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue", idempotency_key: "push-only", conflict_decisions: []
     });
@@ -425,7 +425,7 @@ describe("PushPullOrchestration v1", () => {
   });
 
   it("rejects a dependency receipt that is not bound to the confirmed preview", async () => {
-    const local = file(".harness/rules/a.md", "rule", "local\n");
+    const local = file(".harness/codebase/map/a.md", "architecture", "local\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [local], remote_files: [] });
     const core = new RemoteSyncModule(port);
@@ -440,7 +440,7 @@ describe("PushPullOrchestration v1", () => {
       },
       pull: (scopes, source, confirmation) => core.pull(scopes, source, confirmation)
     });
-    const preview = await interaction.buildPushPreview(input(["rules"]));
+    const preview = await interaction.buildPushPreview(input(["architecture"]));
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue", idempotency_key: "misbound-receipt", conflict_decisions: []
     });
@@ -472,7 +472,7 @@ describe("PushPullOrchestration v1", () => {
           schema_version: 1,
           direction: "push",
           source_ref: expect.objectContaining({ branch_name: "unmarked" }),
-          scopes: ["rules"]
+          scopes: ["architecture"]
         })
       }),
       expect.objectContaining({

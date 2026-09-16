@@ -20,7 +20,6 @@ describe("configuration recovery menu", () => {
     root = await mkdtemp(join(tmpdir(), "hunter-recovery-"));
     await seededInit(root, "recovery-menu-java", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "java",
         "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,

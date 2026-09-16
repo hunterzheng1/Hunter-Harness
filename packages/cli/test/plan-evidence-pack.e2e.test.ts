@@ -744,8 +744,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
   });
 
   it("B3-2 §5-2：capability 验证集从 snapshot 反解并入，升档不丢能力门禁", async () => {
-    // bootstrap standard + database capability：requiredValidations 含 dbCompatibility，
-    // deployment capability 触发 stage:package
+    // bootstrap standard + database capability：requiredValidations 含 dbCompatibility
     await fs.writeFile(
       join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
       JSON.stringify({
@@ -759,9 +758,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
           { execute: ["compile", "unitTest", "unitTestFull", "dbCompatibility"] },
         requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] },
         stageDecisions: {
-          review: { required: false, reason: "no matching signals" },
-          package: { required: true, reason: "capability:deployment" },
-          apidoc: { required: false, reason: "no matching signals" }
+          review: { required: false, reason: "no matching signals" }
         }
       })
     );
@@ -785,20 +782,8 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     const dag = content.required_gate_dag as {
       nodes: { id: string; kind: string; phase: string | null; dependsOn: string[] }[];
     };
-    // capability 触发的 stage:package 节点保留（依赖规则同 Python：
-    // package 阶段依赖全部 execute 阶段验证，按 required 声明顺序）
-    expect(dag.nodes).toContainEqual({
-      id: "stage:package",
-      kind: "stage",
-      phase: "package",
-      dependsOn: [
-        "validation:compile",
-        "validation:unitTest",
-        "validation:unitTestFull",
-        "validation:apiTest",
-        "validation:dbCompatibility"
-      ]
-    });
+    // capability 验证节点保留（package/apidoc 阶段已随 java profile 退役，
+    // stage 节点不再挂自动依赖）
     expect(dag.nodes.some((node) => node.id === "validation:dbCompatibility")).toBe(true);
   });
 });

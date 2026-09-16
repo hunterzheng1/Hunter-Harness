@@ -1,105 +1,197 @@
+#!/usr/bin/env node
+// Regenerate the workflow data package (packages/workflow-data-harness).
+//
+// v1.0 单一规范 bundle：无 profile、无 agent 矩阵。从 harness/ 源树为两个
+// 投影 surface（codex / codebuddy）构建内容相同、构建标记 agent 字段不同的
+// bundle，拍平落在 harness/bundles/<surface>/，清单在 harness/manifests/<surface>.json。
+//
+// Usage:
+//   node scripts/sync-harness.mjs          # full rebuild
+//   node scripts/sync-harness.mjs --check  # verify bundles/manifests are in sync (CI)
+
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
-import { setTimeout as delayMs } from "node:timers/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import process from "node:process";
 
-import { adaptBundleDir } from "./adapt-agent-bundle.mjs";
-import { resolvePythonRuntimeSync } from "./python-runtime.mjs";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const source = join(root, "harness");
-const deploy = join(source, "scripts", "harness_deploy.py");
-const resourceRoot = join(root, "resources", "harness");
-const dataPackageRoot = join(root, "packages", "workflow-data-harness", "harness");
-const dataBundlesRoot = join(dataPackageRoot, "bundles");
-const dataManifestRoot = join(dataPackageRoot, "manifests");
-const migrationsSource = join(resourceRoot, "migrations");
-const dataMigrationsRoot = join(dataPackageRoot, "migrations");
-const syncStampPath = join(root, ".sync-staging", "harness-input-sha256");
-const riskSignalsContractPath = join(source, "contracts", "risk-signals.json");
-const riskSignalsGeneratedPath = join(
-  root, "packages", "contracts", "src", "generated", "risk-signals.ts"
+const require = createRequire(import.meta.url);
+const ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const HARNESS_SRC = join(ROOT, "harness");
+const PKG = join(ROOT, "packages", "workflow-data-harness");
+const PKG_HARNESS = join(PKG, "harness");
+const BUNDLES_OUT = join(PKG_HARNESS, "bundles");
+const MANIFESTS_OUT = join(PKG_HARNESS, "manifests");
+// WI-1 §3.2：harness/contracts/risk-signals.json 是风险信号与档位映射的
+// 单一权威，TS 侧常量由本脚本生成（消除双端移植漂移面）。
+const RISK_SIGNALS_CONTRACT = join(HARNESS_SRC, "contracts", "risk-signals.json");
+const RISK_SIGNALS_GENERATED = join(
+  ROOT, "packages", "contracts", "src", "generated", "risk-signals.ts",
 );
-const workflowPackagePath = join(root, "packages", "workflow-data-harness", "package.json");
-const workflowPackage = JSON.parse(await readFile(workflowPackagePath, "utf8"));
-const WORKFLOW_PACKAGE_VERSION = workflowPackage.version;
-let cachedPythonRuntime;
-function pythonRuntime() {
-  cachedPythonRuntime ??= resolvePythonRuntimeSync({ projectRoot: root, env: process.env });
-  return cachedPythonRuntime;
-}
 
-const PROFILES = ["general", "java"];
-const AGENTS = ["claude-code", "codex", "cursor", "codebuddy", "pi"];
-const BUNDLE_VERSION = "0.2.82";
-// skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
-// 且 --print-template 的可运行骨架自 0.2.83 起才正确；
-// 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py
-// 用 harness-push --scope …,branch_files 上传交付物，配旧 CLI 会静默上传 0 个文件；
-// 0.2.85 起交付物边界收窄到 reports/final，本 Bundle 的 SKILL.md 按收窄后的边界描述，
-// 配 0.2.84 会多传 reports/review 与 reports/test，与文档不符；
-// 0.2.86 起 knowledgeCandidateSchema 才认识 entry_type/body/keywords——本 Bundle 的
-// harness_knowledge_candidates.py 会产出带这三个字段的候选，而该 schema 是 .strict()，
-// 配旧 CLI 会在 archive-package-builder 的候选校验处直接判包无效（不是降级，是硬失败）；
-// 0.2.87 起敏感扫描默认 warn、且 harness-push 才有 PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM
-// 与 --allow-sensitive——本 Bundle 的两份 SKILL.md 按这套行为写，配 0.2.86 会得到
-// 旧的 PUSH_PULL_SENSITIVE_HARD_BLOCKED / PUSH_PULL_ARCHIVE_UNAVAILABLE，文档对不上；
-// 0.2.88 起 archive upload 才保留服务端错误码；0.2.89 起认的才是服务端真正返回的
-// ARCHIVE_ALREADY_EXISTS（0.2.88 挂在 ARCHIVE_PACKAGE_CONFLICT 上，那句提示从没触发过），
-// 本 Bundle 的 republish 在冲突时引导用户看该码并给出 --retry-retained；
-// 0.2.92 起 v2 plan finalize 发布的是 meta/plan-profile.json 而不是 meta/gate-policy.json
-// ——本 Bundle 的 _verify_plan_v2 按前者校验 journal，而 0.2.91 仍会把派生视图写到
-// meta/gate-policy.json 上，既让 verify 报 RECEIPT_FILES_INCOMPLETE，也会把 classify
-// 写的门禁策略原子覆盖掉，之后 gate begin --phase run 直接 POLICY_LOAD_FAILED
-const MINIMUM_CLI_VERSION = "0.4.13";
-const REQUIRED_CAPABILITIES = [
-  "sync@2",
-  "rules-sync@1",
-  "rules-review@1",
-  "knowledge-sync@3",
-  "build-profile@3",
-  "verification-graph@1",
-  "execution-session@1",
-  "external-convergence@1",
-  "codegraph-status@2",
-  "doctor-capability@1",
-  "registry-governance@1",
-  "remote-sync-push@1",
-  "remote-sync-pull@1"
-];
+// 版本与门禁三字段随 1.0.0 毕业同步（见 docs/decisions；发版 SOP 四点之一）。
+const BUNDLE_VERSION = "1.0.0";
+const BUNDLE_SCHEMA_VERSION = 2;
+const MINIMUM_CLI_VERSION = "1.0.0";
+const WORKFLOW_PACKAGE_VERSION =
+  require("../packages/workflow-data-harness/package.json").version;
 
-async function syncInputHash() {
-  const inputs = [
-    ...(await filesUnder(source))
-      .filter((item) => !item.path.split("/").includes("__pycache__") && !item.path.endsWith(".pyc"))
-      .map((item) => ({ ...item, key: `harness/${item.path}` })),
-    ...(await filesUnder(migrationsSource)).map((item) => ({ ...item, key: `migrations/${item.path}` })),
-    {
-      key: "scripts/adapt-agent-bundle.mjs",
-      full: join(root, "scripts", "adapt-agent-bundle.mjs")
-    },
-    {
-      key: "scripts/sync-harness.mjs",
-      full: fileURLToPath(import.meta.url)
-    }
-  ].sort((left, right) => left.key.localeCompare(right.key));
-  const hash = createHash("sha256");
-  for (const input of inputs) {
-    hash.update(input.key);
-    hash.update("\0");
-    hash.update(await readFile(input.full));
-    hash.update("\0");
+// REQUIRED_CAPABILITIES 必须与 packages/cli/src/workflow-data/compatibility.ts
+// 的 CLI_CAPABILITIES 完全一致（v1.0 硬切割：bundle 要求 CLI 全量能力）。
+// 为避免再发生手工同步滞留（见 MEMORY.md 发布 SOP 教训），直接从源文件解析。
+const CAPABILITIES_SOURCE = join(
+  ROOT,
+  "packages",
+  "cli",
+  "src",
+  "workflow-data",
+  "compatibility.ts",
+);
+
+function readCliCapabilities() {
+  const source = readFileSync(CAPABILITIES_SOURCE, "utf8");
+  const match = /CLI_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const/.exec(source);
+  if (match === null) {
+    throw new Error("无法从 compatibility.ts 解析 CLI_CAPABILITIES");
   }
-  return hash.digest("hex");
+  const capabilities = [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+  if (capabilities.length === 0) {
+    throw new Error("CLI_CAPABILITIES 解析结果为空");
+  }
+  return capabilities;
 }
 
-// WI-1 §3.2: harness/contracts/risk-signals.json 是风险信号与档位映射的单一权威。
-// TS 侧常量由本脚本生成（kebab-case 键 → snake_case，对齐 PlanRiskSignal 枚举），
-// 消除双端移植漂移面。生成物 git 跟踪（clean clone 可直接 typecheck/test），
-// 新鲜度由 tier-mode-parity 契约测试守护（步骤 5）。
+const REQUIRED_CAPABILITIES = readCliCapabilities();
+
+// v1.0 投影 surface：构建标记的 agent 字段取 surface 名（gate 按此匹配
+// context-index 的 project.adapters[agent].skills_root）。
+const PROJECTION_SURFACES = ["codex", "codebuddy"];
+const CHECK_MODE = process.argv.includes("--check");
+const GATES = ["init", "plan", "tasks", "execute", "review", "submit", "archive"];
+
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+// check 模式专用：族清单中的 syncedAt 每次生成都不同，归一化后再比较。
+function checkFingerprint(path) {
+  if (basename(path) === "hunter-workflow-family.json") {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed.syncedAt = "<normalized>";
+    return createHash("sha256")
+      .update(JSON.stringify(parsed, null, 2))
+      .digest("hex");
+  }
+  return sha256File(path);
+}
+
+function collectFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectFiles(full));
+    } else {
+      out.push(full);
+    }
+  }
+  return out.sort();
+}
+
+function cleanDir(dir) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+}
+
+function run(command, args) {
+  execFileSync(command, args, { cwd: ROOT, stdio: "inherit" });
+}
+
+function buildOneBundle(surface, stagingDir) {
+  run("python", [
+    join(HARNESS_SRC, "scripts", "harness_deploy.py"),
+    "build",
+    "--skills-root",
+    HARNESS_SRC,
+    "--out",
+    stagingDir,
+    "--surface",
+    surface,
+  ]);
+}
+
+function verifyBundle(bundleDir, label) {
+  const markerPath = join(bundleDir, ".harness-build.json");
+  if (!existsSync(markerPath)) {
+    throw new Error(`[${label}] build marker 缺失`);
+  }
+  for (const file of collectFiles(bundleDir)) {
+    const rel = relative(bundleDir, file).replaceAll("\\", "/");
+    if (rel.includes(".claude/")) {
+      throw new Error(`[${label}] bundle 内不允许出现 .claude/ 路径: ${rel}`);
+    }
+    if (rel.startsWith("agents/")) {
+      throw new Error(`[${label}] bundle 内不允许出现 agents/ 目录: ${rel}`);
+    }
+  }
+  const harnessSkills = readdirSync(bundleDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("harness-"))
+    .map((entry) => entry.name);
+  for (const skill of harnessSkills) {
+    if (!existsSync(join(bundleDir, skill, "SKILL.md"))) {
+      throw new Error(`[${label}] skill ${skill} 缺 SKILL.md`);
+    }
+  }
+}
+
+function writeManifest(surface, bundleDir) {
+  // bundle 内容清单：构建标记与清单自身不参与 hash（门禁按 agent 字段匹配 surface）。
+  const excluded = new Set([".harness-build.json", "bundle-manifest.json"]);
+  const files = [];
+  for (const file of collectFiles(bundleDir)) {
+    const rel = relative(bundleDir, file).replaceAll("\\", "/");
+    if (excluded.has(rel)) continue;
+    files.push({ path: rel, sha256: sha256File(file) });
+  }
+  const manifest = {
+    schema_version: BUNDLE_SCHEMA_VERSION,
+    profile: "general",
+    adapter: surface,
+    bundle_version: BUNDLE_VERSION,
+    generator: "harness_deploy.py",
+    files,
+  };
+  writeFileSync(
+    join(MANIFESTS_OUT, `${surface}.json`),
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
+  return manifest;
+}
+
+function computeBundleHash(manifests) {
+  const payload = manifests.map((manifest) => ({
+    adapter: manifest.adapter,
+    profile: manifest.profile,
+    files: manifest.files,
+  }));
+  return createHash("sha256")
+    .update(JSON.stringify(payload))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+// 生成物 git 跟踪（clean clone 可直接 typecheck/test），新鲜度由
+// tier-mode-parity 契约测试与 --check 漂移检测双重守护。
 function kebabToSnake(value) {
   return value.replaceAll("-", "_");
 }
@@ -141,8 +233,8 @@ function riskSignalsContractValidation(contract) {
   return problems;
 }
 
-async function generateRiskSignalsContract() {
-  const contract = JSON.parse(await readFile(riskSignalsContractPath, "utf8"));
+function generateRiskSignalsContract() {
+  const contract = JSON.parse(readFileSync(RISK_SIGNALS_CONTRACT, "utf8"));
   const problems = riskSignalsContractValidation(contract);
   if (problems.length > 0) {
     throw new Error(`risk-signals.json contract invalid: ${problems.join("; ")}`);
@@ -218,374 +310,191 @@ export const VALIDATION_DEPENDENCIES: Readonly<Record<string, readonly string[]>
 ${Object.entries(contract.validationDependencies).map(([v, deps]) => `  ${JSON.stringify(v)}: [${deps.map((d) => JSON.stringify(d)).join(", ")}]`).join(",\n")}
 };
 `;
-  await mkdir(dirname(riskSignalsGeneratedPath), { recursive: true });
+  mkdirSync(dirname(RISK_SIGNALS_GENERATED), { recursive: true });
   // 内容比对写入：无变化时不触碰 mtime，避免无关 churn。
   let current = null;
   try {
-    current = await readFile(riskSignalsGeneratedPath, "utf8");
+    current = readFileSync(RISK_SIGNALS_GENERATED, "utf8");
   } catch {
     // first generation
   }
   if (current !== content) {
-    await writeFile(riskSignalsGeneratedPath, content);
+    writeFileSync(RISK_SIGNALS_GENERATED, content);
     process.stdout.write("generated packages/contracts/src/generated/risk-signals.ts\n");
   }
 }
 
-async function filesUnder(directory, base = directory) {
-  const result = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.name === "__pycache__" || entry.name.endsWith(".pyc")) continue;
-    const full = join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...await filesUnder(full, base));
-    if (entry.isFile()) result.push({
-      path: relative(base, full).replaceAll("\\", "/"),
-      full
+function copyHarnessSupportDirs() {
+  for (const name of ["contracts", "protocols"]) {
+    const src = join(HARNESS_SRC, name);
+    if (existsSync(src)) {
+      cpSync(src, join(PKG_HARNESS, name), { recursive: true });
+    }
+  }
+  const templatesSrc = join(HARNESS_SRC, "templates");
+  if (existsSync(templatesSrc)) {
+    cpSync(templatesSrc, join(PKG_HARNESS, "templates"), { recursive: true });
+    rmSync(join(PKG_HARNESS, "templates", "__pycache__"), {
+      recursive: true,
+      force: true,
     });
   }
-  return result;
-}
-
-async function prunePythonArtifacts(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const full = join(directory, entry.name);
-    if (entry.name === "__pycache__" || entry.name.endsWith(".pyc")) {
-      await rm(full, { recursive: true, force: true });
-    } else if (entry.isDirectory()) {
-      await prunePythonArtifacts(full);
-    }
+  const gateTemplateSrc = join(HARNESS_SRC, "templates", "harness_gate.py");
+  if (existsSync(gateTemplateSrc)) {
+    mkdirSync(join(PKG_HARNESS, "templates"), { recursive: true });
+    cpSync(gateTemplateSrc, join(PKG_HARNESS, "templates", "harness_gate.py"));
   }
 }
 
-async function assertSupportFilesPresent(bundleDir) {
-  // design §3.8 / cluster 7 point 4: every Skill's progressive-disclosure
-  // "Read `xxx.md`" reference must resolve to a file present in the staged
-  // bundle. A missing support file is a deploy failure (no runtime fallback).
-  // retro §5.17: also check [[shared/xxx.md|...]] wiki links and unexpanded
-  // <!-- @include shared/xxx.md --> placeholders; shared/ files must either
-  // be present in the bundle or already inlined (no dangling refs).
-  const entries = await readdir(bundleDir, { withFileTypes: true });
-  const skills = entries
-    .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
-    .map((e) => e.name);
-  for (const skill of skills) {
-    const skillMd = await readFile(join(bundleDir, skill, "SKILL.md"), "utf8");
-    const refs = new Set();
-    // Existing: "Read `xxx.md`" progressive-disclosure references.
-    for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
-      refs.add(m[1]);
-    }
-    for (const ref of refs) {
-      if (ref === "SKILL.md") continue;
-      try {
-        await access(join(bundleDir, skill, ref));
-      } catch {
-        throw new Error(
-          `SUPPORT_FILE_MISSING: ${skill} references ${ref} but it is absent from the staged bundle (design §3.8)`
-        );
-      }
-    }
-    // §5.17: [[shared/xxx.md|...]] wiki links — shared file must exist at
-    // bundle root or be already inlined (no @include placeholder remains).
-    const sharedWikiRefs = new Set();
-    for (const m of skillMd.matchAll(/\[\[shared\/([^\]|]+)\|[^\]]*\]\]/g)) {
-      sharedWikiRefs.add(`shared/${m[1]}`);
-    }
-    // §5.17: unexpanded <!-- @include shared/xxx.md --> placeholders. After
-    // deploy these should have been expanded; any remaining is a dangling ref.
-    const sharedIncludeRefs = new Set();
-    for (const m of skillMd.matchAll(/<!--\s*@include\s+shared\/([^\s]+)\s*-->/g)) {
-      sharedIncludeRefs.add(`shared/${m[1]}`);
-    }
-    for (const ref of [...sharedWikiRefs, ...sharedIncludeRefs]) {
-      const parts = ref.split("/");
-      const sharedPath = join(bundleDir, ...parts);
-      try {
-        await access(sharedPath);
-      } catch {
-        throw new Error(
-          `DANGLING_SHARED_REF: ${skill} references ${ref} but it is absent from the staged bundle (retro §5.17)`
-        );
-      }
-    }
-  }
-}
-
-export { assertSupportFilesPresent };
-
-// Windows 上杀软/索引器会短暂持有刚写入目录的句柄，rename 偶发 EPERM；
-// 这是瞬态而非权限配置错误，短暂退避重试（与 atomic-write 的既有约定一致）。
-const RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1000];
-
-async function renameWithTransientRetry(source, destination) {
-  let lastError;
-  for (let attempt = 0; attempt <= RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      await rename(source, destination);
-      return;
-    } catch (error) {
-      lastError = error;
-      const retryable = error && (error.code === "EPERM" || error.code === "EBUSY" ||
-        error.code === "EACCES");
-      if (!retryable || attempt === RENAME_RETRY_DELAYS_MS.length) break;
-      await delayMs(RENAME_RETRY_DELAYS_MS[attempt]);
-    }
-  }
-  throw lastError;
-}
-
-export async function atomicSwapDir(stage, target) {
-  // §3.8 要点1 / INT-005: atomically replace target with the validated staging
-  // dir. target is moved aside first, then staging is renamed into place; on
-  // rename failure the original target is restored. The release tree is never
-  // observed half-written.
-  const backup = `${target}.swap-old-${process.pid}`;
-  await rm(backup, { recursive: true, force: true });
-  let hadTarget = true;
-  try {
-    await renameWithTransientRetry(target, backup);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    hadTarget = false;
-  }
-  try {
-    await renameWithTransientRetry(stage, target);
-  } catch (error) {
-    if (hadTarget) await renameWithTransientRetry(backup, target);
-    throw error;
-  }
-  await rm(backup, { recursive: true, force: true });
-}
-
-async function generate(profile, agent) {
-  const out = join(dataBundlesRoot, profile, agent);
-  await mkdir(dirname(out), { recursive: true });
-
-  // §3.8 要点1 / INT-005: build entirely in a staging dir; out and dataOut are
-  // untouched until staging is fully built, adapted, support-file-checked and
-  // manifest-validated, then atomically swapped in.
-  const stage = join(root, ".sync-staging", `${profile}-${agent}-${process.pid}`);
-  await rm(stage, { recursive: true, force: true });
-  // Only ensure the parent staging area exists; stage itself must NOT pre-exist
-  // so harness_deploy.py build can swap its internal staging into place.
-  await mkdir(dirname(stage), { recursive: true });
-  const args = [
-    deploy, "build",
-    "--skills-root", source,
-    "--out", stage,
-    "--agent", agent,
-    "--json"
-  ];
-  if (profile === "java") {
-    args.splice(2, 0, "--overlay", "java");
-  }
-  const runtime = pythonRuntime();
-  const result = spawnSync(
-    runtime.command,
-    [...runtime.argsPrefix, ...args],
-    {
-      cwd: root,
-      encoding: "utf8",
-      shell: false,
-      windowsHide: true,
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }
-    }
-  );
-  if (result.status !== 0) {
-    throw new Error(
-      `Harness ${profile}/${agent} build failed\n${result.stdout ?? ""}\n${result.stderr ?? ""}`
-    );
-  }
-  await adaptBundleDir(stage, agent);
-  await prunePythonArtifacts(stage);
-  await assertSupportFilesPresent(stage);
-
-  const files = [];
-  for (const item of (await filesUnder(stage)).sort((a, b) => a.path.localeCompare(b.path))) {
-    const bytes = await readFile(item.full);
-    files.push({ path: item.path, sha256: createHash("sha256").update(bytes).digest("hex") });
-  }
-  const manifest = JSON.stringify({
-    schema_version: 2,
-    profile,
-    adapter: agent,
-    bundle_version: BUNDLE_VERSION,
-    requires: {
-      minimumCliVersion: MINIMUM_CLI_VERSION,
-      capabilities: REQUIRED_CAPABILITIES
-    },
-    generator: "harness_deploy.py",
-    files
-  }, null, 2) + "\n";
-
-  // §3.8 要点2: validate declared set == actual set (missing & extra both fail).
-  const manifestTmp = join(root, ".sync-staging", `manifest-${profile}-${agent}.json`);
-  await writeFile(manifestTmp, manifest);
-  try {
-    const vResult = spawnSync(
-      runtime.command,
-      [
-        ...runtime.argsPrefix,
-        deploy,
-        "validate-manifest",
-        "--bundle",
-        stage,
-        "--manifest",
-        manifestTmp,
-        "--json"
-      ],
-      {
-        cwd: root,
-        encoding: "utf8",
-        shell: false,
-        windowsHide: true,
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }
-      }
-    );
-    if (vResult.status !== 0) {
-      throw new Error(
-        `Harness ${profile}/${agent} manifest validation failed\n${vResult.stdout ?? ""}\n${vResult.stderr ?? ""}`
-      );
-    }
-  } finally {
-    await rm(manifestTmp, { force: true });
-  }
-
-  // The ignored workflow-data tree is the only generated projection. Keeping
-  // a second tracked resources/ mirror caused hundreds of noisy changes for
-  // every canonical Skill edit without adding release safety.
-  await atomicSwapDir(stage, out);
-
-  const manifestDir = join(dataManifestRoot, profile);
-  await mkdir(manifestDir, { recursive: true });
-  await writeFile(join(manifestDir, `${agent}.json`), manifest);
-}
-
-async function copyMigrations() {
-  await mkdir(dataMigrationsRoot, { recursive: true });
-  for (const item of await filesUnder(migrationsSource)) {
-    const target = join(dataMigrationsRoot, item.path);
-    await mkdir(dirname(target), { recursive: true });
-    await cp(item.full, target);
-  }
-}
-
-// Mirrors packages/contracts/src/canonical-json.ts normalize()/canonicalJson() so this
-// hash matches hunter-platform apps/server/src/npm/publisher.ts buildWorkflowFamilyManifest exactly.
-function normalizeForCanonicalJson(value) {
-  if (Array.isArray(value)) return value.map(normalizeForCanonicalJson);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, normalizeForCanonicalJson(item)])
-    );
-  }
-  return value;
-}
-
-function canonicalJson(value) {
-  return JSON.stringify(normalizeForCanonicalJson(value));
-}
-
-function sha256Bytes(content) {
-  return "sha256:" + createHash("sha256").update(content).digest("hex");
-}
-
-async function generatedProjectionIsCurrent(inputHash) {
-  try {
-    if ((await readFile(syncStampPath, "utf8")).trim() !== inputHash) return false;
-    for (const profile of PROFILES) {
-      for (const agent of AGENTS) {
-        const bundleRoot = join(dataBundlesRoot, profile, agent);
-        const manifest = JSON.parse(await readFile(
-          join(dataManifestRoot, profile, `${agent}.json`),
-          "utf8"
-        ));
-        if (manifest.bundle_version !== BUNDLE_VERSION) return false;
-        if (manifest.requires?.minimumCliVersion !== MINIMUM_CLI_VERSION) return false;
-        if (JSON.stringify(manifest.requires?.capabilities) !== JSON.stringify(REQUIRED_CAPABILITIES)) {
-          return false;
-        }
-        const actual = await filesUnder(bundleRoot);
-        if (actual.length !== manifest.files.length) return false;
-        const expected = new Map(manifest.files.map((file) => [file.path, file.sha256]));
-        for (const item of actual) {
-          const digest = createHash("sha256").update(await readFile(item.full)).digest("hex");
-          if (expected.get(item.path) !== digest) return false;
-        }
-        await assertSupportFilesPresent(bundleRoot);
-      }
-    }
-    const familyManifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
-    const familyManifest = JSON.parse(await readFile(familyManifestPath, "utf8"));
-    if (familyManifest.minimumCliVersion !== MINIMUM_CLI_VERSION) return false;
-    if (familyManifest.workflowPackageVersion !== WORKFLOW_PACKAGE_VERSION) return false;
-    if (JSON.stringify(familyManifest.capabilities) !== JSON.stringify(REQUIRED_CAPABILITIES)) {
-      return false;
-    }
-    const files = (await filesUnder(dataPackageRoot)).sort((a, b) => a.path.localeCompare(b.path));
-    const withContent = [];
-    for (const file of files) {
-      withContent.push({ path: `harness/${file.path}`, content: await readFile(file.full, "utf8") });
-    }
-    return familyManifest.content_sha256 === sha256Bytes(canonicalJson(withContent));
-  } catch {
-    return false;
-  }
-}
-
-async function writeWorkflowFamilyManifest() {
-  const manifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  const files = (await filesUnder(dataPackageRoot))
-    .sort((a, b) => a.path.localeCompare(b.path))
-    .map((item) => ({ path: `harness/${item.path}` }));
-  const withContent = [];
-  for (const file of files) {
-    const full = join(dataPackageRoot, file.path.slice("harness/".length));
-    withContent.push({ path: file.path, content: await readFile(full, "utf8") });
-  }
-  manifest.bundle_version = BUNDLE_VERSION;
-  manifest.minimumCliVersion = MINIMUM_CLI_VERSION;
-  manifest.workflowPackageVersion = WORKFLOW_PACKAGE_VERSION;
-  manifest.capabilities = REQUIRED_CAPABILITIES;
-  manifest.requires = {
+function writeFamilyJson(bundleHash, cliVersion) {
+  const requirements = {
     minimumCliVersion: MINIMUM_CLI_VERSION,
-    capabilities: REQUIRED_CAPABILITIES
+    capabilities: REQUIRED_CAPABILITIES,
   };
-  manifest.content_sha256 = sha256Bytes(canonicalJson(withContent));
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  const family = {
+    schema_version: 1,
+    family_id: "hunter-harness",
+    bundle_version: BUNDLE_VERSION,
+    minimumCliVersion: MINIMUM_CLI_VERSION,
+    workflowPackage: "@hunter-harness/workflow-harness",
+    workflowPackageVersion: WORKFLOW_PACKAGE_VERSION,
+    bundleHash,
+    releaseTrain: "v1",
+    projectionLayout: {
+      mode: "files",
+      canonicalRoot: "harness",
+      bundlesRoot: "harness/bundles",
+      manifestsRoot: "harness/manifests",
+    },
+    requires: requirements,
+    capabilities: requirements.capabilities,
+    compatibilityPolicy: {
+      mode: "gate",
+      reasonCode: "BLOCKED_CAPABILITY_MISMATCH",
+      message: "workflow bundle requires newer hunter-harness CLI",
+    },
+    gates: GATES,
+    cliVersion,
+    syncedAt: new Date().toISOString(),
+  };
+  // 幂等：除 syncedAt 外内容无变化时保留原文件（含原时间戳），
+  // 保证 smoke-pack 的 prepack 守卫与 git 工作区不被时间戳 churn 污染。
+  const target = join(PKG, "hunter-workflow-family.json");
+  try {
+    const existing = JSON.parse(readFileSync(target, "utf8"));
+    if (JSON.stringify({ ...existing, syncedAt: null }) ===
+        JSON.stringify({ ...family, syncedAt: null })) {
+      return;
+    }
+  } catch {
+    // 文件缺失或损坏：照常重写。
+  }
+  writeFileSync(target, JSON.stringify(family, null, 2) + "\n");
 }
 
-async function main() {
-  // WI-1: TS 常量生成无条件先行——bundle 是否 up to date 不影响契约投影的新鲜度。
-  await generateRiskSignalsContract();
-  const inputHash = await syncInputHash();
-  if (!process.argv.includes("--force") && await generatedProjectionIsCurrent(inputHash)) {
-    process.stdout.write("Harness Bundles are up to date (2 profiles × 5 agents)\n");
-    return;
+async function sync() {
+  console.log("[sync-harness] 清理输出目录");
+  cleanDir(BUNDLES_OUT);
+  cleanDir(MANIFESTS_OUT);
+
+  const cliVersion = JSON.parse(
+    await readFile(join(ROOT, "packages", "cli", "package.json"), "utf8"),
+  ).version;
+
+  const manifests = [];
+  const tempRoots = [];
+  for (const surface of PROJECTION_SURFACES) {
+    // 单 surface 构建：内容对两个 surface 一致，差异仅在 .harness-build.json
+    // 的 agent 字段（门禁按 agent 匹配该 surface 的 skills_root）。
+    const stagingDir = join(BUNDLES_OUT, `.tmp-${surface}-${process.pid}`);
+    tempRoots.push(stagingDir);
+    console.log(`[sync-harness] build ${surface}`);
+    buildOneBundle(surface, stagingDir);
+    verifyBundle(stagingDir, surface);
+
+    const dest = join(BUNDLES_OUT, surface);
+    mkdirSync(dirname(dest), { recursive: true });
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(stagingDir, dest, { recursive: true });
+    manifests.push(writeManifest(surface, dest));
+    console.log(
+      `[sync-harness] ${surface}: ${manifests[manifests.length - 1].files.length} files`,
+    );
   }
-  for (const profile of PROFILES) {
-    for (const agent of AGENTS) {
-      await generate(profile, agent);
-      process.stdout.write(`generated ${profile}/${agent}\n`);
+
+  for (const dir of tempRoots) {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+
+  console.log("[sync-harness] 同步 contracts/protocols/templates");
+  copyHarnessSupportDirs();
+
+  console.log("[sync-harness] 生成 risk-signals TS 常量");
+  generateRiskSignalsContract();
+
+  const bundleHash = computeBundleHash(manifests);
+  console.log(`[sync-harness] bundleHash=${bundleHash}`);
+  writeFamilyJson(bundleHash, cliVersion);
+
+  console.log(
+    `[sync-harness] 完成：bundle_version=${BUNDLE_VERSION} workflowPackageVersion=${WORKFLOW_PACKAGE_VERSION} minimumCliVersion=${MINIMUM_CLI_VERSION}`,
+  );
+}
+
+async function check() {
+  const snapshot = new Map();
+  for (const dir of [BUNDLES_OUT, MANIFESTS_OUT]) {
+    if (!existsSync(dir)) continue;
+    for (const file of collectFiles(dir)) {
+      snapshot.set(file, checkFingerprint(file));
     }
   }
-  await copyMigrations();
-  await writeWorkflowFamilyManifest();
-  await mkdir(dirname(syncStampPath), { recursive: true });
-  await writeFile(syncStampPath, inputHash + "\n");
-  process.stdout.write("generated 2 profiles × 5 agents Harness Bundles\n");
+  const familyPath = join(PKG, "hunter-workflow-family.json");
+  if (existsSync(familyPath)) {
+    snapshot.set(familyPath, checkFingerprint(familyPath));
+  }
+  // 生成物也纳入漂移检测：改了 risk-signals.json 忘跑 sync 会被 --check 抓住。
+  if (existsSync(RISK_SIGNALS_GENERATED)) {
+    snapshot.set(RISK_SIGNALS_GENERATED, checkFingerprint(RISK_SIGNALS_GENERATED));
+  }
+
+  await sync();
+
+  const after = new Map();
+  for (const dir of [BUNDLES_OUT, MANIFESTS_OUT]) {
+    if (!existsSync(dir)) continue;
+    for (const file of collectFiles(dir)) {
+      after.set(file, checkFingerprint(file));
+    }
+  }
+  if (existsSync(familyPath)) {
+    after.set(familyPath, checkFingerprint(familyPath));
+  }
+  if (existsSync(RISK_SIGNALS_GENERATED)) {
+    after.set(RISK_SIGNALS_GENERATED, checkFingerprint(RISK_SIGNALS_GENERATED));
+  }
+
+  const drift = [];
+  for (const [file, hash] of after) {
+    if (snapshot.get(file) !== hash) drift.push(file);
+  }
+  for (const file of snapshot.keys()) {
+    if (!after.has(file)) drift.push(file);
+  }
+  if (drift.length > 0) {
+    console.error(
+      `[sync-harness] --check 失败：${drift.length} 个文件与 harness/ 源树不同步`,
+    );
+    for (const file of drift.slice(0, 20)) {
+      console.error(`  ${relative(ROOT, file)}`);
+    }
+    process.exit(1);
+  }
+  console.log("[sync-harness] --check 通过：数据包与 harness/ 源树一致");
 }
 
-// Run only when executed directly (node scripts/sync-harness.mjs), not when
-// imported by tests. Keeps atomicSwapDir unit-testable without triggering a
-// full 8-bundle sync at import time.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    process.stderr.write(`${error.stack ?? error}\n`);
-    process.exit(1);
-  });
-}
+const mode = CHECK_MODE ? check() : sync();
+mode.catch((error) => {
+  console.error(`[sync-harness] 失败：${error.message}`);
+  process.exit(1);
+});

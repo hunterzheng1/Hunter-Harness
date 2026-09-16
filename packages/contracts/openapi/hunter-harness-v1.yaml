@@ -1320,31 +1320,6 @@ paths:
             description: Project workflow family binding updated with optimistic revision,
           }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/instruction-proposals:
-    post:
-      operationId: createInstructionProposal
-      summary: Audit project guidance and generate a Chinese proposal without applying it
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - $ref: "#/components/parameters/RequestId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InstructionProposalRequest"
-      responses:
-        "201":
-          description: Marker-free Chinese instruction/rule proposal; rule candidates are never auto-applied
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InstructionProposal"
-        "422":
-          { description: Evidence hash mismatch or sensitive content blocked }
-        default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/changes/{change_key}/archive-package:
     put:
       operationId: uploadChangeArchivePackage
@@ -1396,6 +1371,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/ArchivePackageReceipt"
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/changes/{change_key}/archive-package/validate:
+    post:
+      operationId: validateChangeArchivePackage
+      summary: Run the full archive package validation read-only (no storage, no receipt)
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/ChangeKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Package passes the same checks the PUT applies; nothing was stored
+        "415": { description: Request body is not an application/zip buffer }
+        "422":
+          {
+            description: Validation failed; error details carry field-level issues,
+          }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/changes/{change_key}/archive-package/download:
     get:
       operationId: downloadChangeArchivePackage
@@ -1414,120 +1411,6 @@ paths:
             application/zip:
               schema: { type: string, format: binary }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/content-upload:
-    post:
-      operationId: stageRemoteContentUpload
-      summary: Stage one bounded raw ZIP stream for remote archive processing
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:write
-      x-hunter-body-transport: single_bounded_stream
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_CONTENT_UPLOAD_INPUT_INVALID, REMOTE_CONTENT_UPLOAD_STREAM_INVALID, REMOTE_CONTENT_UPLOAD_HASH_MISMATCH, REMOTE_CONTENT_UPLOAD_SIZE_MISMATCH]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
-        "409": [REMOTE_CONTENT_UPLOAD_IDEMPOTENCY_CONFLICT]
-        "410": [REMOTE_CONTENT_UPLOAD_EXPIRED]
-        "413": [REMOTE_CONTENT_UPLOAD_TOO_LARGE]
-        "415": [REMOTE_CONTENT_UPLOAD_MEDIA_TYPE_UNSUPPORTED]
-        "499": [REMOTE_CONTENT_UPLOAD_ABORTED]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-        - name: Content-Length
-          in: header
-          required: true
-          schema: { type: string, pattern: "^[1-9][0-9]{0,8}$", maxLength: 9 }
-        - name: Idempotency-Key
-          in: header
-          required: true
-          schema: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        - name: X-Content-SHA256
-          in: header
-          required: true
-          schema: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        - name: X-Upload-Expires-In-Ms
-          in: header
-          required: true
-          schema: { type: string, pattern: "^[1-9][0-9]{0,8}$", maxLength: 9 }
-        - name: X-Commit-SHA
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-        - name: X-Client-Id
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-        - name: X-Change-Key
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-      requestBody:
-        required: true
-        content:
-          application/zip:
-            schema: { type: string, format: binary, maxLength: 536870912 }
-      responses:
-        "201":
-          description: New bounded upload record
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteContentUploadHttpResult" } } }
-        "200":
-          description: Idempotent replay of the same complete request identity
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteContentUploadHttpResult" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "410": { $ref: "#/components/responses/Error" }
-        "413": { $ref: "#/components/responses/Error" }
-        "415": { $ref: "#/components/responses/Error" }
-        "499": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/content-upload/status:
-    get:
-      operationId: getRemoteContentUploadStatus
-      summary: Resolve the scoped outcome of one remote content upload identity
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:read
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_CONTENT_UPLOAD_INPUT_INVALID, REMOTE_CONTENT_UPLOAD_STREAM_INVALID, REMOTE_CONTENT_UPLOAD_HASH_MISMATCH, REMOTE_CONTENT_UPLOAD_SIZE_MISMATCH]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH, REMOTE_CONTENT_UPLOAD_SCOPE_MISMATCH]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-        - name: Idempotency-Key
-          in: header
-          required: true
-          schema: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        - name: X-Commit-SHA
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-        - name: X-Client-Id
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-        - name: X-Change-Key
-          in: header
-          schema: { type: string, minLength: 1, maxLength: 240 }
-      responses:
-        "200":
-          description: Stored, expired, or unknown status for this complete scoped identity
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteContentUploadHttpStatus" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload:
     post:
       operationId: stageRemoteSyncFileUpload
@@ -1641,184 +1524,6 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/archive:prepare:
-    post:
-      operationId: prepareRemoteSyncArchive
-      summary: Prepare a durable Remote Archive v2 operation for a stored bounded upload
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:write
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_ARCHIVE_INPUT_INVALID]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
-        "409": [REMOTE_ARCHIVE_IDEMPOTENCY_CONFLICT, REMOTE_ARCHIVE_CAPABILITY_UNAVAILABLE]
-        "422": [REMOTE_ARCHIVE_PAYLOAD_HASH_MISMATCH]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchivePrepareHttpRequest" } } }
-      responses:
-        "201":
-          description: New durable prepare claim
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchivePrepareHttpResponse" } } }
-        "200":
-          description: Idempotent replay without a new capability claim
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchivePrepareHttpResponse" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/archive:commit:
-    post:
-      operationId: commitRemoteSyncArchive
-      summary: Commit a prepared Remote Archive v2 operation
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:write
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_ARCHIVE_INPUT_INVALID]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
-        "404": [REMOTE_ARCHIVE_PREPARE_NOT_FOUND]
-        "409": [REMOTE_ARCHIVE_LEASE_FENCED, REMOTE_ARCHIVE_LEASE_SCOPE_MISMATCH, REMOTE_ARCHIVE_CAPABILITY_UNAVAILABLE, REMOTE_ARCHIVE_COMMIT_AMBIGUOUS]
-        "410": [REMOTE_ARCHIVE_PREPARE_EXPIRED]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchiveCommitHttpRequest" } } }
-      responses:
-        "200":
-          description: Committed receipt, including a durable replay
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchiveCommitHttpResponse" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "410": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/archive/status:
-    get:
-      operationId: getRemoteSyncArchiveStatus
-      summary: Resolve a scoped Remote Archive v2 operation
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:read
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_ARCHIVE_INPUT_INVALID]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
-        "409": [REMOTE_ARCHIVE_LEASE_SCOPE_MISMATCH]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: operation_id
-          in: query
-          required: true
-          schema: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        - name: actor_id
-          in: query
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: commit_sha
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: client_id
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: change_key
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-      responses:
-        "200":
-          description: Prepared, committed, failed, or unknown durable status
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchiveStatusHttpResponse" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
-  /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/archive/{operation_id}/receipt:
-    get:
-      operationId: getRemoteSyncArchiveReceipt
-      summary: Resolve the durable receipt for a Remote Archive v2 operation
-      x-hunter-auth-source: authenticated_principal
-      x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: archive:read
-      x-hunter-error-codes:
-        "400": [VALIDATION_FAILED, REMOTE_ARCHIVE_INPUT_INVALID]
-        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
-        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
-        "409": [REMOTE_ARCHIVE_LEASE_SCOPE_MISMATCH]
-        "503": [REMOTE_UNAVAILABLE]
-      parameters:
-        - $ref: "#/components/parameters/ProjectId"
-        - name: branch_name
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: operation_id
-          in: path
-          required: true
-          schema: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        - name: actor_id
-          in: query
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: commit_sha
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: client_id
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - name: change_key
-          in: query
-          required: false
-          schema: { type: string, minLength: 1, maxLength: 160 }
-        - $ref: "#/components/parameters/RequestId"
-      responses:
-        "200":
-          description: Durable receipt or null for a non-committed operation
-          headers: { X-Request-Id: { $ref: "#/components/headers/RequestId" } }
-          content: { application/json: { schema: { $ref: "#/components/schemas/RemoteSyncArchiveReceiptHttpResponse" } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases:
     post:
@@ -2381,8 +2086,6 @@ paths:
           branch_files: "files:read",
           project_materials: "files:read",
           project_knowledge: "knowledge:read",
-          change_records: "files:read",
-          version_records: "files:read",
         }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, PLATFORM_INFORMATION_CURSOR_INVALID]
@@ -2450,8 +2153,6 @@ paths:
           branch_files: "files:read",
           project_materials: "files:read",
           project_knowledge: "knowledge:read",
-          change_records: "files:read",
-          version_records: "files:read",
         }
       x-hunter-idempotency-header: Idempotency-Key
       x-hunter-error-codes:
@@ -2507,8 +2208,6 @@ paths:
           branch_files: "files:read",
           project_materials: "files:read",
           project_knowledge: "knowledge:read",
-          change_records: "files:read",
-          version_records: "files:read",
         }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
@@ -2554,8 +2253,6 @@ paths:
           branch_files: "files:read",
           project_materials: "files:read",
           project_knowledge: "knowledge:read",
-          change_records: "files:read",
-          version_records: "files:read",
         }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
@@ -2594,8 +2291,6 @@ paths:
           branch_files: "files:read",
           project_materials: "files:read",
           project_knowledge: "knowledge:read",
-          change_records: "files:read",
-          version_records: "files:read",
         }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
@@ -2983,7 +2678,6 @@ components:
         - trend
         - distributions
         - ai_usage
-        - active_runs
         - health
         - services
         - activity
@@ -3008,11 +2702,6 @@ components:
         ai_usage:
           type: array
           description: Daily AI request, token, and estimated cost totals for the requested window.
-          items:
-            type: object
-        active_runs:
-          type: array
-          description: Most recently active project runs visible to the authenticated actor.
           items:
             type: object
         health:
@@ -4144,163 +3833,6 @@ components:
                 type: string,
                 const: LEGACY_MANAGED_SNAPSHOT_STATUS_UNAVAILABLE,
               }
-    InstructionProposalRequest:
-      type: object
-      additionalProperties: false
-      required:
-        [
-          schema_version,
-          project_profile,
-          adapters,
-          documents,
-          codebase_map,
-          recent_changes,
-        ]
-      properties:
-        schema_version: { type: integer, const: 1 }
-        language: { type: string, const: zh-CN, default: zh-CN }
-        project_profile: { type: string, minLength: 1, maxLength: 100 }
-        adapters:
-          type: array
-          maxItems: 4
-          items: { type: string, enum: [codex, claude-code, cursor, codebuddy] }
-        documents:
-          type: array
-          maxItems: 16
-          items:
-            type: object
-            additionalProperties: false
-            required: [path, content, content_sha256]
-            properties:
-              path:
-                type: string
-                enum:
-                  - AGENTS.md
-                  - CLAUDE.md
-                  - CODEBUDDY.md
-                  - .harness/rules/project-guidance.md
-                  - .cursor/rules/project-guidance.mdc
-                  - package.json
-                  - pom.xml
-                  - build.gradle
-                  - build.gradle.kts
-                  - pyproject.toml
-              content: { type: string, maxLength: 524288 }
-              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        codebase_map:
-          type: object
-          additionalProperties: false
-          required: [status, content]
-          properties:
-            status: { type: string, enum: [missing, stale, fresh] }
-            content: { type: string, maxLength: 524288 }
-        recent_changes:
-          type: array
-          maxItems: 20
-          description: Optional client hints; server-owned archive summaries are merged first.
-          items:
-            type: object
-            additionalProperties: false
-            required: [change_key, summary, decisions]
-            properties:
-              change_key: { type: string, minLength: 1, maxLength: 160 }
-              summary: { type: string, maxLength: 10000 }
-              decisions:
-                type: array
-                maxItems: 50
-                items: { type: string, minLength: 1, maxLength: 2000 }
-    InstructionProposal:
-      type: object
-      additionalProperties: false
-      required:
-        [
-          schema_version,
-          proposal_id,
-          project_id,
-          language,
-          mode,
-          applied,
-          generated_at,
-          findings,
-          files,
-          rule_candidates,
-          basis,
-          request_id,
-        ]
-      properties:
-        schema_version: { type: integer, const: 1 }
-        proposal_id:
-          { type: string, pattern: "^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$" }
-        project_id: { type: string, pattern: "^prj_" }
-        language: { type: string, const: zh-CN }
-        mode: { type: string, const: audit-propose }
-        applied: { type: boolean, const: false }
-        generated_at: { type: string, format: date-time }
-        findings:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [code, severity, path, message]
-            properties:
-              code: { type: string }
-              severity: { type: string, enum: [info, warning] }
-              path: { type: string }
-              message: { type: string }
-        files:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              [path, operation, base_content_sha256, content_sha256, content]
-            properties:
-              path:
-                type: string
-                enum:
-                  - AGENTS.md
-                  - CLAUDE.md
-                  - CODEBUDDY.md
-                  - .harness/rules/project-guidance.md
-                  - .cursor/rules/project-guidance.mdc
-              operation: { type: string, enum: [add, modify] }
-              base_content_sha256:
-                type: [string, "null"]
-                pattern: "^sha256:[a-f0-9]{64}$"
-              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-              content: { type: string, maxLength: 1048576 }
-        rule_candidates:
-          type: array
-          description: Evidence-backed candidates with auto_apply=false; not part of apply operations.
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              [
-                candidate_id,
-                content,
-                evidence,
-                evidence_count,
-                auto_apply,
-                recommendation,
-              ]
-            properties:
-              candidate_id: { type: string, pattern: "^rc_[a-f0-9]{16}$" }
-              content: { type: string }
-              evidence:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  required: [change_key, summary]
-                  properties:
-                    change_key: { type: string }
-                    summary: { type: string }
-              evidence_count: { type: integer, minimum: 1 }
-              auto_apply: { type: boolean, const: false }
-              recommendation: { type: string, enum: [review, promote] }
-        basis: { type: array, items: { type: string, format: uri } }
-        request_id: { type: string, format: uuid }
     KnowledgeQueryHttpBudget:
       type: object
       additionalProperties: false
@@ -4382,8 +3914,6 @@ components:
           branch_files,
           project_materials,
           project_knowledge,
-          change_records,
-          version_records,
         ]
     PlatformInformationPageState:
       type: string
@@ -4399,9 +3929,6 @@ components:
           architecture,
           instruction,
           knowledge_entry,
-          change_document,
-          archive_package,
-          project_content_candidate,
         ]
     PlatformInformationSort:
       type: string
@@ -4412,7 +3939,6 @@ components:
           uploaded_at_desc_snapshot_version_asc,
           category_asc_path_asc_version_desc,
           extracted_at_desc_knowledge_id_asc,
-          archived_at_desc_change_key_asc,
         ]
     PlatformInformationPath:
       type: string
@@ -4572,14 +4098,6 @@ components:
       properties:
         blob_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
         snapshot_version: { type: string, minLength: 1, maxLength: 160 }
-    PlatformInformationArchiveDownloadRef:
-      type: object
-      additionalProperties: false
-      description: Independent archive-package download identity; it is not a knowledge or document reference.
-      required: [archive_id, package_hash]
-      properties:
-        archive_id: { type: string, minLength: 1, maxLength: 160 }
-        package_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
     PlatformInformationBranchMonitorItem:
       type: object
       additionalProperties: false
@@ -4710,73 +4228,6 @@ components:
         extracted_at: { type: string, format: date-time }
         relationship_count: { type: integer, minimum: 0 }
         sort_key: { type: string, minLength: 1, maxLength: 512 }
-    PlatformInformationChangeRecordItem:
-      type: object
-      additionalProperties: false
-      required:
-        [
-          item_kind,
-          change_key,
-          title,
-          archived_at,
-          archive_status,
-          knowledge_extraction_status,
-          document_refs,
-          candidate_count,
-          archive_download_ref,
-          sort_key,
-        ]
-      properties:
-        item_kind: { type: string, const: change_record }
-        change_key: { type: string, minLength: 1, maxLength: 160 }
-        title: { type: string, minLength: 1, maxLength: 240 }
-        archived_at: { type: string, format: date-time }
-        archive_status:
-          { type: string, enum: [absent, uploading, stored, failed] }
-        knowledge_extraction_status:
-          {
-            type: string,
-            enum: [not_scheduled, queued, extracting, ready, failed],
-          }
-        document_refs:
-          {
-            type: array,
-            maxItems: 20,
-            items: { type: string, minLength: 1, maxLength: 160 },
-          }
-        candidate_count: { type: integer, minimum: 0 }
-        archive_download_ref:
-          oneOf:
-            - {
-                $ref: "#/components/schemas/PlatformInformationArchiveDownloadRef",
-              }
-            - { type: "null" }
-        sort_key: { type: string, minLength: 1, maxLength: 512 }
-    PlatformInformationVersionRecordItem:
-      type: object
-      additionalProperties: false
-      required:
-        [
-          item_kind,
-          snapshot_version,
-          branch_name,
-          commit_sha,
-          uploaded_at,
-          file_count,
-          changed_file_count,
-          diff_ref,
-          sort_key,
-        ]
-      properties:
-        item_kind: { type: string, const: version_record }
-        snapshot_version: { type: string, minLength: 1, maxLength: 160 }
-        branch_name: { type: string, minLength: 1, maxLength: 160 }
-        commit_sha: { type: string, pattern: "^[a-f0-9]{40,64}$" }
-        uploaded_at: { type: string, format: date-time }
-        file_count: { type: integer, minimum: 0 }
-        changed_file_count: { type: integer, minimum: 0 }
-        diff_ref: { type: string, minLength: 1, maxLength: 160 }
-        sort_key: { type: string, minLength: 1, maxLength: 512 }
     PlatformInformationItem:
       oneOf:
         - { $ref: "#/components/schemas/PlatformInformationBranchMonitorItem" }
@@ -4785,8 +4236,6 @@ components:
             $ref: "#/components/schemas/PlatformInformationProjectMaterialItem",
           }
         - { $ref: "#/components/schemas/PlatformInformationKnowledgeItem" }
-        - { $ref: "#/components/schemas/PlatformInformationChangeRecordItem" }
-        - { $ref: "#/components/schemas/PlatformInformationVersionRecordItem" }
       discriminator: { propertyName: item_kind }
     PlatformInformationFailure:
       type: object
@@ -4956,8 +4405,7 @@ components:
         detail_kind:
           {
             type: string,
-            enum:
-              [branch_file, project_material, knowledge_entry, change_document],
+            enum: [branch_file, project_material, knowledge_entry],
           }
         content: { type: string, maxLength: 2000000 }
         content_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
@@ -4980,45 +4428,6 @@ components:
             maxItems: 100,
             items: { type: string, minLength: 1, maxLength: 160 },
           }
-    PlatformInformationChangeDetail:
-      type: object
-      additionalProperties: false
-      required:
-        [detail_kind, document_refs, candidate_refs, archive_download_ref]
-      properties:
-        detail_kind: { type: string, const: change_record }
-        document_refs:
-          {
-            type: array,
-            maxItems: 20,
-            items: { type: string, minLength: 1, maxLength: 160 },
-          }
-        candidate_refs:
-          {
-            type: array,
-            maxItems: 100,
-            items: { type: string, minLength: 1, maxLength: 160 },
-          }
-        archive_download_ref:
-          oneOf:
-            - {
-                $ref: "#/components/schemas/PlatformInformationArchiveDownloadRef",
-              }
-            - { type: "null" }
-    PlatformInformationVersionDiffDetail:
-      type: object
-      additionalProperties: false
-      required: [detail_kind, from_version, to_version, changed_paths]
-      properties:
-        detail_kind: { type: string, const: version_diff }
-        from_version: { type: string, minLength: 1, maxLength: 160 }
-        to_version: { type: string, minLength: 1, maxLength: 160 }
-        changed_paths:
-          {
-            type: array,
-            maxItems: 1000,
-            items: { $ref: "#/components/schemas/PlatformInformationPath" },
-          }
     PlatformInformationDetailResponse:
       type: object
       additionalProperties: false
@@ -5035,10 +4444,6 @@ components:
           oneOf:
             - { $ref: "#/components/schemas/PlatformInformationContentDetail" }
             - { $ref: "#/components/schemas/PlatformInformationMonitorDetail" }
-            - { $ref: "#/components/schemas/PlatformInformationChangeDetail" }
-            - {
-                $ref: "#/components/schemas/PlatformInformationVersionDiffDetail",
-              }
           discriminator: { propertyName: detail_kind }
     KnowledgeExtractionRetryIntent:
       type: object
@@ -5827,179 +5232,6 @@ components:
           oneOf:
             - { $ref: "#/components/schemas/RemoteContentUploadHttpRecord" }
             - { type: "null" }
-    RemoteSyncArchiveSourceHttp:
-      type: object
-      additionalProperties: false
-      required: [project_id, branch_name, actor_id]
-      properties:
-        project_id: { type: string, minLength: 1, maxLength: 160 }
-        branch_name: { type: string, minLength: 1, maxLength: 160 }
-        actor_id: { type: string, minLength: 1, maxLength: 160 }
-        commit_sha: { type: string, minLength: 1, maxLength: 160 }
-        client_id: { type: string, minLength: 1, maxLength: 160 }
-        change_key: { type: string, minLength: 1, maxLength: 160 }
-    RemoteSyncArchiveUploadRefHttp:
-      type: object
-      additionalProperties: false
-      required: [ref_id, sha256, size_bytes]
-      properties:
-        ref_id: { type: string, minLength: 1, maxLength: 240 }
-        sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        size_bytes: { type: integer, minimum: 1, maximum: 536870912 }
-    RemoteSyncArchiveIdentitiesHttp:
-      type: object
-      additionalProperties: false
-      required: [package_sha256, package_size_bytes, archive_schema_version, trusted_package_receipt_hash, local_archive_receipt_hash, manifest_hash, inventory_hash, core_v2_projection_hash]
-      properties:
-        package_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        package_size_bytes: { type: integer, minimum: 1, maximum: 536870912 }
-        archive_schema_version: { type: integer, const: 1 }
-        trusted_package_receipt_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        local_archive_receipt_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        manifest_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        inventory_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        core_v2_projection_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-    RemoteSyncArchiveMetadataHttp:
-      type: object
-      additionalProperties: false
-      required: [schema_version, source, archive_id, identities, upload_ref]
-      properties:
-        schema_version: { type: integer, const: 2 }
-        source: { $ref: "#/components/schemas/RemoteSyncArchiveSourceHttp" }
-        archive_id: { type: string, minLength: 1, maxLength: 160 }
-        identities: { $ref: "#/components/schemas/RemoteSyncArchiveIdentitiesHttp" }
-        upload_ref: { $ref: "#/components/schemas/RemoteSyncArchiveUploadRefHttp" }
-      x-hunter-cross-field-invariants:
-        - upload_ref.sha256 and upload_ref.size_bytes equal identities.package_sha256 and identities.package_size_bytes
-    RemoteSyncArchiveLeaseHttp:
-      type: object
-      additionalProperties: false
-      required: [project_id, branch_name, actor_id, capability_hash, fencing_token, acquired_at, expires_at]
-      properties:
-        project_id: { type: string, minLength: 1, maxLength: 160 }
-        branch_name: { type: string, minLength: 1, maxLength: 160 }
-        actor_id: { type: string, minLength: 1, maxLength: 160 }
-        capability_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        fencing_token: { type: integer, minimum: 1 }
-        acquired_at: { type: string, format: date-time }
-        expires_at: { type: string, format: date-time }
-      x-hunter-cross-field-invariants:
-        - 0 < expires_at - acquired_at <= 600000 milliseconds
-    RemoteSyncArchiveReceiptHttp:
-      type: object
-      additionalProperties: false
-      required: [schema_version, receipt_id, operation_id, prepare_id, idempotency_key, payload_hash, source, archive_id, package_sha256, package_size_bytes, manifest_hash, trusted_package_receipt_hash, local_archive_receipt_hash, inventory_hash, core_v2_projection_hash, stored_at, receipt_hash]
-      properties:
-        schema_version: { type: integer, const: 2 }
-        receipt_id: { type: string, pattern: "^remote_archive_receipt:sha256:[a-f0-9]{64}$" }
-        operation_id: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        prepare_id: { type: string, pattern: "^remote_archive_prepare:sha256:[a-f0-9]{64}$" }
-        idempotency_key: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        payload_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        source: { $ref: "#/components/schemas/RemoteSyncArchiveSourceHttp" }
-        archive_id: { type: string, minLength: 1, maxLength: 160 }
-        package_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        package_size_bytes: { type: integer, minimum: 1, maximum: 536870912 }
-        manifest_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        trusted_package_receipt_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        local_archive_receipt_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        inventory_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        core_v2_projection_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        stored_at: { type: string, format: date-time }
-        receipt_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-    RemoteSyncArchiveRecordHttp:
-      type: object
-      additionalProperties: false
-      required: [schema_version, operation_id, prepare_id, idempotency_key, payload_hash, source, archive_id, identities, upload_ref, state, generation, lease, receipt, failure_code, created_at, updated_at, record_hash]
-      properties:
-        schema_version: { type: integer, const: 2 }
-        operation_id: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        prepare_id: { type: string, pattern: "^remote_archive_prepare:sha256:[a-f0-9]{64}$" }
-        idempotency_key: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        payload_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        source: { $ref: "#/components/schemas/RemoteSyncArchiveSourceHttp" }
-        archive_id: { type: string, minLength: 1, maxLength: 160 }
-        identities: { $ref: "#/components/schemas/RemoteSyncArchiveIdentitiesHttp" }
-        upload_ref: { $ref: "#/components/schemas/RemoteSyncArchiveUploadRefHttp" }
-        state: { type: string, enum: [pending, prepared, committing, committed, failed] }
-        generation: { type: integer, minimum: 0 }
-        lease:
-          oneOf: [{ $ref: "#/components/schemas/RemoteSyncArchiveLeaseHttp" }, { type: "null" }]
-        receipt:
-          oneOf: [{ $ref: "#/components/schemas/RemoteSyncArchiveReceiptHttp" }, { type: "null" }]
-        failure_code: { type: [string, "null"] }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-        record_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-      x-hunter-cross-field-invariants:
-        - record_hash is the canonical record hash without record_hash
-        - prepared/committing/committed records have a lease; failed records clear lease and receipt
-        - committed records have a receipt and generation at least 3
-    RemoteSyncArchiveClaimHttp:
-      type: object
-      additionalProperties: false
-      required: [operation_id, prepare_id, source, generation, fencing_token, capability]
-      properties:
-        operation_id: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        prepare_id: { type: string, pattern: "^remote_archive_prepare:sha256:[a-f0-9]{64}$" }
-        source: { $ref: "#/components/schemas/RemoteSyncArchiveSourceHttp" }
-        generation: { type: integer, minimum: 1 }
-        fencing_token: { type: integer, minimum: 1 }
-        capability: { type: string, pattern: "^remote_archive_capability:.{1,214}$" }
-    RemoteSyncArchivePrepareHttpRequest:
-      type: object
-      additionalProperties: false
-      required: [schema_version, operation_id, idempotency_key, payload_hash, lease_ttl_ms, metadata]
-      properties:
-        schema_version: { type: integer, const: 2 }
-        operation_id: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        idempotency_key: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        payload_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        lease_ttl_ms: { type: integer, minimum: 1, maximum: 600000 }
-        metadata: { $ref: "#/components/schemas/RemoteSyncArchiveMetadataHttp" }
-    RemoteSyncArchivePrepareHttpResponse:
-      type: object
-      additionalProperties: false
-      required: [outcome, claim, record]
-      properties:
-        outcome: { type: string, enum: [new, replay] }
-        claim:
-          oneOf: [{ $ref: "#/components/schemas/RemoteSyncArchiveClaimHttp" }, { type: "null" }]
-        record: { $ref: "#/components/schemas/RemoteSyncArchiveRecordHttp" }
-      x-hunter-cross-field-invariants:
-        - new has a claim; replay has null claim
-    RemoteSyncArchiveCommitHttpRequest:
-      type: object
-      additionalProperties: false
-      required: [claim, idempotency_key, payload_hash]
-      properties:
-        claim: { $ref: "#/components/schemas/RemoteSyncArchiveClaimHttp" }
-        idempotency_key: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-        payload_hash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
-    RemoteSyncArchiveCommitHttpResponse:
-      type: object
-      additionalProperties: false
-      required: [outcome, record, receipt]
-      properties:
-        outcome: { type: string, enum: [new, replay] }
-        record: { $ref: "#/components/schemas/RemoteSyncArchiveRecordHttp" }
-        receipt: { $ref: "#/components/schemas/RemoteSyncArchiveReceiptHttp" }
-    RemoteSyncArchiveStatusHttpResponse:
-      type: object
-      additionalProperties: false
-      required: [operation_id, state, record]
-      properties:
-        operation_id: { type: string, pattern: "^remote_archive_operation:.{1,215}$" }
-        state: { type: string, enum: [pending, prepared, committing, committed, failed, unknown] }
-        record:
-          oneOf: [{ $ref: "#/components/schemas/RemoteSyncArchiveRecordHttp" }, { type: "null" }]
-    RemoteSyncArchiveReceiptHttpResponse:
-      type: object
-      additionalProperties: false
-      required: [receipt]
-      properties:
-        receipt:
-          oneOf: [{ $ref: "#/components/schemas/RemoteSyncArchiveReceiptHttp" }, { type: "null" }]
   headers:
     RequestId:
       description: Stable request correlation identity echoed on every response.

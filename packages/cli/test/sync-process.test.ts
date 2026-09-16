@@ -17,10 +17,11 @@ import {
 
 describe("sync bounded process runner", () => {
   it("maps adapter remediation ids to one exact projection owner", () => {
+    // v1.0：仅 .agents(codex) 与 .codebuddy 两个投影面可修复，其余 fail-closed 为 null。
     expect(adapterAgentForRemediation("refresh-managed-adapters-agents")).toBe("codex");
-    expect(adapterAgentForRemediation("refresh-managed-adapters-claude")).toBe("claude-code");
-    expect(adapterAgentForRemediation("refresh-managed-adapters-cursor")).toBe("cursor");
     expect(adapterAgentForRemediation("refresh-managed-adapters-codebuddy")).toBe("codebuddy");
+    expect(adapterAgentForRemediation("refresh-managed-adapters-claude")).toBeNull();
+    expect(adapterAgentForRemediation("refresh-managed-adapters-cursor")).toBeNull();
     expect(adapterAgentForRemediation("refresh-managed-adapters-unknown")).toBeNull();
   });
 
@@ -132,7 +133,7 @@ describe("sync bounded process runner", () => {
   it("aggregates systematic adapter drift into one actionable remediation", () => {
     const conflicts = Array.from({ length: 100 }, (_, index) => ({
       source_path: `harness/example/file-${index}.md`,
-      target_path: `.cursor/skills/example/file-${index}.md`,
+      target_path: `.codebuddy/skills/example/file-${index}.md`,
       baseline_content_sha256: "b".repeat(64),
       adapter_content_sha256: "a".repeat(64)
     }));
@@ -155,7 +156,7 @@ describe("sync bounded process runner", () => {
 
     expect(remediations).toHaveLength(1);
     expect(remediations[0]).toMatchObject({
-      id: "refresh-managed-adapters-cursor",
+      id: "refresh-managed-adapters-codebuddy",
       component: "adapter-projection",
       risk: "medium",
       autoFixable: true,
@@ -194,8 +195,9 @@ describe("sync bounded process runner", () => {
       .toContain("/harness-codebase-map");
     expect(remediations.find((item) => item.id === "resolve-codegraph-codegraph-index-missing")?.applyCommand)
       .toBe("codegraph init");
+    // v1.0：instructions 命令已删除，修复路径收敛为编辑 AGENTS.md 后重跑 sync --check。
     expect(remediations.find((item) => item.id === "repair-instruction-graph")?.applyCommand)
-      .toContain("instructions audit");
+      .toContain("AGENTS.md");
   });
 
   it("keeps default JSON compact and exposes receipts only in verbose mode", () => {

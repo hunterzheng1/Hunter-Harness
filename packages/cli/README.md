@@ -1,30 +1,52 @@
 # hunter-harness
 
-Local-first, server-governed Agent Harness CLI.
+[![npm](https://img.shields.io/npm/v/hunter-harness)](https://www.npmjs.com/package/hunter-harness)
+
+Hunter Harness 命令行工具：在任意项目一键安装/升级结构化 harness——固定的 `.agents/skills/` 技能投影（自动双写 `.codebuddy/skills/`）、单文件 `AGENTS.md` 指令、`.harness/` 工程元数据，并支持运行引擎、归档自动学习与远程治理同步。
+
+**v1.0.0 为破坏性升级**：移除了安装时的 agent/profile 选择、静态 rules 投影、CLAUDE.md/CODEBUDDY.md 受管块与 rules-sync/instructions 命令；新增 `uninstall` 一键清理历史内容。升级路径见根 README「从 0.x 升级」。
+
+## 安装
 
 ```bash
-npx hunter-harness
-npx hunter-harness --agents all --profile general --non-interactive --yes
-npx hunter-harness refresh --agents codex,cursor --non-interactive --yes
-npx hunter-harness rules-sync --json
-npx hunter-harness push
-npx hunter-harness update
+npm install -g hunter-harness
 ```
 
-- 默认命令可离线初始化或打开事务恢复菜单。
-- `--agents <csv>` 可选择 `claude-code`、`codex`、`cursor`、`codebuddy` 的任意组合（或 `all`）；未提供时保持 Claude Code 默认值。
-- `--codebuddy-surface both|ide|cli` 只在选择 CodeBuddy 时有效，默认 `both`。
-- `rules-sync` 是只读审计入口：扫描各 Agent 的用户规则并生成远端中文提案（不改写本地文件）；审阅后用 `instructions apply` 确认应用。规则候选由归档证据管线写入 `.harness/state/local/rule-candidates.json`，经 `rules-review` 人工裁决，不会自动激活。
-- `push` 只创建 proposal，不发布、不推进本地 baseline。
-- `update` 只事务化应用人工批准的 artifact。
+要求 Node.js 22.12+。
 
-| Agent | Skills | Rules | 自定义 Agent |
-|---|---|---|---|
-| Claude Code | `.claude/skills/` | `.claude/rules/*.md` | `.claude/agents/` |
-| Codex | `.agents/skills/` | `AGENTS.md` | 不生成 |
-| Cursor | `.cursor/skills/` | `.cursor/rules/*.mdc` | 不生成 |
-| CodeBuddy `both` | `.codebuddy/skills/` | `CODEBUDDY.md` + `.codebuddy/.rules/*.mdc` + `.codebuddy/rules/*.md` | `.codebuddy/agents/` |
+## 快速开始
 
-需要 Node.js 22.12 或更高版本。公共规则以 `.harness/rules/` 为唯一真源，由受管文件投影到 Claude、Cursor、CodeBuddy，并在 Codex 的 `AGENTS.md` 中建立索引；疑似凭据或提示注入内容不会进入历史规则候选。token 只通过 `--token-env` 指定的环境变量读取，不要写入项目文件或命令参数。
+```bash
+cd your-project
+hunter-harness init
+```
 
-本包使用 MIT License。
+`init` 零选择执行：技能写入 `.agents/skills/` 并无条件双写 `.codebuddy/skills/`，指令收敛为 `AGENTS.md` 受管块。已安装项目升级内容用 `hunter-harness refresh`（保留 `.harness/project.yaml` 配置）。
+
+## 常用命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `hunter-harness init` | 安装 harness 内容并写入项目配置 |
+| `hunter-harness uninstall` | 删除所有历史版本写入的受管内容（默认 dry-run，`--yes` 执行，`--keep-data` 保留运行数据，`--global` 清理用户级目录） |
+| `hunter-harness refresh` | 升级到当前数据包内容，保留项目配置 |
+| `hunter-harness update` | 检查数据包更新（默认 dry-run，`--yes` 写入） |
+| `hunter-harness sync` | 运行安装后体检（instruction-graph、instruction-frontmatter、mcp-server 等） |
+| `hunter-harness doctor` | 诊断本地安装与 Node 环境 |
+| `hunter-harness status` | 本地 harness 状态（安装/更新/配置/MCP/同步/遥测） |
+| `hunter-harness archive upload` | 归档并上传会话记录；成功后自动把高置信规则候选刷新进 AGENTS.md 经验规则受管段 |
+| `hunter-harness push` | 推送本地治理内容（AGENTS.md、skills、codebase map 等） |
+| `hunter-harness plan ...` | 计划证据包/评审记录/finalize/publish |
+| `hunter-harness run ...` / `service ...` | 工作区运行引擎管理 |
+| `skills install <slug>` | 安装技能包（独立包 `@hunter-harness/skills`；固定双写 `.agents/skills` + `.codebuddy/skills`，`--agent` 可收窄） |
+| `skills upload <目录或zip>` | 上传技能包草稿供审核发布 |
+
+完整命令与参数见 `hunter-harness --help`。
+
+## 文档
+
+更多文档见仓库根目录 `README.md` 与 `docs/`；v1.0 逐条破坏性变更决策见 `docs/decisions/`。
+
+## 许可证
+
+MIT © AIRuler Team

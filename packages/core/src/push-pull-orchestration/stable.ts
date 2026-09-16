@@ -9,8 +9,8 @@ import type {
 } from "./types.js";
 import type { SyncPreview, SyncReceipt } from "../remote-sync/index.js";
 
-const regularScopes = ["architecture", "config", "instructions", "rules"] as const;
-const pushAllScopes = ["architecture", "branch_files", "config", "instructions", "rules"] as const;
+const regularScopes = ["architecture", "config", "instructions"] as const;
+const pushAllScopes = ["architecture", "branch_files", "config", "instructions"] as const;
 const ordinaryScopes = new Set<Exclude<UserSyncScope, "all" | "archive">>(pushAllScopes);
 
 export type OrdinaryRequestInvariant =

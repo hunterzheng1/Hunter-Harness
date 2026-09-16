@@ -6,7 +6,6 @@ import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 
 import {
-  adapterNameSchema,
   addOperationSchema,
   agentSkillConfigSchema,
   aiConfigStateSchema,
@@ -28,9 +27,8 @@ import {
   fixActionSchema,
   fixPlanItemSchema,
   fixPlanSchema,
-  HARNESS_AGENT_ORDER,
-  harnessAgentSchema,
   initConfigSchema,
+  isAllowedServerUrl,
   knowledgeFrontmatterSchema,
   mcpToolContractSchema,
   modifyOperationSchema,
@@ -52,7 +50,7 @@ import {
   skillTargetAgentSchema,
   skillNameSchema,
   skillUsageExampleSchema,
-  sortHarnessAgents,
+  stripLegacyConfigFields,
   apiErrorCodeSchema,
   SKILL_NAME_REGEX,
   SKILL_ERROR_CODE,
@@ -102,37 +100,33 @@ describe("active Skill target contracts", () => {
   });
 });
 
-describe("multi-agent contracts", () => {
-  it("harnessAgentSchema accepts exactly four agents", () => {
-    for (const a of ["claude-code", "codex", "cursor", "codebuddy"] as const) {
-      expect(harnessAgentSchema.parse(a)).toBe(a);
-    }
-    expect(() => harnessAgentSchema.parse("generic")).toThrow();
-    expect(() => harnessAgentSchema.parse("mcp")).toThrow();
+describe("v1.0 fixed-projection contracts", () => {
+  it("initConfigSchema accepts an empty config and rejects retired selection fields", () => {
+    expect(initConfigSchema.parse({})).toEqual({});
+    expect(initConfigSchema.safeParse({ agents: ["codex"] }).success).toBe(false);
+    expect(initConfigSchema.safeParse({ profile: "java" }).success).toBe(false);
+    expect(initConfigSchema.safeParse({ codebuddy_surface: "both" }).success).toBe(false);
   });
 
-  it("sortHarnessAgents dedupes and orders deterministically", () => {
-    expect(sortHarnessAgents(["codebuddy", "claude-code", "codebuddy", "codex"]))
-      .toEqual(["claude-code", "codex", "codebuddy"]);
-    expect(HARNESS_AGENT_ORDER).toEqual(["claude-code", "codex", "cursor", "codebuddy", "pi"]);
-  });
+  it("stripLegacyConfigFields removes retired init and project keys", () => {
+    const strippedInit = stripLegacyConfigFields({
+      agents: ["codex"],
+      profile: "java",
+      codebuddy_surface: "ide",
+      server_url: "https://platform.example.test"
+    });
+    expect(strippedInit.stripped.sort()).toEqual(["agents", "codebuddy_surface", "profile"]);
+    expect(initConfigSchema.parse(strippedInit.value)).toEqual({
+      server_url: "https://platform.example.test"
+    });
 
-  it("initConfigSchema requires agents array and defaults codebuddy_surface", () => {
-    const parsed = initConfigSchema.parse({ agents: ["codex", "cursor"], profile: "java" });
-    expect(parsed.agents).toEqual(["codex", "cursor"]);
-    expect(parsed.codebuddy_surface).toBe("both");
-    expect(() => initConfigSchema.parse({ agents: [], profile: "java" })).toThrow();
-    expect(() => initConfigSchema.parse({ adapter: "claude-code", profile: "java" })).toThrow();
-  });
+    const untouched = stripLegacyConfigFields({ server_url: "https://platform.example.test" });
+    expect(untouched.stripped).toEqual([]);
+    expect(initConfigSchema.parse(untouched.value)).toEqual({
+      server_url: "https://platform.example.test"
+    });
 
-  it("adapterNameSchema now includes codebuddy and keeps legacy names", () => {
-    for (const a of ["claude-code", "codex", "cursor", "codebuddy", "generic", "mcp"] as const) {
-      expect(adapterNameSchema.parse(a)).toBe(a);
-    }
-  });
-
-  it("projectConfigSchema accepts optional adapter_options.codebuddy.surface", () => {
-    const base = {
+    const strippedProject = stripLegacyConfigFields({
       harness: { name: "hunter-harness", schema_version: 1 },
       project: {
         name: "x",
@@ -142,15 +136,48 @@ describe("multi-agent contracts", () => {
         profiles: ["general"]
       },
       server: { url: null, token_env: "HUNTER_HARNESS_TOKEN" },
-      adapters: { enabled: ["claude-code", "codebuddy"] }
+      adapters: { enabled: ["claude-code"] },
+      adapter_options: { codebuddy: { surface: "both" } }
+    });
+    expect(strippedProject.stripped.sort()).toEqual([
+      "adapter_options",
+      "adapters",
+      "project.profiles"
+    ]);
+    expect(() => projectConfigSchema.parse(strippedProject.value)).not.toThrow();
+  });
+
+  it("registryAgentSchema keeps registry-level agent and legacy adapter names", () => {
+    for (const a of ["claude-code", "codex", "cursor", "codebuddy", "pi", "generic", "mcp"] as const) {
+      expect(registryAgentSchema.parse(a)).toBe(a);
+    }
+    expect(registryAgentSchema.safeParse("unknown-agent").success).toBe(false);
+  });
+
+  it("projectConfigSchema strict-rejects retired adapters and adapter_options", () => {
+    const base = {
+      harness: { name: "hunter-harness", schema_version: 1 },
+      project: {
+        name: "x",
+        root: ".",
+        local_project_key: "018f6d00-0000-7000-8000-000000000000",
+        project_id: null
+      },
+      server: { url: null, token_env: "HUNTER_HARNESS_TOKEN" }
     };
-    expect(projectConfigSchema.parse(base).adapter_options).toBeUndefined();
-    const withOptions = { ...base, adapter_options: { codebuddy: { surface: "both" } } };
-    expect(projectConfigSchema.parse(withOptions).adapter_options?.codebuddy.surface).toBe("both");
-    expect(() => projectConfigSchema.parse({
+    expect(projectConfigSchema.parse(base).project.project_id).toBeNull();
+    expect(projectConfigSchema.safeParse({
       ...base,
-      adapter_options: { codebuddy: { surface: "web" } }
-    })).toThrow();
+      adapters: { enabled: ["claude-code"] }
+    }).success).toBe(false);
+    expect(projectConfigSchema.safeParse({
+      ...base,
+      adapter_options: { codebuddy: { surface: "both" } }
+    }).success).toBe(false);
+    expect(projectConfigSchema.safeParse({
+      ...base,
+      project: { ...base.project, profiles: ["general"] }
+    }).success).toBe(false);
   });
 });
 
@@ -162,42 +189,42 @@ describe("shared contracts", () => {
         name: "sample",
         root: ".",
         local_project_key: "018f1f2e-7b5a-7cc0-8c2d-2b320cab1234",
-        project_id: null,
-        profiles: ["java"]
+        project_id: null
       },
-      server: { url: null, token_env: "HUNTER_HARNESS_TOKEN" },
-      adapters: { enabled: ["claude-code"] }
+      server: { url: null, token_env: "HUNTER_HARNESS_TOKEN" }
     });
 
     expect(parsed.project.project_id).toBeNull();
   });
 
-  it("allows loopback HTTP server URLs while rejecting remote HTTP", () => {
-    const base = {
+  it("accepts http(s) URLs in the schema while isAllowedServerUrl enforces loopback-only HTTP", () => {
+    expect(projectConfigSchema.safeParse({
       harness: { name: "hunter-harness", schema_version: 1 },
       project: {
         name: "sample",
         root: ".",
         local_project_key: "018f1f2e-7b5a-7cc0-8c2d-2b320cab1234",
-        project_id: null,
-        profiles: ["general"]
+        project_id: null
       },
-      adapters: { enabled: ["claude-code"] }
-    };
-
-    expect(projectConfigSchema.safeParse({
-      ...base,
       server: { url: "http://127.0.0.1:3003", token_env: "HUNTER_HARNESS_TOKEN" }
     }).success).toBe(true);
     expect(initConfigSchema.safeParse({
-      agents: ["claude-code"],
-      profile: "general",
-      codebuddy_surface: "both",
       server_url: "http://localhost:3003"
     }).success).toBe(true);
+    expect(isAllowedServerUrl("http://127.0.0.1:3003", true)).toBe(true);
+    expect(isAllowedServerUrl("http://localhost:3003", true)).toBe(true);
+    expect(isAllowedServerUrl("http://127.0.0.1:3003")).toBe(false);
+    expect(isAllowedServerUrl("http://platform.example.test", true)).toBe(false);
+    expect(isAllowedServerUrl("https://platform.example.test")).toBe(true);
     expect(projectConfigSchema.safeParse({
-      ...base,
-      server: { url: "http://platform.example.test", token_env: "HUNTER_HARNESS_TOKEN" }
+      harness: { name: "hunter-harness", schema_version: 1 },
+      project: {
+        name: "sample",
+        root: ".",
+        local_project_key: "018f1f2e-7b5a-7cc0-8c2d-2b320cab1234",
+        project_id: null
+      },
+      server: { url: "https://user:pw@platform.example.test", token_env: "HUNTER_HARNESS_TOKEN" }
     }).success).toBe(false);
   });
 
@@ -1048,23 +1075,6 @@ describe("OpenAPI v1", () => {
     ]));
     expect(document.components.schemas.ArchivePackageReceipt?.required)
       .toContain("request_id");
-    expect(document.components.schemas.InstructionProposal?.required)
-      .toContain("request_id");
-    expect(document.components.schemas.InstructionProposal?.properties?.proposal_id)
-      .toMatchObject({ pattern: "^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$" });
-    expect(document.components.schemas.InstructionProposal?.properties?.files)
-      .toMatchObject({
-        items: {
-          additionalProperties: false,
-          required: [
-            "path",
-            "operation",
-            "base_content_sha256",
-            "content_sha256",
-            "content"
-          ]
-        }
-      });
     const pushFile = document.components.schemas.RemoteSyncPushFileMetadataHttp as
       ({ oneOf?: unknown[] } & Record<string, unknown>) | undefined;
     expect(pushFile?.oneOf).toEqual([
@@ -1195,9 +1205,8 @@ describe("fix plan schemas", () => {
 });
 
 describe("cursor adapter + managed-block block_id (T1)", () => {
-  it("cursor is a valid registry agent and adapter name", () => {
+  it("cursor is a valid registry agent name", () => {
     expect(registryAgentSchema.safeParse("cursor").success).toBe(true);
-    expect(adapterNameSchema.safeParse("cursor").success).toBe(true);
   });
 
   it("modify op accepts optional block_id for managed-block install", () => {

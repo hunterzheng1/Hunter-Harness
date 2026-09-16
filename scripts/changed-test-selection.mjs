@@ -21,16 +21,12 @@ const CONTRACT_TESTS_BY_PATH = new Map([
     ["packages/cli/test/project-detection.test.ts"]
   ],
   [
-    "packages/cli/src/commands/instructions.ts",
-    ["packages/cli/test/instructions.test.ts"]
-  ],
-  [
     "packages/cli/src/commands/push.ts",
     ["packages/cli/test/push.test.ts"]
   ],
   [
-    "packages/cli/src/commands/rules-review.ts",
-    ["packages/cli/test/rules-review.test.ts"]
+    "packages/cli/src/commands/uninstall.ts",
+    ["packages/cli/test/uninstall-cli.test.ts"]
   ],
   [
     "packages/cli/src/commands/sync.ts",
@@ -46,10 +42,6 @@ const CONTRACT_TESTS_BY_PATH = new Map([
   [
     "packages/cli/src/sync/git-delta.ts",
     ["packages/cli/test/git-delta.test.ts"]
-  ],
-  [
-    "packages/core/src/instructions/graph.ts",
-    ["packages/core/test/instruction-graph.test.ts"]
   ],
   [
     "packages/core/src/push/push.ts",
@@ -77,10 +69,7 @@ const CONTRACT_TESTS_BY_PATH = new Map([
   ],
   [
     "scripts/sync-harness.mjs",
-    [
-      "packages/cli/test/sync-harness-closure.test.ts",
-      "packages/cli/test/sync-harness.test.ts"
-    ]
+    ["packages/cli/test/sync-harness.test.ts"]
   ],
   [
     "scripts/changed-test-selection.mjs",

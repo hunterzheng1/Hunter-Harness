@@ -5,11 +5,9 @@ import {
   artifactManifestSchema,
   baselineManifestSchema,
   canonicalJson,
-  harnessAgentSchema,
   isAllowedServerUrl,
   projectConfigSchema,
   type BaselineManifest,
-  type HarnessAgent,
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -28,10 +26,13 @@ import {
 } from "./credentials.js";
 import type { SensitiveFinding } from "../security/scanner.js";
 import {
-  managedBundleTargets,
-  parseHarnessProfile
+  PROJECTION_SURFACES,
+  loadBundle
 } from "../project/profile-bundle.js";
-import { getAdapters } from "../project/agent-adapters.js";
+import {
+  projectBundleToSurface,
+  skillsRootFor
+} from "../project/agent-adapters.js";
 import { uuidV7 } from "../project/uuid-v7.js";
 import { atomicWriteJson } from "../state/atomic.js";
 import { readBaseline } from "../state/baseline.js";
@@ -134,8 +135,7 @@ interface PushWorkflowState {
 }
 
 const SHARED_MANAGED_ROOTS = [
-  ".harness/codebase",
-  ".harness/rules"
+  ".harness/codebase"
 ];
 const SHARED_MANAGED_FILES = [
   "AGENTS.md",
@@ -248,13 +248,6 @@ async function walkArchiveSummaries(root: string, output: string[]): Promise<voi
   }
 }
 
-function enabledHarnessAgents(project: ProjectConfig): HarnessAgent[] {
-  return project.adapters.enabled.flatMap((agent) => {
-    const parsed = harnessAgentSchema.safeParse(agent);
-    return parsed.success ? [parsed.data] : [];
-  });
-}
-
 async function walkHarnessEntries(
   root: string,
   directory: string,
@@ -273,19 +266,15 @@ async function walkHarnessEntries(
   }
 }
 
+// v1.0: fixed projection surfaces — AGENTS.md + harness-* skills under
+// .agents/skills and .codebuddy/skills. CLAUDE.md / CODEBUDDY.md /
+// .harness/rules / .pi / .cursor projections retired.
 async function managedFiles(
-  projectRoot: string,
-  project: ProjectConfig
+  projectRoot: string
 ): Promise<Record<string, string>> {
   const root = resolve(projectRoot);
   const paths = [];
-  const adapters = getAdapters(enabledHarnessAgents(project));
-  const managedFiles = [
-    ...SHARED_MANAGED_FILES,
-    ...(adapters.some((adapter) => adapter.name === "claude-code") ? ["CLAUDE.md"] : []),
-    ...(adapters.some((adapter) => adapter.name === "codebuddy") ? ["CODEBUDDY.md"] : [])
-  ];
-  for (const path of managedFiles) {
+  for (const path of SHARED_MANAGED_FILES) {
     if (await exists(join(root, path))) {
       paths.push(path);
     }
@@ -294,20 +283,26 @@ async function managedFiles(
     await walkFiles(root, join(root, path), paths);
   }
   await walkArchiveSummaries(root, paths);
-  for (const adapter of adapters) {
-    if (adapter.rulesRoot !== null) {
-      await walkHarnessEntries(root, join(root, adapter.rulesRoot), paths);
-    }
-    await walkHarnessEntries(root, join(root, adapter.skillsRoot), paths);
-    if (adapter.agentsRoot !== null) {
-      await walkHarnessEntries(root, join(root, adapter.agentsRoot), paths);
-    }
+  for (const surface of PROJECTION_SURFACES) {
+    await walkHarnessEntries(root, join(root, skillsRootFor(surface)), paths);
   }
   const result: Record<string, string> = {};
   for (const path of [...new Set(paths)].sort()) {
     result[path] = await readFile(join(root, path), "utf8");
   }
   return result;
+}
+
+/** Target paths projected by the current bundles for all fixed surfaces. */
+async function projectedManagedPaths(resourcesRoot: string): Promise<Set<string>> {
+  const targets: string[] = [];
+  for (const surface of PROJECTION_SURFACES) {
+    const bundle = await loadBundle(resourcesRoot, surface);
+    for (const target of projectBundleToSurface(bundle, surface)) {
+      targets.push(target.target_path);
+    }
+  }
+  return new Set(targets);
 }
 
 function proposalBaseline(baseline: BaselineManifest): Record<string, ProposalBaselineEntry> {
@@ -627,17 +622,10 @@ export async function pushProject(options: PushProjectOptions) {
   const root = resolve(options.projectRoot);
   let project = await readProject(root);
   let baseline = await readBaseline(root);
-  const profile = parseHarnessProfile(project.project.profiles[0]);
-  let installedPaths = profile === null
-    ? new Set<string>()
-    : new Set(await Promise.all(
-      enabledHarnessAgents(project).map((agent) =>
-        managedBundleTargets(options.resourcesRoot, profile, agent)
-      )
-    ).then((targets) => targets.flatMap((target) => [...target])));
+  let installedPaths = await projectedManagedPaths(options.resourcesRoot);
   let preview = makePreview(
     baseline,
-    await managedFiles(root, project),
+    await managedFiles(root),
     options.confirmedProjectLocal ?? [],
     installedPaths
   );
@@ -727,7 +715,7 @@ export async function pushProject(options: PushProjectOptions) {
     );
     preview = makePreview(
       baseline,
-      await managedFiles(root, project),
+      await managedFiles(root),
       options.confirmedProjectLocal ?? [],
       installedPaths
     );
@@ -790,14 +778,7 @@ export async function pushProject(options: PushProjectOptions) {
       );
       project = await readProject(root);
     }
-    const lockedProfile = parseHarnessProfile(project.project.profiles[0]);
-    installedPaths = lockedProfile === null
-      ? new Set<string>()
-      : new Set(await Promise.all(
-        enabledHarnessAgents(project).map((agent) =>
-          managedBundleTargets(options.resourcesRoot, lockedProfile, agent)
-        )
-      ).then((targets) => targets.flatMap((target) => [...target])));
+    installedPaths = await projectedManagedPaths(options.resourcesRoot);
     const clientId = await clientIdFor(root, options.clientId);
     const lockedPriorWorkflow = await readOptionalJson<PushWorkflowState>(workflowPath);
     let workflow = lockedPriorWorkflow?.local_project_key === project.project.local_project_key
@@ -806,7 +787,7 @@ export async function pushProject(options: PushProjectOptions) {
     workflow.client_id = clientId;
     preview = makePreview(
       baseline,
-      await managedFiles(root, project),
+      await managedFiles(root),
       options.confirmedProjectLocal ?? [],
       installedPaths,
       workflow.created_at
@@ -862,7 +843,7 @@ export async function pushProject(options: PushProjectOptions) {
       await atomicWriteJson(workflowPath, workflow);
       preview = makePreview(
         baseline,
-        await managedFiles(root, project),
+        await managedFiles(root),
         options.confirmedProjectLocal ?? [],
         installedPaths,
         workflow.created_at

@@ -19,7 +19,7 @@ describe("pushProject sensitive scan UX", () => {
       await initializeProject({
         projectRoot: initSeedRoot,
         resourcesRoot,
-        config: { agents: ["claude-code"], profile: "general" },
+        config: {},
         dryRun: false
       });
     }
@@ -33,8 +33,9 @@ describe("pushProject sensitive scan UX", () => {
     // 停用契约（2026-08 4458708 起）：scanner_version=disabled-for-publication、
     // scan_performed=false、blocked/findings 恒为空——上传路径不再做敏感检查。
     const root = await initRoot();
+    await mkdir(join(root, ".harness", "codebase", "map"), { recursive: true });
     await writeFile(
-      join(root, ".harness", "rules", "unsafe.md"),
+      join(root, ".harness", "codebase", "map", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
     const result = await pushProject({
@@ -55,8 +56,9 @@ describe("pushProject sensitive scan UX", () => {
 
   it("sensitiveScanSkip 是兼容 no-op：被接受但不改变停用契约", async () => {
     const root = await initRoot();
+    await mkdir(join(root, ".harness", "codebase", "map"), { recursive: true });
     await writeFile(
-      join(root, ".harness", "rules", "unsafe.md"),
+      join(root, ".harness", "codebase", "map", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
     const result = await pushProject({
@@ -73,7 +75,7 @@ describe("pushProject sensitive scan UX", () => {
   it("excludes generated Python caches before scan and proposal construction", async () => {
     const root = await initRoot();
     const relativePath =
-      ".claude/skills/harness-knowledge-ingest/scripts/__pycache__/" +
+      ".agents/skills/harness-knowledge-ingest/scripts/__pycache__/" +
       "harness_knowledge.cpython-311.pyc";
     const cachePath = join(root, ...relativePath.split("/"));
     await mkdir(join(cachePath, ".."), { recursive: true });
@@ -101,7 +103,7 @@ describe("pushProject sensitive scan UX", () => {
 
   it("用户 Python 文件含密钥同样不阻断（停用契约覆盖全部文件类型）", async () => {
     const root = await initRoot();
-    const skillRoot = join(root, ".claude", "skills", "harness-local", "scripts");
+    const skillRoot = join(root, ".agents", "skills", "harness-local", "scripts");
     await mkdir(skillRoot, { recursive: true });
     await writeFile(
       join(skillRoot, "unsafe.py"),
@@ -122,7 +124,7 @@ describe("pushProject sensitive scan UX", () => {
     const root = await initRoot();
     const scriptsRoot = join(
       root,
-      ".claude",
+      ".agents",
       "skills",
       "harness-local",
       "scripts"

@@ -13,19 +13,19 @@ import {
 
 const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   capabilities: 1,
+  init: 1,
   sync: 2,
   refresh: 1,
+  status: 1,
+  uninstall: 1,
   update: 1,
   push: 1,
   "harness-push": 1,
   "harness-pull": 1,
   connect: 1,
   cleanup: 1,
-  "rules-sync": 1,
-  "rules-review": 1,
   archive: 1,
   knowledge: 1,
-  instructions: 1,
   doctor: 1,
   config: 1,
   plan: 1

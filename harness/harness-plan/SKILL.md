@@ -82,7 +82,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 产物路径 | 只写 `.harness/changes/<cn>/`；禁止 superpowers 输入 |
 | 设计真相源 | **v2** = `plans/<cn>-design.md`（finalize 派生、哈希绑定、八 target 之一）；**legacy** = `spec/<cn>-design.md`。同一 change 只有一份设计权威，禁止两处并存导致漂移；下游读取顺序见 `shared/read-protocol.md` |
 | Change 标题 | 首次 Plan 同时确定英文 `change-name` 与中文展示标题；英文名保持目录和机器标识不变，中文标题由 `prepare --title` 持久化，后续阶段只复用、不重新生成 |
-| 阶段计划 | Plan 必须持久化 `plannedPhases`；固定从 plan 开始、以 archive 结束。Execute、Review、Submit、Package、API 文档可按项目策略省略；高风险必需项只能转为“提前结束且不可发布”，不得伪装通过 |
+| 阶段计划 | Plan 必须持久化 `plannedPhases`；固定从 plan 开始、以 archive 结束。Execute、Review、Submit 可按项目策略省略；高风险必需项只能转为“提前结束且不可发布”，不得伪装通过 |
 | 产品边界 | `ownership.productPaths` 必须覆盖计划会修改的源文件、测试文件和构建入口；只写目录前缀或精确文件，禁止 `**` 通配。finalize 前对照任务表补齐，避免归档阶段才发现边界缺口 |
 | 空目录 | 不得为“预留目录”生成 `.gitkeep`；只有产品明确需要跟踪空目录时才能创建，并在计划中说明业务原因 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`）。必须同时展示 **in_scope 与 out_of_scope 两个列表**——只展示"做什么"会让范围误判活到发布之后，代价是整份计划 republish |

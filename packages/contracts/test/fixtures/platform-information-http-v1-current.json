@@ -11,9 +11,7 @@
         "branch_monitor": "platform:read",
         "branch_files": "files:read",
         "project_materials": "files:read",
-        "project_knowledge": "knowledge:read",
-        "change_records": "files:read",
-        "version_records": "files:read"
+        "project_knowledge": "knowledge:read"
       }
     },
     "request_schema": "PlatformInformationListHttpQuery",
@@ -22,10 +20,24 @@
     "success_schema": "PlatformInformationPage",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED", "PLATFORM_INFORMATION_CURSOR_INVALID"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "503": ["PLATFORM_INFORMATION_SOURCE_INVALID", "PLATFORM_INFORMATION_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED",
+        "PLATFORM_INFORMATION_CURSOR_INVALID"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
     }
   },
   "export_all": {
@@ -45,10 +57,24 @@
     "success_schema": "PlatformInformationExportResult",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED", "PLATFORM_INFORMATION_CURSOR_INVALID"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "503": ["PLATFORM_INFORMATION_SOURCE_INVALID", "PLATFORM_INFORMATION_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED",
+        "PLATFORM_INFORMATION_CURSOR_INVALID"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
     }
   },
   "create_export": {
@@ -61,9 +87,10 @@
       "actor_source": "authenticated_principal",
       "project_allowlist_source": "server_authority",
       "project_key_scope_by_view": {
-        "branch_monitor": "platform:read", "branch_files": "files:read",
-        "project_materials": "files:read", "project_knowledge": "knowledge:read",
-        "change_records": "files:read", "version_records": "files:read"
+        "branch_monitor": "platform:read",
+        "branch_files": "files:read",
+        "project_materials": "files:read",
+        "project_knowledge": "knowledge:read"
       }
     },
     "request_schema": "PlatformInformationExportCreateHttpRequest",
@@ -73,12 +100,32 @@
     "success_schema": "PlatformInformationExportArtifactReceipt",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"], "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "409": ["PLATFORM_INFORMATION_EXPORT_IDEMPOTENCY_CONFLICT"],
-      "410": ["PLATFORM_INFORMATION_EXPORT_EXPIRED"],
-      "422": ["PLATFORM_INFORMATION_EXPORT_IDEMPOTENCY_REQUIRED"],
-      "503": ["PLATFORM_INFORMATION_EXPORT_SOURCE_INVALID", "PLATFORM_INFORMATION_EXPORT_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "PLATFORM_INFORMATION_EXPORT_IDEMPOTENCY_CONFLICT"
+      ],
+      "410": [
+        "PLATFORM_INFORMATION_EXPORT_EXPIRED"
+      ],
+      "422": [
+        "PLATFORM_INFORMATION_EXPORT_IDEMPOTENCY_REQUIRED"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_EXPORT_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_EXPORT_UNAVAILABLE"
+      ]
     }
   },
   "download_export": {
@@ -91,22 +138,44 @@
       "actor_source": "authenticated_principal",
       "project_allowlist_source": "server_authority",
       "project_key_scope_by_view": {
-        "branch_monitor": "platform:read", "branch_files": "files:read",
-        "project_materials": "files:read", "project_knowledge": "knowledge:read",
-        "change_records": "files:read", "version_records": "files:read"
+        "branch_monitor": "platform:read",
+        "branch_files": "files:read",
+        "project_materials": "files:read",
+        "project_knowledge": "knowledge:read"
       }
     },
     "request_schema": null,
     "success_status": 200,
     "success_media_type": "application/x-ndjson",
     "success_schema": null,
-    "success_headers": { "content_sha256": "X-Content-SHA256", "content_disposition": "Content-Disposition" },
+    "success_headers": {
+      "content_sha256": "X-Content-SHA256",
+      "content_disposition": "Content-Disposition"
+    },
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"], "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "404": ["PLATFORM_INFORMATION_EXPORT_NOT_FOUND"], "410": ["PLATFORM_INFORMATION_EXPORT_EXPIRED"],
-      "503": ["PLATFORM_INFORMATION_EXPORT_DOWNLOAD_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "PLATFORM_INFORMATION_EXPORT_NOT_FOUND"
+      ],
+      "410": [
+        "PLATFORM_INFORMATION_EXPORT_EXPIRED"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_EXPORT_DOWNLOAD_UNAVAILABLE"
+      ]
     }
   },
   "detail": {
@@ -121,9 +190,7 @@
         "branch_monitor": "platform:read",
         "branch_files": "files:read",
         "project_materials": "files:read",
-        "project_knowledge": "knowledge:read",
-        "change_records": "files:read",
-        "version_records": "files:read"
+        "project_knowledge": "knowledge:read"
       }
     },
     "request_schema": null,
@@ -131,11 +198,26 @@
     "success_schema": "PlatformInformationDetailResponse",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "404": ["PLATFORM_INFORMATION_DETAIL_NOT_FOUND"],
-      "503": ["PLATFORM_INFORMATION_SOURCE_INVALID", "PLATFORM_INFORMATION_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "PLATFORM_INFORMATION_DETAIL_NOT_FOUND"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
     }
   },
   "preview_restore": {
@@ -144,17 +226,36 @@
     "fastify_path": "/api/v1/projects/:projectId/information/branch-files::preview-restore",
     "operation_id": "previewBranchFilesRestore",
     "request_placement": "path_and_json_body",
-    "auth": { "actor_source": "authenticated_principal", "project_allowlist_source": "server_authority", "project_key_scope": "files:read" },
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:read"
+    },
     "request_schema": "RestoreBranchFilesIntent",
     "success_status": 200,
     "success_schema": "RestoreBranchFilesPreviewReceipt",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "422": ["BRANCH_FILES_RESTORE_PREVIEW_INVALID"],
-      "503": ["PLATFORM_INFORMATION_SOURCE_INVALID", "PLATFORM_INFORMATION_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "422": [
+        "BRANCH_FILES_RESTORE_PREVIEW_INVALID"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
     }
   },
   "confirm_restore": {
@@ -163,18 +264,36 @@
     "fastify_path": "/api/v1/projects/:projectId/information/branch-files::confirm-restore",
     "operation_id": "confirmBranchFilesRestore",
     "request_placement": "path_and_json_body",
-    "auth": { "actor_source": "authenticated_principal", "project_allowlist_source": "server_authority", "project_key_scope": "files:read" },
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:read"
+    },
     "request_schema": "PlatformInformationConfirmRestoreHttpRequest",
     "validator_id": "validatePlatformInformationConfirmRestoreHttpRequest",
     "success_status": 200,
     "success_schema": "RestoreBranchFilesConfirmedIntent",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "409": ["BRANCH_FILES_PULL_CONFIRMATION_MISMATCH"],
-      "422": ["BRANCH_FILES_PULL_CONFIRMATION_INVALID"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "BRANCH_FILES_PULL_CONFIRMATION_MISMATCH"
+      ],
+      "422": [
+        "BRANCH_FILES_PULL_CONFIRMATION_INVALID"
+      ]
     }
   },
   "retry_extraction": {
@@ -183,19 +302,86 @@
     "fastify_path": "/api/v1/projects/:projectId/information/knowledge::retry-extraction",
     "operation_id": "retryProjectKnowledgeExtraction",
     "request_placement": "path_and_json_body",
-    "auth": { "actor_source": "authenticated_principal", "project_allowlist_source": "server_authority", "project_key_scope": "knowledge:write" },
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "knowledge:write"
+    },
     "request_schema": "PlatformInformationRetryExtractionHttpRequest",
     "success_status": 200,
     "success_schema": "KnowledgeExtractionRetryIntent",
     "request_id_header": "X-Request-Id",
     "errors": {
-      "400": ["VALIDATION_FAILED"],
-      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
-      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
-      "404": ["KNOWLEDGE_EXTRACTION_JOB_NOT_FOUND"],
-      "409": ["KNOWLEDGE_EXTRACTION_GENERATION_CONFLICT"],
-      "422": ["KNOWLEDGE_EXTRACTION_RETRY_REQUEST_INVALID"],
-      "503": ["KNOWLEDGE_EXTRACTION_RETRY_INTENT_INVALID", "KNOWLEDGE_EXTRACTION_RETRY_AUTHORITY_INVALID", "PLATFORM_INFORMATION_UNAVAILABLE"]
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "KNOWLEDGE_EXTRACTION_JOB_NOT_FOUND"
+      ],
+      "409": [
+        "KNOWLEDGE_EXTRACTION_GENERATION_CONFLICT"
+      ],
+      "422": [
+        "KNOWLEDGE_EXTRACTION_RETRY_REQUEST_INVALID"
+      ],
+      "503": [
+        "KNOWLEDGE_EXTRACTION_RETRY_INTENT_INVALID",
+        "KNOWLEDGE_EXTRACTION_RETRY_AUTHORITY_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
+    }
+  },
+  "list_files": {
+    "method": "GET",
+    "path": "/api/v1/projects/{project_id}/information/branch_files/{detail_id}/files",
+    "operation_id": "listPlatformInformationBranchFiles",
+    "request_placement": "path_and_query",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope_by_view": {
+        "branch_monitor": "platform:read",
+        "branch_files": "files:read",
+        "project_materials": "files:read",
+        "project_knowledge": "knowledge:read"
+      }
+    },
+    "request_schema": "PlatformInformationListHttpQuery",
+    "normalizer_id": "normalizePlatformInformationListHttpQuery",
+    "success_status": 200,
+    "success_schema": "PlatformInformationBranchFilesPage",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "PLATFORM_INFORMATION_DETAIL_NOT_FOUND"
+      ],
+      "503": [
+        "PLATFORM_INFORMATION_SOURCE_INVALID",
+        "PLATFORM_INFORMATION_UNAVAILABLE"
+      ]
     }
   }
 }

@@ -33,13 +33,13 @@ async function fixture(path: string): Promise<Record<string, unknown>> {
 }
 
 describe("stage 13 platform information query contracts", () => {
-  it("accepts all six bounded, authorized current queries and their page states", async () => {
+  it("accepts all bounded, authorized current queries and their page states", async () => {
     const value = await fixture(currentPath);
     const queries = value.queries as unknown[];
     const pages = value.pages as unknown[];
 
-    expect(queries).toHaveLength(6);
-    expect(pages).toHaveLength(6);
+    expect(queries).toHaveLength(4);
+    expect(pages).toHaveLength(5);
     for (const query of queries) {
       expect(platformInformationQuerySchema.safeParse(query).success).toBe(true);
       expect(platformInformationContractSchema.safeParse(query).success).toBe(true);
@@ -68,7 +68,7 @@ describe("stage 13 platform information query contracts", () => {
       }]
     }).success).toBe(false);
     expect(pages.map((page) => (page as { page_state: string }).page_state)).toEqual([
-      "processing", "empty", "ready", "partial_failure", "forbidden", "ready"
+      "processing", "empty", "ready", "partial_failure", "forbidden"
     ]);
   });
 

@@ -586,10 +586,8 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(persisted["tier"], "full")
         self.assertIn("review", persisted["defaultPhases"])
         self.assertIn("apiTest", persisted["requiredValidations"])
-        self.assertEqual(persisted["conditionalStages"], ["package", "apidoc"])
+        self.assertEqual(persisted["conditionalStages"], [])
         self.assertTrue(persisted["stageDecisions"]["review"]["required"])
-        self.assertFalse(persisted["stageDecisions"]["package"]["required"])
-        self.assertFalse(persisted["stageDecisions"]["apidoc"]["required"])
 
     def test_post_run_docs_only_change_remains_fast(self) -> None:
         plans = self.change_dir / "plans"
@@ -2221,19 +2219,17 @@ class HarnessGateTests(unittest.TestCase):
 
         payload = gate.classify_risk(self.change_dir, "plan", workflow=workflow)
 
-        self.assertEqual(
-            payload["capabilities"],
-            ["api", "container", "database", "deployment"],
-        )
-        self.assertTrue({"package", "apiTest", "dbCompatibility"}.issubset(
+        # 1.0 起只保留 database 门禁能力；deployment/container/api 已随
+        # java package/apidoc 阶段一起退役。
+        self.assertEqual(payload["capabilities"], ["database"])
+        self.assertTrue({"compile", "unitTest", "unitTestFull", "dbCompatibility"}.issubset(
             payload["requiredValidations"]
         ))
-        self.assertTrue(payload["stageDecisions"]["package"]["required"])
-        self.assertTrue(payload["stageDecisions"]["apidoc"]["required"])
-        self.assertTrue({"stage:package", "stage:apidoc", "validation:apiTest",
-                         "validation:dbCompatibility"}.issubset(
-            {node["id"] for node in payload["requiredGateDag"]["nodes"]}
-        ))
+        self.assertEqual(set(payload["stageDecisions"]), {"review"})
+        self.assertIn(
+            "validation:dbCompatibility",
+            {node["id"] for node in payload["requiredGateDag"]["nodes"]},
+        )
 
         persisted = gate.gate_policy_document(payload)
         self.assertEqual(persisted["capabilities"], payload["capabilities"])
@@ -2290,11 +2286,12 @@ class HarnessGateTests(unittest.TestCase):
             self.change_dir, "post-run", workflow=policy.load_policy(REPO_ROOT)
         )
 
-        self.assertTrue({"deployment", "container", "api", "database"}.issubset(
-            payload["capabilities"]
-        ))
-        self.assertTrue(payload["stageDecisions"]["package"]["required"])
-        self.assertTrue(payload["stageDecisions"]["apidoc"]["required"])
+        # deployment/container/api 路径 marker 不再映射为门禁能力，仅 database 保留。
+        self.assertTrue({"database"}.issubset(payload["capabilities"]))
+        self.assertFalse(
+            {"deployment", "container", "api"} & set(payload["capabilities"])
+        )
+        self.assertEqual(set(payload["stageDecisions"]), {"review"})
 
     def test_classify_missing_change_dir_ut307(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
@@ -3282,7 +3279,7 @@ class PhaseGateRuleTableTests(unittest.TestCase):
             "plan_handoff": {"execute"},
             "test_guard": {"execute"},
             "scenario_coverage": {"execute"},
-            "ledger_blocking": {"execute", "package"},
+            "ledger_blocking": {"execute"},
             "review_outputs": {"review"},
             "head_may_advance": {"execute", "submit", "merge"},
             "projection_drift": {"submit", "archive"},

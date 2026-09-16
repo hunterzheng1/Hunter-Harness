@@ -90,9 +90,5 @@ finalizer 只校验 approval receipt/decision 的顺序和内容，不校验交�
 _Avoid_: 硬编码宿主工具名, 跨宿主不可移植
 
 **部署合成**:
-`harness_deploy.py build` 把通用核心 + shared 片段 + overlay 合成为自包含 SKILL.md 后部署。Vault 源头 DRY，运行时单文件。
+`harness_deploy.py build` 把通用核心 + shared 片段展开为自包含 SKILL.md 后部署。Vault 源头 DRY，运行时单文件。单一规范树适配所有技术栈，栈相关命令由目标项目的 build-profile 解析。
 _Avoid_: 运行时跨文件拼规则, fork 维护
-
-**Java overlay**:
-`overlays/java/` 中只含"任何 Java 项目通用"的差异段落与独有 skill（apidoc/package）。项目专属值写目标项目的 build-profile。
-_Avoid_: Java fork, UDP 硬编码进 overlay

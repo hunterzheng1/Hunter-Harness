@@ -23,10 +23,10 @@ describe("hunter-harness refresh CLI freshness JSON (变更簇 D / task 12)", ()
     });
   }
 
-  it("emits per-agent identity and freshness status while keeping legacy fields", async () => {
+  it("emits per-surface identity and freshness status while keeping legacy fields", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-freshness-cli-"));
     stdout = []; stderr = [];
-    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    expect(await run(["--non-interactive", "--yes"])).toBe(0);
 
     stdout = []; stderr = [];
     const code = await run(["refresh", "--non-interactive", "--yes", "--json"]);
@@ -38,7 +38,6 @@ describe("hunter-harness refresh CLI freshness JSON (变更簇 D / task 12)", ()
       items: unknown[];
       freshness: Array<{
         agent: string;
-        profile: string | null;
         status: string;
         identity: {
           bundleVersion: string | null;
@@ -54,30 +53,30 @@ describe("hunter-harness refresh CLI freshness JSON (变更簇 D / task 12)", ()
     expect(output.command).toBe("refresh");
     expect(output.summary).toBeDefined();
     expect(Array.isArray(output.items)).toBe(true);
-    // per-agent freshness + identity（refresh JSON 合同）
+    // per-surface freshness + identity（refresh JSON 合同）：固定 codex + codebuddy 双投影
     expect(Array.isArray(output.freshness)).toBe(true);
-    const entry = output.freshness.find((item) => item.agent === "claude-code");
-    expect(entry, "freshness entry for claude-code").toBeDefined();
-    expect(entry?.status).toBe("CURRENT");
-    expect(entry?.profile).toBe("general");
-    expect(entry?.identity.bundleVersion).toBeTruthy();
-    expect(entry?.identity.manifestHash).toBeTruthy();
-    expect(entry?.identity.installedManifestHash).toBe(entry?.identity.manifestHash);
+    expect(output.freshness.map((item) => item.agent).sort()).toEqual(["codebuddy", "codex"]);
+    for (const entry of output.freshness) {
+      expect(entry.status).toBe("CURRENT");
+      expect(entry.identity.bundleVersion).toBeTruthy();
+      expect(entry.identity.manifestHash).toBeTruthy();
+      expect(entry.identity.installedManifestHash).toBe(entry.identity.manifestHash);
+    }
   });
 
   it("reports LOCALLY_MODIFIED for a drifted managed file in JSON", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-freshness-drift-cli-"));
     stdout = []; stderr = [];
-    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
-    await writeFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "user edited\n");
+    expect(await run(["--non-interactive", "--yes"])).toBe(0);
+    await writeFile(join(root, ".agents", "skills", "harness-review", "SKILL.md"), "user edited\n");
 
     stdout = []; stderr = [];
     await run(["refresh", "--non-interactive", "--yes", "--json"]);
     const output = JSON.parse(stdout.join("")) as {
       freshness: Array<{ agent: string; status: string; driftedFiles: string[] }>;
     };
-    const entry = output.freshness.find((item) => item.agent === "claude-code");
+    const entry = output.freshness.find((item) => item.agent === "codex");
     expect(entry?.status).toBe("LOCALLY_MODIFIED");
-    expect(entry?.driftedFiles).toContain(".claude/skills/harness-review/SKILL.md");
+    expect(entry?.driftedFiles).toContain(".agents/skills/harness-review/SKILL.md");
   });
 });

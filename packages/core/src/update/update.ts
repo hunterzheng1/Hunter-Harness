@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
-  harnessAgentSchema,
   isAllowedServerUrl,
   projectConfigSchema,
   type FileOperation
@@ -21,10 +20,6 @@ import {
   type PerPathResolveStrategy
 } from "../sync/synchronize.js";
 import { uuidV7 } from "../project/uuid-v7.js";
-import {
-  readManagedProjectRuleProjectionPaths,
-  synchronizeProjectRules
-} from "../project/project-rules.js";
 
 export class UpdateWorkflowError extends Error {
   readonly exitCode: 3 | 4 | 5 | 7 | 8;
@@ -111,7 +106,8 @@ export async function updateProject(
   }
   const requestId = uuidV7();
   const baseline = await readBaseline(root);
-  const protocolOnlyPaths = await readManagedProjectRuleProjectionPaths(root);
+  // v1.0: no protocol-only paths (static rules projections retired).
+  const protocolOnlyPaths: ReadonlySet<string> = new Set();
   let parsedServerUrl: URL;
   try {
     parsedServerUrl = new URL(serverUrl);
@@ -151,23 +147,7 @@ export async function updateProject(
         ? {}
         : { transactionOptions: options.transactionOptions })
     }, baseline);
-    if (!options.dryRun) {
-      const agents = project.adapters.enabled.flatMap((agent) => {
-        const parsed = harnessAgentSchema.safeParse(agent);
-        return parsed.success ? [parsed.data] : [];
-      });
-      const projections = await synchronizeProjectRules(
-        root,
-        agents,
-        project.adapter_options?.codebuddy?.surface ?? "both"
-      );
-      for (const path of projections.conflicts) {
-        result.conflicts.push({ path, operation: "modify", reason: "local-dirty" });
-        if (!result.skipped.some((item) => item.path === path)) {
-          result.skipped.push({ path, operation: "modify", reason: "local-dirty" });
-        }
-      }
-    }
+
     return result;
   } catch (error) {
     if (error instanceof UpdateWorkflowError) {

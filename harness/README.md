@@ -2,7 +2,7 @@
 
 ## 迁移说明
 
-本包为通用 harness-skills，技术栈无关：构建/测试/打包命令按目标项目技术栈解析（Java=Maven、前端=npm、Python=pytest 等，详见项目 CLAUDE.md 或 `.harness/config/`）。文中 Java/Maven、Mapper/Controller/VO、Spring Boot、jar/war 等措辞仅为示例，不影响流程骨架的通用性。
+本包为通用 harness-skills，技术栈无关：构建/测试/打包命令按目标项目技术栈解析（Java=Maven、前端=npm、Python=pytest 等，详见项目 AGENTS.md 或 `.harness/config/`）。文中 Java/Maven、Mapper/Controller/VO、Spring Boot、jar/war 等措辞仅为示例，不影响流程骨架的通用性。
 
 环境、CodeGraph 等外部增强检查应在 `npx hunter-harness` 初始化阶段完成。Superpowers / grill-me 等外部技能只作为方法论来源与人工参考；`harness-plan`、`harness-execute`、`harness-review` 已内化关键能力，不再运行时依赖外部 skill。
 
@@ -13,7 +13,7 @@
 
 ## 设计理念
 
-- **为什么是 10 个核心 skill（Java overlay 再 +2）**：每个 skill 对应一个明确阶段，可以独立调用；Java 项目通过 `overlays/java/` 追加 apidoc/package，避免维护独立 fork
+- **为什么是 12 个核心 skill**：每个 skill 对应一个明确阶段，可以独立调用；单一规范树适配所有技术栈，构建/测试命令由目标项目的 build-profile 解析
 - **为什么每个 skill 都要有"为什么"部分**：skill 的使用者是 AI，理解"为什么这样做"比记住"必须这样做"更有效
 - **为什么测试场景表要在编码前生成**：来自实践教训——编码后再写测试，遗漏率远高于编码前设计
 - **为什么产出文件统一到 .harness/ 下**：集中管理 AI 开发产出，便于回溯、归档和清理；变更名机制让跨 skill 传递零成本
@@ -193,7 +193,6 @@ harness-skills/
 │   ├── testing-reference.md    # API 测试细节 + 响应验证 + 执行器模板
 │   ├── testing-checklist.md    # Phase 0 环境准备 7 项检查
 │   ├── testing-pitfalls.md     # 30 条避坑规则（详细说明）
-│   ├── testing-pitfalls-java.md # Java 专项避坑（java profile 由 overlay 覆盖）
 │   └── scripts/                # runtime-helpers.mjs（BOM-safe JSON 等运行时辅助）
 ├── harness-review/
 │   ├── SKILL.md                # 6 维度代码审查
@@ -353,17 +352,14 @@ harness-skills/
 
 > **状态说明**：Superpowers / grill-me 可作为人工参考或后续方法论对标来源，但不是 harness 正式流程的运行时依赖；缺失时不触发降级记录。
 
-## shared/ 片段与 overlay 合成（D12/D9）
+## shared/ 片段与构建展开（D12/D9）
 
 Vault 内 SKILL.md 用 `<!-- @include shared/xxx.md -->` 引用公共段落（`p0-trust`、`read-protocol`、`logging`、`worktree-gate`）。**部署到目标项目前**须运行 `scripts/harness_deploy.py` 展开为自包含单文件。
 
 | 路径 | 作用 |
 |------|------|
 | `shared/` | 源片段（Vault 维护，不直接复制到项目） |
-| `overlays/java/` | Java 差异：`.overlay.md` 锚点合并 + `harness-apidoc`/`harness-package` + `pitfalls-java.md` |
-| `overlays/java/PROJECT-PROFILE-EXAMPLE.md` | 项目专属 build-profile 示例（不进 skill 正文） |
-
-Java 版独立目录已退役 → [[../../Java后端/harness-skills/README.md|Java harness-skills README]]。
+| `agents/` | 可选委派角色定义（仅 Claude Code/CodeBuddy 宿主可用，不进规范 bundle） |
 
 ## 安装（推荐：deploy 合成）
 
@@ -371,40 +367,37 @@ Java 版独立目录已退役 → [[../../Java后端/harness-skills/README.md|Ja
 $skillsRoot = "<Vault>/技术知识库/03-工作流/通用/harness-skills"
 $out = "<build-output-dir>"
 
-# 通用项目
+# 单一规范树；codex/codebuddy 两个投影 surface 内容相同
 python "$skillsRoot/scripts/harness_deploy.py" build --skills-root $skillsRoot --out $out --json
+python "$skillsRoot/scripts/harness_deploy.py" build --skills-root $skillsRoot --out $out --surface codebuddy --json
 
-# Java 后端（core + java overlay → 14 skill 自包含树：12 base + 2 java-only）
-python "$skillsRoot/scripts/harness_deploy.py" build --skills-root $skillsRoot --overlay java --out $out --json
-
-python "$skillsRoot/scripts/harness_deploy.py" install --from $out --project "<目标项目>" --json
 python "$skillsRoot/scripts/harness_deploy.py" diff --from $out --project "<目标项目>" --json   # harness-sync 可调用
 ```
 
-安装后首次 Java 项目运行：`python "$skillsRoot/scripts/harness_preflight.py" detect --project "<目标项目>" --json` 生成 `.harness/config/build-profile.json`。
+安装后首次运行：`python "$skillsRoot/scripts/harness_preflight.py" detect --project "<目标项目>" --json` 生成 `.harness/config/build-profile.json`。
 
 ### 手动复制（不推荐，无 include 展开）
 
-将整个 `harness-skills/` 目录下的子目录复制到目标项目的 `.claude/skills/` 下：
+将整个 `harness-skills/` 目录下的子目录复制到目标项目的 `.agents/skills/` 下：
 
 ```powershell
 # 复制所有 skill 到目标项目
-powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-*' -Destination '<目标项目>/.claude/skills/' -Recurse -Force"
+powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-*' -Destination '<目标项目>/.agents/skills/' -Recurse -Force"
 ```
 
 或者只复制需要的 skill：
 
 ```powershell
-powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-execute' -Destination '<目标项目>/.claude/skills/' -Recurse -Force"
+powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-execute' -Destination '<目标项目>/.agents/skills/' -Recurse -Force"
 ```
 
-Claude Code/CodeBuddy 可选复制 3 个隔离角色：`harness-explorer` 仅高复杂度探索、`harness-evaluator` 仅 `--adversarial`/高风险规划、`harness-reviewer` 仅发布候选/高风险审查。Codex/Cursor 默认使用主会话或宿主临时隔离任务，不安装固定角色，也不执行固定 agent 预检：
+可选复制 3 个隔离角色到 `.codebuddy/agents/`：`harness-explorer` 仅高复杂度探索、`harness-evaluator` 仅 `--adversarial`/高风险规划、`harness-reviewer` 仅发布候选/高风险审查。Codex 默认使用主会话或宿主临时隔离任务，不安装固定角色，也不执行固定 agent 预检：
 
 ```powershell
-powershell.exe -Command "Copy-Item -Path 'harness-skills/agents/*.md' -Destination '<目标项目>/.claude/agents/' -Recurse -Force"
+powershell.exe -Command "Copy-Item -Path 'harness-skills/agents/*.md' -Destination '<目标项目>/.codebuddy/agents/' -Recurse -Force"
 ```
 
-Claude Code 会自动识别 `.claude/skills/` 下的 skill 目录（每个目录必须含 `SKILL.md`）。
+兼容 `.agents` 规范的代理（Codex / CodeBuddy 等）会自动识别 `.agents/skills/` 下的 skill 目录（每个目录必须含 `SKILL.md`）。
 
 **安装后配置**：在目标项目的 `.gitignore` 中添加：
 ```gitignore

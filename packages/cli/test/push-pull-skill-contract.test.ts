@@ -24,14 +24,13 @@ describe("Stage 03 Push/Pull Skill contract", () => {
     expect(family.capabilities).toEqual(expect.arrayContaining([
       "remote-sync-push@1", "remote-sync-pull@1"
     ]));
-    for (const profile of ["general", "java"]) {
-      for (const agent of ["claude-code", "codebuddy", "codex", "cursor"]) {
-        for (const name of ["harness-push", "harness-pull"]) {
-          await access(join(
-            process.cwd(), "packages", "workflow-data-harness", "harness", "bundles",
-            profile, agent, name, "SKILL.md"
-          ));
-        }
+    // v1.0 拍平：单 profile，投影面固定 codex + codebuddy 双写
+    for (const surface of ["codex", "codebuddy"]) {
+      for (const name of ["harness-push", "harness-pull"]) {
+        await access(join(
+          process.cwd(), "packages", "workflow-data-harness", "harness", "bundles",
+          surface, name, "SKILL.md"
+        ));
       }
     }
   });

@@ -92,17 +92,14 @@ describe("changed test selection", () => {
       "packages/cli/src/commands/sync.ts",
       "packages/cli/src/sync/codegraph-status.ts",
       "packages/cli/src/sync/git-delta.ts",
-      "packages/core/src/instructions/graph.ts",
       "scripts/sync-harness.mjs"
     ])).toEqual({
       directTests: [
         "packages/cli/test/codegraph-status.test.ts",
         "packages/cli/test/git-delta.test.ts",
         "packages/cli/test/sync-command.test.ts",
-        "packages/cli/test/sync-harness-closure.test.ts",
         "packages/cli/test/sync-harness.test.ts",
-        "packages/cli/test/sync-process.test.ts",
-        "packages/core/test/instruction-graph.test.ts"
+        "packages/cli/test/sync-process.test.ts"
       ],
       relatedSources: [],
       deferredTests: [],
@@ -112,17 +109,15 @@ describe("changed test selection", () => {
 
   it("keeps push and recovery releases on explicit focused contracts", () => {
     expect(selectChangedTestInputs([
-      "packages/cli/src/commands/instructions.ts",
       "packages/cli/src/commands/push.ts",
-      "packages/cli/src/commands/rules-review.ts",
+      "packages/cli/src/commands/uninstall.ts",
       "packages/core/src/push/push.ts",
       "packages/core/src/sync/synchronize.ts",
       "packages/core/src/transaction/recovery-store.ts"
     ])).toEqual({
       directTests: [
-        "packages/cli/test/instructions.test.ts",
         "packages/cli/test/push.test.ts",
-        "packages/cli/test/rules-review.test.ts",
+        "packages/cli/test/uninstall-cli.test.ts",
         "packages/core/test/artifact-rebase.test.ts",
         "packages/core/test/push-archive-summary.test.ts",
         "packages/core/test/push-scan.test.ts",

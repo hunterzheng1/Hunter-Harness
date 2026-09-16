@@ -609,7 +609,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
             error_envelope(
                 "PROJECT_ROOT_INVALID",
                 f"{harness_root} 不存在——该项目尚未初始化，先运行 hunter-harness init",
-                recovery_action="npx hunter-harness init --profile general",
+                recovery_action="npx hunter-harness init",
             ),
             as_json,
         )

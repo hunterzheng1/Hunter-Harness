@@ -14,7 +14,7 @@ const interaction = {
     client_id: "client-1"
   },
   source_mode: "current" as const,
-  scopes: ["rules"] as const
+  scopes: ["architecture"] as const
 };
 
 function orchestration() {
@@ -24,7 +24,7 @@ function orchestration() {
       direction: "push" as const,
       preview_hash: "preview-1",
       source_ref: interaction.source_ref,
-      scopes: ["rules"] as const,
+      scopes: ["architecture"] as const,
       outcome: "no_changes" as const,
       base_version: null,
       remote_version: undefined,
@@ -55,7 +55,7 @@ function orchestration() {
         applied: [],
         skipped: [],
         retryable: [{
-          path: ".harness/rules/example.md", content_kind: "rule" as const,
+          path: ".harness/codebase/map/example.md", content_kind: "architecture" as const,
           action: "modify" as const
         }],
         reason_code: "REMOTE_UNAVAILABLE" as const
@@ -255,7 +255,7 @@ describe("PushPullCliPort", () => {
     const module = orchestration();
     const port = createPushPullCliPort({ orchestration: module });
     const traps = { getPrototypeOf: vi.fn(), ownKeys: vi.fn(), getOwnPropertyDescriptor: vi.fn() };
-    const hostileScopes = new Proxy(["rules"], traps);
+    const hostileScopes = new Proxy(["architecture"], traps);
 
     await expect(port.dispatch({ schema_version: 1, operation: "preview", direction: "push",
       interaction: { ...interaction, scopes: hostileScopes } })).rejects.toMatchObject({
@@ -332,7 +332,7 @@ describe("PushPullCliPort", () => {
       ...(await orchestration().buildPushPreview()),
       direction: "pull" as const,
       outcome: "needs_resolution",
-      operations: [{ path: ".harness/rules/restored.md", content_kind: "rule", action: "restore" }]
+      operations: [{ path: ".harness/codebase/map/restored.md", content_kind: "architecture", action: "restore" }]
     }));
     await expect(createPushPullCliPort({ orchestration: restoreModule }).dispatch({
       schema_version: 1, operation: "preview", direction: "pull", interaction
@@ -342,10 +342,10 @@ describe("PushPullCliPort", () => {
     sensitiveModule.buildPushPreview.mockResolvedValueOnce({
       ...(await orchestration().buildPushPreview()),
       outcome: "sensitive_confirmation_required",
-      operations: [{ path: ".harness/rules/review.md", content_kind: "rule", action: "modify" }],
+      operations: [{ path: ".harness/codebase/map/review.md", content_kind: "architecture", action: "modify" }],
       security_scan: { scanner_version: "1.1.0", scan_performed: true, blocked: true, hard_blocked: false,
         review_required: true, findings: [{
-          rule_id: "HH_PASSWORD_VALUE", severity: "medium", path: ".harness/rules/review.md",
+          rule_id: "HH_PASSWORD_VALUE", severity: "medium", path: ".harness/codebase/map/review.md",
           line: 1, column: 1, fingerprint: "sha256:finding", redacted_preview: "[REDACTED]",
           overridable: true, disposition: "blocked"
         }] }
@@ -359,7 +359,7 @@ describe("PushPullCliPort", () => {
       ...(await orchestration().buildPushPreview()),
       direction: "pull" as const,
       outcome: "ready",
-      operations: [{ path: ".harness/rules/restored.md", content_kind: "rule", action: "restore" }]
+      operations: [{ path: ".harness/codebase/map/restored.md", content_kind: "architecture", action: "restore" }]
     }));
     await expect(createPushPullCliPort({ orchestration: contradictory }).dispatch({
       schema_version: 1, operation: "preview", direction: "pull", interaction

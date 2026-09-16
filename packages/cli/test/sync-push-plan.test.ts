@@ -11,14 +11,14 @@ describe("planSyncPush", () => {
   it("pushes the配置类 scopes by default after a clean sync", () => {
     expect(planSyncPush({ push: true }, 0)).toEqual({
       push: true,
-      scopes: "config,rules,architecture,instructions"
+      scopes: "config,architecture,instructions"
     });
   });
 
   it("still pushes on WARN because a stale map is the common case, not a broken project", () => {
     expect(planSyncPush({ push: true }, 5)).toEqual({
       push: true,
-      scopes: "config,rules,architecture,instructions"
+      scopes: "config,architecture,instructions"
     });
   });
 
@@ -45,9 +45,9 @@ describe("planSyncPush", () => {
   });
 
   it("honours an explicit scope list", () => {
-    expect(planSyncPush({ push: "config,rules" }, 0)).toEqual({
+    expect(planSyncPush({ push: "config,architecture" }, 0)).toEqual({
       push: true,
-      scopes: "config,rules"
+      scopes: "config,architecture"
     });
     expect(planSyncPush({ push: "all" }, 0)).toEqual({ push: true, scopes: "all" });
   });

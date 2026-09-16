@@ -16,7 +16,7 @@ describe("pushProject archive summaries", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
 

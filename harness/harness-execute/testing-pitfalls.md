@@ -213,7 +213,7 @@ $cred = $resp.data.accessToken
 ### 规则 24：归档数据把 PARTIAL 写成 NOT_RUN
 **严重度**：🟡WARN
 **场景**：15 个 API 场景中 5 PASS + 9 BLOCKED + 1 FAIL，`summary-data.json` 却写成 `apiTest=NOT_RUN`，导致平台错误显示为「未执行」。
-**后果**：报告与现实不符，下游 review / submit / package 误判
+**后果**：报告与现实不符，下游 review / submit 误判
 **正确做法**：API 维度状态使用 5 个值：`OK / PARTIAL / BLOCKED / NOT_RUN / FAIL`。"部分执行+部分阻塞" 是 `PARTIAL`，附说明：`apiTest=PARTIAL — 15 个场景中 5 个 PASS, 9 个 BLOCKED, 1 个 FAIL`
 
 > 结果状态枚举与证据要求遵循 `../protocols/evidence-based-reporting-protocol.md`。

@@ -215,14 +215,9 @@ def discover_segment_files(
 ) -> dict[str, list[str]]:
     """Discover the compact inputs shared by plan/run/test/review/submit."""
     project = project.resolve()
-    rules = [project / "AGENTS.md", project / "CLAUDE.md"]
-    for pattern in (
-        ".claude/rules/**/*",
-        ".cursor/rules/**/*",
-        ".codebuddy/rules/**/*",
-        ".codebuddy/.rules/**/*",
-    ):
-        rules.extend(project.glob(pattern))
+    # v1.0：规则源收敛为 AGENTS.md 单文件；CLAUDE.md 与历史适配器 rules
+    # 目录（.claude/.cursor/.codebuddy）不再作为 harness 注入的规则源。
+    rules = [project / "AGENTS.md"]
 
     profile = [
         project / ".harness/config/build-profile.json",

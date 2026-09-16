@@ -3,7 +3,6 @@
   "enums": {
     "content_kind": [
       "config",
-      "rule",
       "architecture",
       "instruction",
       "branch_file",
@@ -15,7 +14,6 @@
     ],
     "sync_scope": [
       "config",
-      "rules",
       "architecture",
       "instructions",
       "branch_files",
@@ -34,7 +32,7 @@
     ],
     "knowledge_candidate_status": ["pending", "accepted", "rejected", "superseded"],
     "provenance_source_kind": ["archive", "plan", "review", "manual", "migration"],
-    "instruction_entrypoint": ["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md"],
+    "instruction_entrypoint": ["AGENTS.md"],
     "archive_status": ["absent", "uploading", "stored", "failed"],
     "change_index_status": ["not_scheduled", "queued", "indexing", "ready", "failed"],
     "knowledge_extraction_status": [
@@ -222,8 +220,8 @@
         "action": "modify"
       },
       {
-        "path": ".harness/rules/security.md",
-        "content_kind": "rule",
+        "path": ".harness/codebase/map/architecture.md",
+        "content_kind": "architecture",
         "size": 1024,
         "content_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "action": "add"
@@ -260,14 +258,11 @@
       }
     },
     {
-      "name": "rule",
+      "name": "retired rules path is undeclared",
       "input": {"schema_version": 1, "path": ".harness/rules/security.md"},
       "expected": {
         "schema_version": 1,
-        "content_kind": "rule",
-        "sync_scope": "rules",
-        "pull_policy": "regular",
-        "content_scan_policy": "required"
+        "reason_code": "CONTENT_PATH_UNDECLARED"
       }
     },
     {
@@ -307,8 +302,8 @@
       "name": "selected instruction entrypoint",
       "input": {
         "schema_version": 1,
-        "path": "CLAUDE.md",
-        "selected_instruction_entrypoints": ["CLAUDE.md"]
+        "path": "AGENTS.md",
+        "selected_instruction_entrypoints": ["AGENTS.md"]
       },
       "expected": {
         "schema_version": 1,
@@ -316,6 +311,14 @@
         "sync_scope": "instructions",
         "pull_policy": "regular",
         "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "retired instruction entrypoint is unclassified",
+      "input": {"schema_version": 1, "path": "CLAUDE.md"},
+      "expected": {
+        "schema_version": 1,
+        "reason_code": "CONTENT_PATH_UNCLASSIFIED"
       }
     },
     {

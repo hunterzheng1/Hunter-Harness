@@ -32,7 +32,7 @@ function rule(path: string, content: string) {
   const bytes = new TextEncoder().encode(content);
   return {
     path,
-    content_kind: "rule" as const,
+    content_kind: "architecture" as const,
     content_hash: `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
     size: bytes.byteLength,
     content: bytes
@@ -85,11 +85,13 @@ describe("RemoteSync HTTP CLI port", () => {
       }
       return response({ outcome: "new" });
     });
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: fetcher
     });
 
@@ -106,11 +108,13 @@ describe("RemoteSync HTTP CLI port", () => {
 
   it("surfaces a lease release failure after successful protected work", async () => {
     let calls = 0;
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: vi.fn(async () => {
         calls += 1;
         if (calls === 1) {
@@ -140,10 +144,10 @@ describe("RemoteSync HTTP CLI port", () => {
   it("binds a non-empty file upload and consumes its top-level upload reference", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-push-durable-"));
     temporaryRoots.push(workspaceRoot);
-    const file = rule(".harness/rules/upload.md", "uploaded rule\n");
+    const file = rule(".harness/codebase/map/upload.md", "uploaded rule\n");
     const operation = {
       path: file.path,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       action: "add" as const,
       local_hash: file.content_hash
     };
@@ -298,10 +302,10 @@ describe("RemoteSync HTTP CLI port", () => {
   });
 
   it("rejects upload results whose durable identity drifts from the requested file", async () => {
-    const file = rule(".harness/rules/upload-drift.md", "uploaded rule\n");
+    const file = rule(".harness/codebase/map/upload-drift.md", "uploaded rule\n");
     const operation = {
       path: file.path,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       action: "add" as const,
       local_hash: file.content_hash
     };
@@ -374,11 +378,13 @@ describe("RemoteSync HTTP CLI port", () => {
         if (url.endsWith(":release")) return response({ outcome: "new" });
         throw new Error(`unexpected request ${url}`);
       });
+      const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+      temporaryRoots.push(workspaceRoot);
       const port = createRemoteSyncHttpPort({
         serverUrl: "https://platform.example",
         token: "token",
         actorId: "actor_alpha",
-        workspaceRoot: process.cwd(),
+        workspaceRoot,
         fetch: fetcher
       });
 
@@ -397,10 +403,10 @@ describe("RemoteSync HTTP CLI port", () => {
   });
 
   it("rejects a foreign durable push receipt instead of projecting it locally", async () => {
-    const file = rule(".harness/rules/empty.md", "");
+    const file = rule(".harness/codebase/map/empty.md", "");
     const operation = {
       path: file.path,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       action: "add" as const,
       local_hash: file.content_hash
     };
@@ -463,11 +469,13 @@ describe("RemoteSync HTTP CLI port", () => {
       if (url.endsWith(":release")) return response({ outcome: "new" });
       throw new Error(`unexpected request ${url}`);
     });
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: fetcher
     });
 
@@ -484,10 +492,10 @@ describe("RemoteSync HTTP CLI port", () => {
   });
 
   it("reconciles a lost commit response through durable status and receipt endpoints", async () => {
-    const file = rule(".harness/rules/reconcile.md", "");
+    const file = rule(".harness/codebase/map/reconcile.md", "");
     const operation = {
       path: file.path,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       action: "add" as const,
       local_hash: file.content_hash
     };
@@ -564,11 +572,13 @@ describe("RemoteSync HTTP CLI port", () => {
       if (url.endsWith(":release")) return response({ outcome: "new" });
       throw new Error(`unexpected request ${url}`);
     });
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: fetcher
     });
 
@@ -785,11 +795,13 @@ describe("RemoteSync HTTP CLI port", () => {
         files: []
       }
     }));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: fetcher
     });
 
@@ -800,11 +812,13 @@ describe("RemoteSync HTTP CLI port", () => {
   });
 
   it("maps transport exceptions to a typed retryable remote error", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: vi.fn(async () => { throw new Error("socket closed"); })
     });
 
@@ -820,11 +834,13 @@ describe("RemoteSync HTTP CLI port", () => {
         throw new Error("hostile response stream failure");
       }
     });
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: vi.fn(async () => new Response(body, {
         status: 200,
         headers: { "Content-Type": "application/json" }
@@ -840,7 +856,7 @@ describe("RemoteSync HTTP CLI port", () => {
   it("maps binary reader acquisition failures to a typed retryable remote error", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-reader-open-"));
     temporaryRoots.push(workspaceRoot);
-    const file = rule(".harness/rules/empty.md", "");
+    const file = rule(".harness/codebase/map/empty.md", "");
     const fetcher = vi.fn(async () => {
       if (fetcher.mock.calls.length === 1) {
         return response({
@@ -886,7 +902,7 @@ describe("RemoteSync HTTP CLI port", () => {
   it("maps binary reader release failures to a typed retryable remote error", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-reader-release-"));
     temporaryRoots.push(workspaceRoot);
-    const file = rule(".harness/rules/empty.md", "");
+    const file = rule(".harness/codebase/map/empty.md", "");
     const fetcher = vi.fn(async () => {
       if (fetcher.mock.calls.length === 1) {
         return response({
@@ -984,13 +1000,13 @@ describe("RemoteSync HTTP CLI port", () => {
       fetch: fetchImpl
     });
     const first = new RemoteSyncModule(createPort(fetcher));
-    const preview = await first.previewPush(["rules"], source);
+    const preview = await first.previewPush(["architecture"], source);
     const confirmation = {
       preview_hash: preview.preview_hash,
       idempotency_key: "durable receipt replay",
       conflict_decisions: []
     } as const;
-    const receipt = await first.push(["rules"], source, confirmation);
+    const receipt = await first.push(["architecture"], source, confirmation);
     expect(receipt.no_changes).toBe(true);
     const callsAfterFirst = requests.length;
 
@@ -999,7 +1015,7 @@ describe("RemoteSync HTTP CLI port", () => {
     });
     const freshPort = createPort(noNetwork);
     await expect(new RemoteSyncModule(freshPort).push(
-      ["rules"],
+      ["architecture"],
       source,
       confirmation
     )).resolves.toEqual(receipt);
@@ -1060,8 +1076,8 @@ describe("RemoteSync HTTP CLI port", () => {
   it("rejects an oversized local file from metadata before reading its bytes", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-local-bound-"));
     temporaryRoots.push(workspaceRoot);
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
-    await writeFile(join(workspaceRoot, ".harness", "rules", "oversized.md"), "small on disk\n");
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
+    await writeFile(join(workspaceRoot, ".harness", "codebase", "map", "oversized.md"), "small on disk\n");
     const readWorkspaceFile = vi.fn(async (path: string) => new Uint8Array(await readFile(path)));
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
@@ -1090,12 +1106,12 @@ describe("RemoteSync HTTP CLI port", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-secret-scan-"));
     temporaryRoots.push(workspaceRoot);
     await Promise.all([
-      mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true }),
+      mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true }),
       mkdir(join(workspaceRoot, ".harness", "state", "transactions"), { recursive: true }),
       mkdir(join(workspaceRoot, ".harness", "credentials.local"), { recursive: true })
     ]);
     await Promise.all([
-      writeFile(join(workspaceRoot, ".harness", "rules", "safe.md"), "safe\n"),
+      writeFile(join(workspaceRoot, ".harness", "codebase", "map", "safe.md"), "safe\n"),
       writeFile(join(workspaceRoot, ".harness", "state", "transactions", "secret.json"), "STATE_SECRET\n"),
       writeFile(join(workspaceRoot, ".harness", "credentials.local", "token"), "CREDENTIAL_SECRET\n"),
       writeFile(join(workspaceRoot, ".env.production"), "ENV_SECRET\n")
@@ -1128,19 +1144,19 @@ describe("RemoteSync HTTP CLI port", () => {
     });
 
     await expect(port.readSyncView(source)).resolves.toMatchObject({
-      local_files: [{ path: ".harness/rules/safe.md" }]
+      local_files: [{ path: ".harness/codebase/map/safe.md" }]
     });
-    expect(statCalls).toEqual([join(workspaceRoot, ".harness", "rules", "safe.md")]);
-    expect(readCalls).toEqual([join(workspaceRoot, ".harness", "rules", "safe.md")]);
+    expect(statCalls).toEqual([join(workspaceRoot, ".harness", "codebase", "map", "safe.md")]);
+    expect(readCalls).toEqual([join(workspaceRoot, ".harness", "codebase", "map", "safe.md")]);
   });
 
   it("rejects a workspace directory replaced by a junction between metadata and content reads", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-scan-race-"));
     const externalRoot = await mkdtemp(join(tmpdir(), "hunter-remote-scan-secret-"));
     temporaryRoots.push(workspaceRoot, externalRoot);
-    const rulesRoot = join(workspaceRoot, ".harness", "rules");
+    const rulesRoot = join(workspaceRoot, ".harness", "codebase", "map");
     const savedRulesRoot = join(workspaceRoot, ".harness", "rules-safe");
-    const externalRulesRoot = join(externalRoot, "rules");
+    const externalRulesRoot = join(externalRoot, "architecture");
     await Promise.all([
       mkdir(rulesRoot, { recursive: true }),
       mkdir(externalRulesRoot, { recursive: true })
@@ -1224,7 +1240,7 @@ describe("RemoteSync HTTP CLI port", () => {
   it("rejects an oversized remote Content-Length before buffering the body", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-content-length-"));
     temporaryRoots.push(workspaceRoot);
-    const file = rule(".harness/rules/remote.md", "x");
+    const file = rule(".harness/codebase/map/remote.md", "x");
     const arrayBuffer = vi.fn(async () => new Uint8Array([120]).buffer);
     const fetcher = vi.fn(async () => {
       if (fetcher.mock.calls.length === 1) {
@@ -1265,7 +1281,7 @@ describe("RemoteSync HTTP CLI port", () => {
   it("rejects a malformed remote Content-Length before buffering the body", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-content-length-invalid-"));
     temporaryRoots.push(workspaceRoot);
-    const file = rule(".harness/rules/remote-invalid-length.md", "x");
+    const file = rule(".harness/codebase/map/remote-invalid-length.md", "x");
     const arrayBuffer = vi.fn(async () => new Uint8Array([120]).buffer);
     const fetcher = vi.fn(async () => {
       if (fetcher.mock.calls.length === 1) {
@@ -1308,10 +1324,10 @@ describe("RemoteSync HTTP CLI port", () => {
     temporaryRoots.push(workspaceRoot);
     const count = Math.floor(remoteSyncHttpMaxTotalBytes / remoteSyncHttpMaxFileBytes) + 1;
     const remoteFiles = Array.from({ length: count }, (_, index) => ({
-      path: `.harness/rules/file-${index}.md`,
+      path: `.harness/codebase/map/file-${index}.md`,
       content_hash: `sha256:${"0".repeat(64)}`,
       size: remoteSyncHttpMaxFileBytes,
-      content_kind: "rule"
+      content_kind: "architecture"
     }));
     const fetcher = vi.fn(async () => {
       if (fetcher.mock.calls.length !== 1) throw new Error("content must not be fetched");
@@ -1372,16 +1388,16 @@ describe("RemoteSync HTTP CLI port", () => {
   it("applies Pull changes through the durable workspace transaction journal", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-"));
     temporaryRoots.push(workspaceRoot);
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
     await Promise.all([
-      writeFile(join(workspaceRoot, ".harness", "rules", "modify.md"), "old modify\n"),
-      writeFile(join(workspaceRoot, ".harness", "rules", "delete.md"), "delete me\n"),
-      writeFile(join(workspaceRoot, ".harness", "rules", "old-name.md"), "rename me\n")
+      writeFile(join(workspaceRoot, ".harness", "codebase", "map", "modify.md"), "old modify\n"),
+      writeFile(join(workspaceRoot, ".harness", "codebase", "map", "delete.md"), "delete me\n"),
+      writeFile(join(workspaceRoot, ".harness", "codebase", "map", "old-name.md"), "rename me\n")
     ]);
     const files = [
-      rule(".harness/rules/modify.md", "new modify\n"),
-      rule(".harness/rules/add.md", "new file\n"),
-      rule(".harness/rules/new-name.md", "rename me\n")
+      rule(".harness/codebase/map/modify.md", "new modify\n"),
+      rule(".harness/codebase/map/add.md", "new file\n"),
+      rule(".harness/codebase/map/new-name.md", "rename me\n")
     ];
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
@@ -1400,24 +1416,24 @@ describe("RemoteSync HTTP CLI port", () => {
       files,
       baseline_files: [],
       operations: [
-        { path: ".harness/rules/modify.md", content_kind: "rule", action: "modify" },
-        { path: ".harness/rules/delete.md", content_kind: "rule", action: "delete" },
-        { path: ".harness/rules/add.md", content_kind: "rule", action: "add" },
-        { path: ".harness/rules/new-name.md", source_path: ".harness/rules/old-name.md",
-          content_kind: "rule", action: "rename" }
+        { path: ".harness/codebase/map/modify.md", content_kind: "architecture", action: "modify" },
+        { path: ".harness/codebase/map/delete.md", content_kind: "architecture", action: "delete" },
+        { path: ".harness/codebase/map/add.md", content_kind: "architecture", action: "add" },
+        { path: ".harness/codebase/map/new-name.md", source_path: ".harness/codebase/map/old-name.md",
+          content_kind: "architecture", action: "rename" }
       ],
       skipped: []
     })).resolves.toMatchObject({ no_changes: false });
 
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "modify.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "modify.md"), "utf8"))
       .resolves.toBe("new modify\n");
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "add.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "add.md"), "utf8"))
       .resolves.toBe("new file\n");
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "new-name.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "new-name.md"), "utf8"))
       .resolves.toBe("rename me\n");
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "delete.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "delete.md"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "old-name.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "old-name.md"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
 
     const transactionRoot = join(workspaceRoot, ".harness", "state", "transactions");
@@ -1448,10 +1464,10 @@ describe("RemoteSync HTTP CLI port", () => {
   it("rejects a Pull when a local file changed after preview", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-local-drift-"));
     temporaryRoots.push(workspaceRoot);
-    const path = ".harness/rules/drift.md";
+    const path = ".harness/codebase/map/drift.md";
     const previewLocal = rule(path, "local at preview\n");
     const remote = rule(path, "remote content\n");
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
     await writeFile(join(workspaceRoot, path), "changed after preview\n");
     const runWorkspaceTransaction = vi.fn(async (root, operations, options) =>
       runTransaction(root, operations, options));
@@ -1474,7 +1490,7 @@ describe("RemoteSync HTTP CLI port", () => {
       baseline_files: [previewLocal],
       operations: [{
         path,
-        content_kind: "rule",
+        content_kind: "architecture",
         action: "modify",
         local_hash: previewLocal.content_hash,
         remote_hash: remote.content_hash
@@ -1489,11 +1505,11 @@ describe("RemoteSync HTTP CLI port", () => {
   it("rejects a Pull rename when its source changed after preview", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-rename-drift-"));
     temporaryRoots.push(workspaceRoot);
-    const sourcePath = ".harness/rules/old-name.md";
-    const targetPath = ".harness/rules/new-name.md";
+    const sourcePath = ".harness/codebase/map/old-name.md";
+    const targetPath = ".harness/codebase/map/new-name.md";
     const previewSource = rule(sourcePath, "source at preview\n");
     const remote = rule(targetPath, "source at preview\n");
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
     await writeFile(join(workspaceRoot, sourcePath), "source changed after preview\n");
     const runWorkspaceTransaction = vi.fn(async (root, operations, options) =>
       runTransaction(root, operations, options));
@@ -1517,7 +1533,7 @@ describe("RemoteSync HTTP CLI port", () => {
       operations: [{
         path: targetPath,
         source_path: sourcePath,
-        content_kind: "rule",
+        content_kind: "architecture",
         action: "rename",
         local_hash: previewSource.content_hash,
         remote_hash: remote.content_hash,
@@ -1535,11 +1551,11 @@ describe("RemoteSync HTTP CLI port", () => {
   it("resumes an interrupted Pull transaction without replaying completed writes", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-recovery-"));
     temporaryRoots.push(workspaceRoot);
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
-    await writeFile(join(workspaceRoot, ".harness", "rules", "first.md"), "old first\n");
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
+    await writeFile(join(workspaceRoot, ".harness", "codebase", "map", "first.md"), "old first\n");
     const files = [
-      rule(".harness/rules/first.md", "new first\n"),
-      rule(".harness/rules/second.md", "new second\n")
+      rule(".harness/codebase/map/first.md", "new first\n"),
+      rule(".harness/codebase/map/second.md", "new second\n")
     ];
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
@@ -1560,8 +1576,8 @@ describe("RemoteSync HTTP CLI port", () => {
       files,
       baseline_files: [],
       operations: [
-        { path: ".harness/rules/first.md", content_kind: "rule", action: "modify" },
-        { path: ".harness/rules/second.md", content_kind: "rule", action: "add" }
+        { path: ".harness/codebase/map/first.md", content_kind: "architecture", action: "modify" },
+        { path: ".harness/codebase/map/second.md", content_kind: "architecture", action: "add" }
       ],
       skipped: []
     })).rejects.toMatchObject({
@@ -1569,9 +1585,9 @@ describe("RemoteSync HTTP CLI port", () => {
       retryable: true
     });
 
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "first.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "first.md"), "utf8"))
       .resolves.toBe("new first\n");
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "second.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "second.md"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
 
     const transactionRoot = join(workspaceRoot, ".harness", "state", "transactions");
@@ -1592,9 +1608,9 @@ describe("RemoteSync HTTP CLI port", () => {
 
     await expect(resumeTransaction(workspaceRoot, transactionId))
       .resolves.toMatchObject({ status: "committed" });
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "first.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "first.md"), "utf8"))
       .resolves.toBe("new first\n");
-    await expect(readFile(join(workspaceRoot, ".harness", "rules", "second.md"), "utf8"))
+    await expect(readFile(join(workspaceRoot, ".harness", "codebase", "map", "second.md"), "utf8"))
       .resolves.toBe("new second\n");
     const committed = JSON.parse(await readFile(
       join(transactionRoot, transactionId, "journal.json"),
@@ -1610,9 +1626,9 @@ describe("RemoteSync HTTP CLI port", () => {
   it("replays a committed Pull without reconstructing a mutable transaction sidecar", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-replay-"));
     temporaryRoots.push(workspaceRoot);
-    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
-    await writeFile(join(workspaceRoot, ".harness", "rules", "replay.md"), "old\n");
-    const file = rule(".harness/rules/replay.md", "new\n");
+    await mkdir(join(workspaceRoot, ".harness", "codebase", "map"), { recursive: true });
+    await writeFile(join(workspaceRoot, ".harness", "codebase", "map", "replay.md"), "old\n");
+    const file = rule(".harness/codebase/map/replay.md", "new\n");
     const command = {
       source_ref: source,
       expected_revision: "revision_1",
@@ -1623,7 +1639,7 @@ describe("RemoteSync HTTP CLI port", () => {
       baseline_files: [],
       operations: [{
         path: file.path,
-        content_kind: "rule" as const,
+        content_kind: "architecture" as const,
         action: "modify" as const,
         remote_hash: file.content_hash
       }],
@@ -1830,15 +1846,17 @@ describe("RemoteSync HTTP CLI port", () => {
   });
 
   it("rejects case-folded Pull path collisions before starting a workspace transaction", async () => {
-    const first = rule(".harness/rules/Case.md", "first\n");
-    const second = rule(".harness/rules/case.md", "second\n");
+    const first = rule(".harness/codebase/map/Case.md", "first\n");
+    const second = rule(".harness/codebase/map/case.md", "second\n");
     const runWorkspaceTransaction = vi.fn(async (root, operations, options) =>
       runTransaction(root, operations, options));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-http-"));
+    temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
       serverUrl: "https://platform.example",
       token: "token",
       actorId: "actor_alpha",
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       fetch: vi.fn(),
       runWorkspaceTransaction
     });
@@ -1852,8 +1870,8 @@ describe("RemoteSync HTTP CLI port", () => {
       files: [first, second],
       baseline_files: [],
       operations: [
-        { path: first.path, content_kind: "rule", action: "add" },
-        { path: second.path, content_kind: "rule", action: "add" }
+        { path: first.path, content_kind: "architecture", action: "add" },
+        { path: second.path, content_kind: "architecture", action: "add" }
       ],
       skipped: []
     })).rejects.toMatchObject({ code: "SYNC_CONTENT_INVALID" });

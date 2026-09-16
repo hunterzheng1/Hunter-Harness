@@ -2,41 +2,37 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-  harnessAgentSchema,
   projectConfigSchema,
-  sortHarnessAgents,
+  stripLegacyConfigFields,
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import { parse as parseYaml } from "yaml";
 
 import {
+  AGENTS_LEARNED_RULES_BLOCK_ID,
   collectFreshness,
   ensureHarnessGitignore,
   inspectHarnessStateEvidence,
   readLocalCredentials,
+  refreshLearnedRules,
   refreshProject,
   resolveRecoveryRoot,
   uuidV7,
-  type HarnessProfile,
   type RefreshResult
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
-import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
+import { harnessErrorInfo } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
-import { profileLabel } from "../ui/labels.js";
 import { readCliVersion } from "../version.js";
 import {
   formatWorkflowVersionLine,
   readWorkflowFamilyManifest
 } from "../workflow-data/resolve.js";
 
+// v1.0：投影面固定（.agents/skills + AGENTS.md 与 .codebuddy/skills 派生），
+// refresh 不再有 agents/profile/codebuddy-surface/remove-agents 参数。
 export interface RefreshCommandOptions {
-  agents?: string;
-  /** Comma-separated agents to uninstall (clean managed files + adapters.enabled). */
-  removeAgents?: string;
-  codebuddySurface?: string;
-  profile?: string;
   nonInteractive?: boolean;
   yes?: boolean;
   dryRun?: boolean;
@@ -95,41 +91,13 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
     }
     throw error;
   }
-  const parsed = projectConfigSchema.safeParse(parseYaml(content));
+  // 软着陆：剥离 v0 配置中的已废弃字段（adapters/profiles/adapter_options 等）。
+  const stripped = stripLegacyConfigFields(parseYaml(content));
+  const parsed = projectConfigSchema.safeParse(stripped.value);
   if (!parsed.success) {
     return { status: "invalid" };
   }
   return { status: "valid", config: parsed.data };
-}
-
-function parseProfile(value: string | undefined): HarnessProfile | undefined {
-  if (value === undefined || value === "") {
-    return undefined;
-  }
-  if (value === "1" || value === "general") return "general";
-  if (value === "2" || value === "java") return "java";
-  throw new Error("配置类型必须为 general 或 java");
-}
-
-function refreshAgents(config: ProjectConfig): ReturnType<typeof sortHarnessAgents> {
-  const agents = sortHarnessAgents(config.adapters.enabled.flatMap((agent) => {
-    const parsed = harnessAgentSchema.safeParse(agent);
-    return parsed.success ? [parsed.data] : [];
-  }));
-  return agents.length > 0 ? agents : ["claude-code"];
-}
-
-function codebuddySurface(
-  config: ProjectConfig,
-  override?: string
-): "both" | "ide" | "cli" {
-  const value = override ?? config.adapter_options?.codebuddy?.surface ?? "both";
-  if (value === "both" || value === "ide" || value === "cli") return value;
-  throw new InitConfigurationError(
-    "codebuddy surface 必须为 both、ide 或 cli",
-    3,
-    "CODEBUDDY_SURFACE_INVALID"
-  );
 }
 
 function summarize(result: RefreshResult): CliResult {
@@ -163,27 +131,6 @@ function summarize(result: RefreshResult): CliResult {
   };
 }
 
-function renderProfileTransitionPreview(result: RefreshResult): string {
-  const items = [
-    ...result.applied,
-    ...result.removed,
-    ...result.preserved,
-    ...result.unchanged
-  ];
-  const actionLabel: Record<RefreshResult["applied"][number]["action"], string> = {
-    add: "新增", replace: "替换", delete: "删除", preserve: "保留", unchanged: "无需变更"
-  };
-  const reasonLabel: Record<RefreshResult["applied"][number]["reason"], string> = {
-    MISSING_TARGET: "目标缺失", BASELINE_CLEAN: "基线未修改", ALREADY_CURRENT: "已是最新",
-    LOCAL_MODIFICATION: "检测到本地修改", MALFORMED_MANAGED_BLOCK: "受管区块格式异常",
-    LEGACY_PROFILE_FILE_MODIFIED: "旧配置文件已修改", LEGACY_BASELINE_UNKNOWN: "旧版基线未知",
-    FORCE_MANAGED: "强制更新"
-  };
-  return "配置切换预览：\n" + items
-    .map((item) => `- ${actionLabel[item.action]}：${item.target_path}（${reasonLabel[item.reason]}）`)
-    .join("\n") + "\n";
-}
-
 // 显式 `hunter-harness refresh` 与 bare 命令在既有项目上的派发共用此入口；
 // 核心协调统一走 core.refreshProject（design §3.4：不复制算法）。
 export async function runRefresh(
@@ -205,25 +152,6 @@ export async function runRefresh(
     return 6;
   }
 
-  const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;
-  let targetProfile: HarnessProfile | undefined;
-  let targetAgents: ReturnType<typeof refreshAgents>;
-  let removeAgents: ReturnType<typeof refreshAgents> = [];
-  try {
-    targetProfile = parseProfile(options.profile);
-    targetAgents = options.agents === undefined
-      ? refreshAgents(detection.config)
-      : parseAgentsInput(options.agents);
-    if (options.removeAgents !== undefined && options.removeAgents.trim() !== "") {
-      removeAgents = parseAgentsInput(options.removeAgents);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = error instanceof InitConfigurationError ? error.code : undefined;
-    dependencies.stderr((code === undefined ? "" : code + ": ") + message + "\n");
-    return error instanceof InitConfigurationError ? error.exitCode : 3;
-  }
-
   const dryRun = options.dryRun === true;
   const planTimestamp = new Date().toISOString();
   const cliVersion = await readCliVersion();
@@ -235,13 +163,6 @@ export async function runRefresh(
     guardedPreview = await refreshProject({
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
-      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
-      agents: targetAgents,
-      ...(removeAgents.length === 0 ? {} : { removeAgents }),
-      codebuddySurface: codebuddySurface(
-        detection.config,
-        options.codebuddySurface
-      ),
       dryRun: true,
       forceManaged: options.forceManaged === true,
       planTimestamp,
@@ -252,16 +173,6 @@ export async function runRefresh(
     dependencies.stderr(message + "\n");
     return 1;
   }
-  if (((targetProfile !== undefined && targetProfile !== currentProfile) ||
-      targetAgents.some((agent, index) => agent !== refreshAgents(detection.config)[index]) ||
-      targetAgents.length !== refreshAgents(detection.config).length) && !dryRun) {
-    const rendered = renderProfileTransitionPreview(guardedPreview);
-    if (options.json === true) {
-      dependencies.stderr(rendered);
-    } else {
-      dependencies.stdout(rendered);
-    }
-  }
   if (options.confirmed !== true) {
     if (options.nonInteractive === true) {
       if (!options.yes && !dryRun) {
@@ -269,14 +180,7 @@ export async function runRefresh(
         return 2;
       }
     } else if (!options.yes && !dryRun) {
-      const label = removeAgents.length > 0
-        ? "移除工具并保留其余配置"
-        : targetProfile === currentProfile
-          ? `刷新当前配置（${profileLabel(currentProfile)}）`
-          : targetProfile === undefined
-            ? "刷新所选工具的当前配置"
-            : `更新所选工具配置：${profileLabel(currentProfile)} → ${profileLabel(targetProfile)}`;
-      const answer = await dependencies.prompt(`${label}？[y/N]：`);
+      const answer = await dependencies.prompt("刷新到最新版本？[y/N]：");
       if (!/^(?:y|yes)$/i.test(answer.trim())) {
         return 2;
       }
@@ -295,13 +199,6 @@ export async function runRefresh(
       : await refreshProject({
         projectRoot: dependencies.cwd,
         resourcesRoot: dependencies.resourcesRoot,
-        ...(targetProfile === undefined ? {} : { profile: targetProfile }),
-        agents: targetAgents,
-        ...(removeAgents.length === 0 ? {} : { removeAgents }),
-        codebuddySurface: codebuddySurface(
-          detection.config,
-          options.codebuddySurface
-        ),
         dryRun: false,
         forceManaged: options.forceManaged === true,
         expectedPlanHash: guardedPreview.plan_hash,
@@ -316,6 +213,12 @@ export async function runRefresh(
         localCredentials.token !== undefined && localCredentials.project_id !== undefined
     });
     const output = summarize(result);
+    for (const warning of result.legacy_warnings) {
+      output.warnings.push({
+        code: "LEGACY_RESIDUE_DETECTED",
+        message: warning
+      });
+    }
     const noteworthyGitignore = gitignore.patternResults.filter((item) =>
       item.status === "tracked" || item.status === "preserved-by-negation"
     );
@@ -340,15 +243,30 @@ export async function runRefresh(
         paths: gitignore.trackedMigrationNotice.patterns
       });
     }
-    // per-agent identity + freshness 六态（task 12）：legacy 字段不动，新增 freshness 数组。
+    // per-surface identity + freshness 五态。
     const freshness = await collectFreshness({
       projectRoot: dependencies.cwd,
-      resourcesRoot: dependencies.resourcesRoot,
-      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
-      agents: targetAgents,
-      codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface)
+      resourcesRoot: dependencies.resourcesRoot
     });
     output.freshness = freshness.agents;
+    // 归档后自动规则学习：高置信候选幂等刷新 AGENTS.md 受管段（无候选时保持空占位块）。
+    const learned = await refreshLearnedRules(dependencies.cwd, { dryRun });
+    if (learned.changed) {
+      output.items.push({
+        path: "AGENTS.md",
+        status: dryRun ? "planned" : "applied",
+        block: AGENTS_LEARNED_RULES_BLOCK_ID,
+        rules: learned.learned_rules.length
+      });
+      if (dryRun) {
+        output.summary.planned = Number(output.summary.planned ?? 0) + 1;
+      } else {
+        output.summary.applied = Number(output.summary.applied ?? 0) + 1;
+      }
+    }
+    for (const removed of learned.removed_legacy_state) {
+      output.items.push({ path: removed, status: dryRun ? "planned" : "removed" });
+    }
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({ ...output, request_id: requestId }));
     } else {
@@ -359,10 +277,16 @@ export async function runRefresh(
       if (result.unchanged.length > 0) parts.push(`无需变更 ${result.unchanged.length} 个`);
       const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
       dependencies.stdout(
-        `Harness 刷新（${profileLabel(result.profile)}）：${parts.join("，") || "没有变更"}。\n` +
+        `Harness 刷新：${parts.join("，") || "没有变更"}。\n` +
         formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n" +
+        (result.legacy_warnings.length > 0
+          ? result.legacy_warnings.map((warning) => `提示：${warning}\n`).join("")
+          : "") +
         (gitignore.trackedMigrationNotice?.shouldDisplay === true
           ? `迁移提示：${gitignore.trackedMigrationNotice.message}\n涉及：${gitignore.trackedMigrationNotice.patterns.join("、")}\n`
+          : "") +
+        (learned.changed
+          ? `经验规则：已${dryRun ? "计划 " : ""}更新 AGENTS.md 受管段（${learned.learned_rules.length} 条，来自 ${learned.scanned_archives} 个归档）。\n`
           : "")
       );
     }
@@ -380,7 +304,7 @@ export async function runRefresh(
         request_id: requestId,
         dry_run: dryRun,
         ok: false,
-        exit_code: exitCode,
+        exit_code: exitCode as CliResult["exit_code"],
         project_id: null,
         summary: { applied: 0, removed: 0, preserved: 0, unchanged: 0, conflicts: 0 },
         items: [],

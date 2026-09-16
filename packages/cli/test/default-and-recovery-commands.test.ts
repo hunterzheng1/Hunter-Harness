@@ -57,7 +57,7 @@ describe("context-aware default and recovery commands", () => {
 
   it("status reports pending recovery without mutating the project", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-status-"));
-    expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+    expect(await runCli(["--non-interactive", "--yes"], {
       cwd: root,
       resourcesRoot,
       stdout: () => undefined,
@@ -94,7 +94,7 @@ describe("context-aware default and recovery commands", () => {
 
   it("recover inspect and resume expose stable non-interactive recovery actions", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-resume-"));
-    expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+    expect(await runCli(["--non-interactive", "--yes"], {
       cwd: root,
       resourcesRoot,
       stdout: () => undefined,

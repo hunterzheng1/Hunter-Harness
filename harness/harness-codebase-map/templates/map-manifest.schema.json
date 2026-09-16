@@ -7,7 +7,6 @@
     "generator",
     "generated_at",
     "mode",
-    "profile",
     "last_mapped_commit",
     "path_scope",
     "documents",
@@ -20,7 +19,6 @@
     "generator": { "type": "string", "const": "harness-codebase-map" },
     "generated_at": { "type": "string" },
     "mode": { "type": "string" },
-    "profile": { "type": "string" },
     "project_root": { "type": "string" },
     "last_mapped_commit": { "type": "string" },
     "path_scope": {

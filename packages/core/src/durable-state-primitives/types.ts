@@ -65,7 +65,6 @@ export interface DurableMutationReceipt {
 }
 
 export type DurableAuditStreamKind =
-  | "instruction_proposal"
   | "plan_classification"
   | "planning_context"
   | "plan_decision"

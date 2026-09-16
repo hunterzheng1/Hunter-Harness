@@ -46,8 +46,8 @@ async function findRuntimeScript(
 ): Promise<string> {
   const resources = dependencies.resourcesRoot;
   const candidates = [
-    join(resources, "harness", "bundles", "general", "codex", "scripts", name),
-    join(resources, "harness", "bundles", "general", "claude-code", "scripts", name),
+    join(resources, "harness", "bundles", "codex", "scripts", name),
+    join(resources, "harness", "bundles", "codebuddy", "scripts", name),
     join(resources, "scripts", name),
     join(dependencies.cwd, "harness", "scripts", name),
     join(dependencies.cwd, name)

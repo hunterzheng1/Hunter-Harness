@@ -853,7 +853,8 @@ function canonicalValidationsByPhase(
 //   - by_phase/DAG 按 VALIDATION_PHASES/VALIDATION_DEPENDENCIES 重建；
 //   - stage 节点 required = 阶段 ∈ tier defaultPhases 或 snapshot.stageDecisions
 //     标记 required（signal/capability 触发在 bootstrap 时已冻结进 snapshot），
-//     依赖规则同 Python：package ← 全部 execute 阶段验证，apidoc ← apiTest；
+//     依赖规则同 Python：stage 节点不自动挂依赖（package/apidoc 阶段已随
+//     java profile 退役）；
 //   - 非 validation/stage 节点（如 finalSequence 的 sequence 节点）原样保留，
 //     悬空边（端点已不存在）丢弃。
 // 未知 tier（契约前向兼容）返回 undefined，调用方退回 bootstrap 透传。
@@ -933,18 +934,8 @@ export function buildTierGateOverlayFields(
       (tierPolicy.defaultPhases as readonly string[]).includes(stageName)
       || (isRecord(decision) && decision.required === true);
     if (!stageRequired) continue;
-    let deps: string[] = [];
-    if (stageName === "package") {
-      // 与 Python _apply_required_gate_contract 对齐：package 阶段依赖全部
-      // execute 阶段验证（打包前须过执行期验证），按 required 声明顺序。
-      deps = required
-        .filter((v) => VALIDATION_PHASE_MAP[v] === "execute")
-        .map((v) => `validation:${v}`);
-    } else if (stageName === "apidoc") {
-      deps = requiredSet.has("apiTest") ? ["validation:apiTest"] : [];
-    }
-    nodes.push({ id: `stage:${stageName}`, kind: "stage", phase: stageName, dependsOn: deps });
-    for (const d of deps) edges.push({ from: d, to: `stage:${stageName}` });
+    // 与 Python _apply_required_gate_contract 对齐：stage 节点不自动挂依赖。
+    nodes.push({ id: `stage:${stageName}`, kind: "stage", phase: stageName, dependsOn: [] });
   }
 
   const nodeIds = new Set(nodes.map((node) => String(node.id)));

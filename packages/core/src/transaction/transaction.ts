@@ -247,7 +247,7 @@ function inventoriesEqual(
 }
 
 // 权威 journal 检查点（项目内 journal.json + status.json）的落盘节奏：逐操作写是
-// O(n) 整份序列化 × n 次 = O(n^2)，对 500+ 操作的大事务（--agents all、大更新）
+// O(n) 整份序列化 × n 次 = O(n^2)，对 500+ 操作的大事务（全量 skills 投影、大更新）
 // 退化明显。改按批落盘：每次 checkpoint 内容仍是完整一致快照（applied_count 与
 // completed_target_states 自洽），crash 时恢复从最近检查点 resume（staged 幂等
 // 重放）或 rollback（before 快照还原），语义与逐操作写完全等价。

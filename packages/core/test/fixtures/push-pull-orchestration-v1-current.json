@@ -8,5 +8,5 @@
     "client_id": "cli_current"
   },
   "source_mode": "current",
-  "scopes": ["rules"]
+  "scopes": ["architecture"]
 }

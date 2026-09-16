@@ -132,21 +132,27 @@ try {
     assert(await exists(join(packagedRoot, "resources", legacyResource)) === false,
       `packaged CLI must not contain legacy resource: ${legacyResource}`);
   }
-  // 工作流数据包含 2 profile × 5 agent Bundles + 可信迁移 manifest。
-  for (const profile of ["general", "java"]) {
-    for (const agent of ["claude-code", "codex", "cursor", "codebuddy", "pi"]) {
-      assert(await exists(join(
-        workflowDataRoot, "harness", "bundles", profile, agent
-      )), `workflow data package missing ${profile}/${agent} bundle`);
-      assert(await exists(join(
-        workflowDataRoot, "harness", "manifests", profile, `${agent}.json`
-      )), `workflow data package missing ${profile}/${agent} manifest`);
-    }
+  // v1.0 数据包：拍平的 codex/codebuddy 双 surface bundle + 对应清单，无 profile 维度、无迁移 manifest。
+  for (const surface of ["codex", "codebuddy"]) {
+    assert(await exists(join(
+      workflowDataRoot, "harness", "bundles", surface
+    )), `workflow data package missing ${surface} bundle`);
+    assert(await exists(join(
+      workflowDataRoot, "harness", "manifests", `${surface}.json`
+    )), `workflow data package missing ${surface} manifest`);
   }
-  assert(await exists(join(workflowDataRoot, "harness", "migrations", "0.1.1", "general.json")),
-    "workflow data package missing 0.1.1 general migration manifest");
-  assert(await exists(join(workflowDataRoot, "harness", "migrations", "0.1.1", "java.json")),
-    "workflow data package missing 0.1.1 java migration manifest");
+  for (const retired of ["general", "java"]) {
+    assert(await exists(join(workflowDataRoot, "harness", "bundles", retired)) === false,
+      `workflow data package must not contain retired profile bundle: ${retired}`);
+    assert(await exists(join(workflowDataRoot, "harness", "manifests", `${retired}.json`)) === false,
+      `workflow data package must not contain retired profile manifest: ${retired}`);
+  }
+  for (const retiredAdapter of ["claude-code", "cursor", "pi"]) {
+    assert(await exists(join(workflowDataRoot, "harness", "bundles", retiredAdapter)) === false,
+      `workflow data package must not contain retired adapter bundle: ${retiredAdapter}`);
+  }
+  assert(await exists(join(workflowDataRoot, "harness", "migrations")) === false,
+    "workflow data package must not contain migration manifests (hard cut)");
 
   const bin = join(packagedRoot, "dist", "bin.js");
   // Fail before project writes if the packed workflow requires a newer or
@@ -159,16 +165,19 @@ try {
   const capabilityReceipt = JSON.parse(capabilityOutput.trim());
   assert(capabilityReceipt.compatibility?.compatible === true,
     "packed workflow and CLI capability contract is incompatible");
-  for (const capability of ["sync@1", "rules-sync@1", "rules-review@1", "knowledge-sync@2"]) {
+  for (const capability of ["sync@1", "knowledge-sync@2", "remote-sync-push@1", "remote-sync-pull@1"]) {
     assert(capabilityReceipt.capabilities?.includes(capability),
       `packed CLI is missing required capability ${capability}`);
+  }
+  for (const retired of ["rules-sync@1", "rules-review@1"]) {
+    assert(capabilityReceipt.capabilities?.includes(retired) === false,
+      `packed CLI must not advertise retired capability ${retired}`);
   }
 
   const packagedCodexBundle = join(
     workflowDataRoot,
     "harness",
     "bundles",
-    "general",
     "codex"
   );
   const commandDocuments = await markdownFiles(packagedCodexBundle);
@@ -185,7 +194,7 @@ try {
     });
   }
 
-  const preview = run(process.execPath, [bin, "--agents", "all", "--profile", "java", "--non-interactive", "--dry-run", "--json"],
+  const preview = run(process.execPath, [bin, "--non-interactive", "--dry-run", "--json"],
     { cwd: temporary, capture: true });
   const previewResult = JSON.parse(preview.trim());
   if (previewResult.ok !== true || previewResult.dry_run !== true) {
@@ -193,7 +202,7 @@ try {
   }
   assert(await exists(join(temporary, ".harness")) === false, "dry-run wrote project state");
 
-  // 四 Agent general 安装 + 幂等 refresh + 冲突保留 + Agent transition。
+  // v1.0 固定双投影安装 + 幂等 refresh + 冲突保留。
   const project = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
     const projectBin = bin;
@@ -201,35 +210,39 @@ try {
     await writeFile(join(project, "CLAUDE.md"), "# User Claude\nkeep this.\n");
     await writeFile(join(project, "AGENTS.md"), "# User Agents\nkeep this too.\n");
 
-    run(process.execPath, [projectBin, "--agents", "all", "--profile", "general", "--non-interactive", "--yes"],
+    run(process.execPath, [projectBin, "--non-interactive", "--yes"],
       { cwd: project, capture: true });
-    await stat(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
     for (const supportFile of ["SKILL.md", "protocols.md", "coding-reference.md", "coding-checklist.md",
       "testing-reference.md", "testing-checklist.md", "testing-pitfalls.md"]) {
       await stat(join(project, ".agents", "skills", "harness-execute", supportFile));
     }
-    await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"));
-    await stat(join(project, ".codebuddy", "agents", "harness-reviewer.md"));
-    // agents 仅安装到 .claude/agents，不创建 .claude/skills/agents/。
-    assert(await exists(join(project, ".claude", "skills", "agents")) === false,
-      "general install must not create .claude/skills/agents");
-    assert(await exists(join(project, ".claude", "agents", "harness-reviewer.md")),
-      "general install must create .claude/agents/harness-reviewer.md");
+    // v1.0：不再投影其他适配器根目录与独立 agents 目录。
+    for (const retiredRoot of [".claude", ".cursor", ".pi", ".codebuddy/agents"]) {
+      assert(await exists(join(project, retiredRoot)) === false,
+        `install must not create retired projection root: ${retiredRoot}`);
+    }
     // 最小 .harness 布局：无 cache/reports/.gitkeep/README。
     assert(await exists(join(project, ".harness", "cache")) === false, "must not pre-create cache");
     assert(await exists(join(project, ".harness", "reports")) === false, "must not pre-create reports");
     assert(await exists(join(project, ".harness", "README.md")) === false, "must not generate README");
     assert(await exists(join(project, ".harness", "state", "local", "installed-harness-bundle.json")),
-      "must write schema-v3 installed state");
-    // 用户 AGENTS/CLAUDE 内容逐字保留，不注入托管 marker。
+      "must write schema-v5 installed state");
+    const installedState = JSON.parse(await readFile(
+      join(project, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8"
+    ));
+    assert(installedState.schema_version === 5,
+      `installed state must be schema_version 5, got ${installedState.schema_version}`);
+    // 用户 CLAUDE.md 逐字保留（v1.0 不再触碰）；用户 AGENTS.md 内容保留并注入受管块。
     const claude = await readFile(join(project, "CLAUDE.md"), "utf8");
-    assert(claude === "# User Claude\nkeep this.\n" && !claude.includes("hunter-harness:"),
-      "CLAUDE.md user content must remain marker-free and byte-for-byte unchanged");
+    assert(claude === "# User Claude\nkeep this.\n",
+      "CLAUDE.md user content must remain byte-for-byte unchanged");
     const agents = await readFile(join(project, "AGENTS.md"), "utf8");
-    assert(agents === "# User Agents\nkeep this too.\n" && !agents.includes("hunter-harness:"),
-      "AGENTS.md user content must remain marker-free and byte-for-byte unchanged");
+    assert(agents.includes("# User Agents") && agents.includes("keep this too."),
+      "AGENTS.md user content must be preserved");
+    assert(agents.includes("hunter-harness-core") && agents.includes("hunter-harness-learned-rules"),
+      "AGENTS.md must carry core and learned-rules managed blocks");
     assert(await exists(join(project, ".gitattributes")) === false,
       "install must not generate .gitattributes");
 
@@ -238,7 +251,7 @@ try {
     // accidentally bundle stale @hunter-harness/core sources via node_modules.
     const pythonCache = join(
       project,
-      ".claude",
+      ".agents",
       "skills",
       "harness-knowledge-ingest",
       "scripts",
@@ -294,27 +307,23 @@ try {
       !item.path.startsWith(".harness/knowledge/entries/superseded/")
     ), "packed CLI included rebuildable knowledge projections in proposal");
 
-    // 重跑相同多 Agent 命令必须保持受管文件字节不变。
+    // 重跑相同命令必须保持受管文件字节不变。
     const beforeProject = await readFile(join(project, ".harness", "project.yaml"), "utf8");
     const beforeSkills = await Promise.all([
-      readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md")),
       readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md")),
-      readFile(join(project, ".cursor", "skills", "harness-review", "SKILL.md")),
       readFile(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"))
     ]);
-    run(process.execPath, [projectBin, "--agents", "all", "--non-interactive", "--yes"], { cwd: project, capture: true });
+    run(process.execPath, [projectBin, "--non-interactive", "--yes"], { cwd: project, capture: true });
     const afterProject = await readFile(join(project, ".harness", "project.yaml"), "utf8");
     assert(beforeProject === afterProject, "refresh must not reset project identity");
     const afterSkills = await Promise.all([
-      readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md")),
       readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md")),
-      readFile(join(project, ".cursor", "skills", "harness-review", "SKILL.md")),
       readFile(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"))
     ]);
     assert(beforeSkills.every((bytes, index) => bytes.equals(afterSkills[index])),
-      "identical multi-agent install changed managed skill bytes");
+      "identical install changed managed skill bytes");
 
-    // 用户修改 Codex Bundle working copy → refresh 保留并 exit 5。
+    // 用户修改 Bundle working copy → refresh 保留并 exit 5。
     const reviewer = join(project, ".agents", "skills", "harness-review", "SKILL.md");
     await writeFile(reviewer, "user modified\n");
     const conflictRun = spawnSync(process.execPath,
@@ -329,35 +338,27 @@ try {
     assert((await readFile(reviewer, "utf8")) !== "user modified\n",
       "--force-managed must replace modified managed file");
 
-    // 只选择 Cursor 并切到 Java：其他 Agent 命名空间必须完全保留。
-    const claudeBefore = await readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
-    const codexBefore = await readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
-    run(process.execPath, [projectBin, "refresh", "--agents", "cursor", "--profile", "java", "--non-interactive", "--yes"],
+    // uninstall dry-run 只预览不删除；--yes 精确移除全部受管内容。
+    const uninstallPreview = JSON.parse(run(process.execPath,
+      [projectBin, "uninstall", "--non-interactive", "--dry-run", "--json"],
+      { cwd: project, capture: true }).trim());
+    assert(uninstallPreview.dry_run === true && Array.isArray(uninstallPreview.actions),
+      "uninstall dry-run output is invalid");
+    assert(await exists(join(project, ".agents", "skills", "harness-review", "SKILL.md")),
+      "uninstall dry-run must not delete managed files");
+    run(process.execPath, [projectBin, "uninstall", "--non-interactive", "--yes"],
       { cwd: project, capture: true });
-    await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
-    await stat(join(project, ".cursor", "rules", "harness-profile-java.mdc"));
-    assert((await readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md"))).equals(claudeBefore),
-      "unselected Claude bundle must remain byte-for-byte unchanged");
-    assert((await readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md"))).equals(codexBefore),
-      "unselected Codex bundle must remain byte-for-byte unchanged");
-    await stat(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"));
-    assert((await readFile(join(project, "CLAUDE.md"), "utf8")).includes("# User Claude"),
-      "unselected Claude instructions must remain present");
+    assert(await exists(join(project, ".agents")) === false,
+      "uninstall must remove .agents projection");
+    assert(await exists(join(project, ".codebuddy")) === false,
+      "uninstall must remove .codebuddy projection");
+    assert(await exists(join(project, ".harness")) === false,
+      "uninstall must remove the .harness working tree (default keepData=false)");
+    const agentsAfter = await readFile(join(project, "AGENTS.md"), "utf8");
+    assert(agentsAfter.includes("# User Agents") && !agentsAfter.includes("hunter-harness-core"),
+      "uninstall must strip managed blocks but preserve user AGENTS.md content");
   } finally {
     await rm(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  }
-
-  // Java 首次安装独立校验（harness-apidoc 存在）。
-  const javaProject = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
-  try {
-    const javaBin = bin;
-    run(process.execPath, [javaBin, "--profile", "java", "--non-interactive", "--yes"],
-      { cwd: javaProject, capture: true });
-    await stat(join(javaProject, ".claude", "skills", "harness-apidoc", "SKILL.md"));
-    assert(await exists(join(javaProject, ".claude", "skills", "agents")) === false,
-      "java install must not create .claude/skills/agents");
-  } finally {
-    await rm(javaProject, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 
   run(process.execPath, [npmCli, "pack", "-w", "packages/skill-cli", "--pack-destination", temporary]);

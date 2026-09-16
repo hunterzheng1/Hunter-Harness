@@ -30,7 +30,7 @@ function file(path: string, value: string): RemoteSyncWorkspaceFile {
 
 function prepare(
   lease: Awaited<ReturnType<InMemoryRemoteSyncV1["acquireLease"]>>,
-  files: readonly RemoteSyncWorkspaceFile[] = [file(".harness/rules/a.md", "a\n")]
+  files: readonly RemoteSyncWorkspaceFile[] = [file(".harness/codebase/map/a.md", "a\n")]
 ): RemoteSyncPushPrepareCommand {
   const first = files[0];
   if (first === undefined) throw new Error("prepare requires a file");
@@ -43,7 +43,7 @@ function prepare(
     files,
     operations: [{
       path: first.path,
-      content_kind: "rule",
+      content_kind: "architecture",
       action: "add",
       local_hash: first.content_hash
     }],
@@ -95,7 +95,7 @@ describe("RemoteSync v1 contract reference", () => {
       preview_hash: command.preview_hash,
       idempotency_key: command.idempotency_key,
       payload_hash: "sha256:" + "0".repeat(64),
-      files: [...metadata, { ...metadata[0], path: ".harness/rules/A.md" }],
+      files: [...metadata, { ...metadata[0], path: ".harness/codebase/map/A.md" }],
       operations: command.operations,
       skipped: command.skipped
     })).toThrowError(/SYNC_CONTENT_INVALID/u);
@@ -103,14 +103,14 @@ describe("RemoteSync v1 contract reference", () => {
 
   it("rejects Push metadata whose files exceed the 256 MiB aggregate limit", () => {
     const files = Array.from({ length: 5 }, (_, index) => ({
-      path: `.harness/rules/aggregate-${index}.md`,
+      path: `.harness/codebase/map/aggregate-${index}.md`,
       content_hash: `sha256:${String(index).repeat(64)}`,
       size: REMOTE_SYNC_MAX_FILE_BYTES,
-      content_kind: "rule" as const
+      content_kind: "architecture" as const
     }));
     const operations = files.map((item) => ({
       path: item.path,
-      content_kind: "rule" as const,
+      content_kind: "architecture" as const,
       action: "add" as const,
       local_hash: item.content_hash
     }));
@@ -187,7 +187,7 @@ describe("RemoteSync v1 contract reference", () => {
     const replay = await remote.preparePush(command);
     expect(replay).toEqual({ outcome: "replay", value: first.value });
 
-    const changedFiles = [file(".harness/rules/a.md", "different\n")];
+    const changedFiles = [file(".harness/codebase/map/a.md", "different\n")];
     const changedCommand = { ...command, files: changedFiles };
     const conflict = await remote.preparePush({
       ...changedCommand,
@@ -237,10 +237,10 @@ describe("RemoteSync v1 contract reference", () => {
     if (receipt.outcome !== "new") throw new Error("pull did not create");
     expect(receipt.value.local_transaction).toBe("committed");
     expect(receipt.value.applied).toMatchObject([{
-      path: ".harness/rules/a.md",
+      path: ".harness/codebase/map/a.md",
       action: "add"
     }]);
-    expect(remote.localFiles(source)).toEqual([file(".harness/rules/a.md", "a\n")]);
+    expect(remote.localFiles(source)).toEqual([file(".harness/codebase/map/a.md", "a\n")]);
     const noChange = await module.pull({
       source,
       actor_id: source.actor_id,
@@ -259,7 +259,7 @@ describe("RemoteSync v1 contract reference", () => {
     const content = new Uint8Array(1024 * 1024 + 3);
     content.fill(65);
     const command = prepare(lease, [{
-      path: ".harness/rules/large.md",
+      path: ".harness/codebase/map/large.md",
       content,
       content_hash: sha256Bytes(content),
       size: content.byteLength
@@ -273,7 +273,7 @@ describe("RemoteSync v1 contract reference", () => {
       payload_hash: command.payload_hash
     });
     const snapshot = await remote.readRemoteSnapshot(source);
-    const stream = remote.openContentStream(source, ".harness/rules/large.md", {
+    const stream = remote.openContentStream(source, ".harness/codebase/map/large.md", {
       snapshot_id: snapshot.snapshot_id,
       expected_revision: snapshot.revision
     });
@@ -288,7 +288,7 @@ describe("RemoteSync v1 contract reference", () => {
     await expect(async () => {
       for await (const chunk of remote.openContentStream(
         source,
-        ".harness/rules/large.md",
+        ".harness/codebase/map/large.md",
         {
           signal: controller.signal,
           snapshot_id: snapshot.snapshot_id,
@@ -316,8 +316,8 @@ describe("RemoteSync v1 contract reference", () => {
       code: "SYNC_LEASE_INVALID"
     });
     const operation = {
-      path: ".harness/rules/a.md",
-      content_kind: "rule" as const,
+      path: ".harness/codebase/map/a.md",
+      content_kind: "architecture" as const,
       action: "add" as const
     };
     Object.defineProperty(operation, "path", {
@@ -419,13 +419,13 @@ describe("RemoteSync v1 contract reference", () => {
     expect(snapshot.snapshot_id).toMatch(/^snapshot_/u);
     expect(snapshot.files[0]).not.toHaveProperty("content");
     await expect(async () => {
-      for await (const chunk of remote.openContentStream(source, ".harness/rules/a.md", {
+      for await (const chunk of remote.openContentStream(source, ".harness/codebase/map/a.md", {
         snapshot_id: snapshot.snapshot_id,
         expected_revision: "999"
       })) { void chunk; }
     }).rejects.toMatchObject({ code: "SYNC_PREVIEW_STALE" });
     const chunks = [];
-    for await (const chunk of remote.openContentStream(source, ".harness/rules/a.md", {
+    for await (const chunk of remote.openContentStream(source, ".harness/codebase/map/a.md", {
       snapshot_id: snapshot.snapshot_id,
       expected_revision: snapshot.revision
     })) chunks.push(chunk);
@@ -496,7 +496,7 @@ describe("RemoteSync v1 contract reference", () => {
     });
 
     const oversized: RemoteSyncWorkspaceFile = {
-      path: ".harness/rules/large.md",
+      path: ".harness/codebase/map/large.md",
       content: new Uint8Array([65]),
       content_hash: sha256Bytes(new Uint8Array([65])),
       size: 64 * 1024 * 1024 + 1
@@ -794,8 +794,8 @@ describe("RemoteSync v1 contract reference", () => {
       payload_hash: command.payload_hash
     });
     const operation = {
-      path: ".harness/rules/a.md",
-      content_kind: "rule" as const,
+      path: ".harness/codebase/map/a.md",
+      content_kind: "architecture" as const,
       action: "add" as const
     };
     let rolledBack = false;

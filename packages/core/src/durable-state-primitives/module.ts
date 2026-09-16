@@ -20,7 +20,7 @@ const MAX_BYTES = 65_536;
 const MAX_CURSOR_BYTES = 512;
 const MAX_BLOB_BYTES = 512 * 1024 * 1024;
 const STREAM_KINDS: readonly DurableAuditStreamKind[] = [
-  "instruction_proposal", "plan_classification", "planning_context", "plan_decision",
+  "plan_classification", "planning_context", "plan_decision",
   "plan_artifact", "plan_quality", "plan_finalization"
 ];
 

@@ -180,7 +180,6 @@ Git 只允许只读查询：`status`、`diff --name-only`、`rev-parse`。禁止
   "generator": "harness-codebase-map",
   "generated_at": "YYYY-MM-DD HH:mm:ss",
   "mode": "full",
-  "profile": "general",
   "project_root": ".",
   "last_mapped_commit": "unknown",
   "path_scope": {

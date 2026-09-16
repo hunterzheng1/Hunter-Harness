@@ -261,8 +261,6 @@ const expectedItemKind = {
   branch_files: "branch_snapshot",
   project_materials: "project_material",
   project_knowledge: "knowledge_entry",
-  change_records: "change_record",
-  version_records: "version_record",
 } as const;
 
 function isHash(value: string): boolean {

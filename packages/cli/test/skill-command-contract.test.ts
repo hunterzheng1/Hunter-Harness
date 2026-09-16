@@ -8,14 +8,14 @@ import {
 } from "../../../scripts/skill-command-contract.mjs";
 
 describe("packaged Skill command contract", () => {
-  it("documents sync plus the explicit instruction audit entrypoint", async () => {
+  it("documents only the live sync entrypoint (instructions audit retired in v1.0)", async () => {
     const skill = await readFile(
       join(process.cwd(), "harness", "harness-sync", "SKILL.md"),
       "utf8"
     );
     const commands = extractHunterHarnessCommands(skill);
 
-    expect(commands).toEqual(["instructions", "sync"]);
+    expect(commands).toEqual(["sync"]);
   });
 
   it("deduplicates npx and direct CLI examples", () => {

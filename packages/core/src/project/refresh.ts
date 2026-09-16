@@ -4,12 +4,9 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   canonicalJson,
-  projectConfigSchema,
-  sortHarnessAgents,
-  type CodeBuddySurface,
-  type HarnessAgent
+  projectConfigSchema
 } from "@hunter-harness/contracts";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 
 import { aggregateInstalledContentHash, sha256Bytes } from "../fs/hash.js";
 import { assessCodebaseMapOnDisk } from "../codebase/map.js";
@@ -22,31 +19,35 @@ import {
 } from "../transaction/transaction.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import {
-  loadMigrationManifests,
-  loadAgentBundle,
-  parseHarnessProfile,
-  type HarnessProfile,
+  PROJECTION_SURFACES,
+  loadBundle,
   type LoadedAgentBundle,
-  type ProjectedBundleFile
+  type ProjectedBundleFile,
+  type ProjectionSurface
 } from "./profile-bundle.js";
-import { getAdapter, getAdapters, managedTargetsFor } from "./agent-adapters.js";
+import {
+  contextIndexEntryFor,
+  projectBundleToSurface,
+  pruneBoundaries
+} from "./agent-adapters.js";
+import { detectLegacyProjectionResidue, formatLegacyResidueWarnings } from "./legacy.js";
 import {
   TargetCollisionError,
-  type InstalledBundleStateV4
+  type InstalledBundleStateV5
 } from "./initialize.js";
 
 // Conservative Refresh：本地安全协调，不触碰 server-backed update 语义（design §2/§3）。
 // 分类依据 design §4.3：absent→add；current==incoming→unchanged；current==trusted→干净替换；
-// 否则冲突保留（--force-managed 仅对 Bundle 可信目标强制替换）。删除目标只来自 Bundle 差集，
-// 永不由本地 state 文件授权（design §4.3 末段）。
+// 否则冲突保留（--force-managed 仅对 Bundle 可信目标强制替换）。
+// v1.0：固定双投影面（codex + codebuddy），无 agent/profile 选择；删除授权来自
+// v5 installed state 的 per-file 哈希（current==trusted 才删除，本地已改文件保留）。
 
 export type RefreshReason =
   | "MISSING_TARGET"
   | "BASELINE_CLEAN"
   | "ALREADY_CURRENT"
   | "LOCAL_MODIFICATION"
-  | "MALFORMED_MANAGED_BLOCK"
-  | "LEGACY_PROFILE_FILE_MODIFIED"
+  | "LEGACY_FILE_MODIFIED"
   | "LEGACY_BASELINE_UNKNOWN"
   | "FORCE_MANAGED";
 
@@ -81,14 +82,14 @@ export interface RefreshConflict {
 }
 
 export interface RefreshResult {
-  profile: HarnessProfile;
-  previous_profile: HarnessProfile | null;
   dry_run: boolean;
   applied: RefreshItem[];
   removed: RefreshItem[];
   preserved: RefreshItem[];
   unchanged: RefreshItem[];
   conflicts: RefreshConflict[];
+  /** Pre-1.0 projection residue / legacy state warnings (informational). */
+  legacy_warnings: string[];
   plan_hash: string;
   recovery_id: string | null;
 }
@@ -96,11 +97,6 @@ export interface RefreshResult {
 export interface RefreshOptions {
   projectRoot: string;
   resourcesRoot: string;
-  profile?: HarnessProfile;
-  agents: HarnessAgent[];
-  /** Explicit uninstall set. Unselected agents remain a no-op; only these are removed. */
-  removeAgents?: HarnessAgent[];
-  codebuddySurface?: CodeBuddySurface;
   dryRun: boolean;
   forceManaged: boolean;
   expectedPlanHash?: string;
@@ -111,12 +107,9 @@ export interface RefreshOptions {
 
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
 const CONTEXT_INDEX_PATH = ".harness/context-index.json";
-const RETIRED_ARCHIVE_RENDERER_TARGETS: Readonly<Record<HarnessAgent, string>> = {
-  "claude-code": ".claude/skills/harness-archive/templates/render-summary.mjs",
+const RETIRED_ARCHIVE_RENDERER_TARGETS: Readonly<Record<ProjectionSurface, string>> = {
   codex: ".agents/skills/harness-archive/templates/render-summary.mjs",
-  cursor: ".cursor/skills/harness-archive/templates/render-summary.mjs",
-  codebuddy: ".codebuddy/skills/harness-archive/templates/render-summary.mjs",
-  pi: ".pi/skills/harness-archive/templates/render-summary.mjs"
+  codebuddy: ".codebuddy/skills/harness-archive/templates/render-summary.mjs"
 };
 const RETIRED_ARCHIVE_RENDERER_HASHES = new Set([
   "fb171bc2a3aaa3a99bf298f3d9697f9dd7025881b0437851a7af4937d224ef30",
@@ -134,15 +127,23 @@ const RETIRED_ARCHIVE_RENDERER_HASHES = new Set([
 ]);
 
 interface InstalledState {
-  profile: HarnessProfile | null;
   schemaVersion: number | null;
-  adapters: HarnessAgent[];
-  profiles: Map<HarnessAgent, HarnessProfile>;
+  /** True when a state file exists but is not schema v5 (pre-1.0 install). */
+  legacy: boolean;
   trusted: Map<string, string>;
-  files: InstalledBundleStateV4["files"];
-  manifests: InstalledBundleStateV4["manifests"];
-  managedBlocks: InstalledBundleStateV4["managed_blocks"];
+  files: InstalledBundleStateV5["files"];
+  manifests: InstalledBundleStateV5["manifests"];
+  managedBlocks: InstalledBundleStateV5["managed_blocks"];
 }
+
+const EMPTY_STATE: InstalledState = {
+  schemaVersion: null,
+  legacy: false,
+  trusted: new Map(),
+  files: [],
+  manifests: [],
+  managedBlocks: []
+};
 
 async function fileHex(path: string): Promise<string | null> {
   try {
@@ -166,19 +167,17 @@ async function readOptionalText(path: string): Promise<string> {
   }
 }
 
+/**
+ * v1.0 hard cutover: only schema_version 5 is honored. Any older schema (or an
+ * unparseable state file) is treated as a legacy install — the refresh then
+ * behaves like a fresh projection and reports a legacy warning instead of
+ * attempting in-place migration.
+ */
 async function readInstalledState(root: string): Promise<InstalledState> {
   const content = await readOptionalText(join(root, INSTALLED_STATE_PATH));
-  if (content === "") {
-    return {
-      profile: null, schemaVersion: null, adapters: [], profiles: new Map(),
-      trusted: new Map(), files: [], manifests: [], managedBlocks: []
-    };
-  }
+  if (content === "") return EMPTY_STATE;
   let parsed: {
-    schema_version?: number;
-    profile?: unknown;
-    profiles?: unknown;
-    adapters?: unknown;
+    schema_version?: unknown;
     files?: unknown;
     manifests?: unknown;
     managed_blocks?: unknown;
@@ -186,16 +185,18 @@ async function readInstalledState(root: string): Promise<InstalledState> {
   try {
     parsed = JSON.parse(content) as typeof parsed;
   } catch {
+    return { ...EMPTY_STATE, legacy: true, trusted: new Map() };
+  }
+  if (parsed.schema_version !== 5) {
     return {
-      profile: null, schemaVersion: null, adapters: [], profiles: new Map(),
-      trusted: new Map(), files: [], manifests: [], managedBlocks: []
+      ...EMPTY_STATE,
+      schemaVersion: typeof parsed.schema_version === "number" ? parsed.schema_version : null,
+      legacy: true,
+      trusted: new Map()
     };
   }
-  const profile = parseHarnessProfile(parsed.profile);
   const trusted = new Map<string, string>();
-  if ((parsed.schema_version === 2 || parsed.schema_version === 3 ||
-      parsed.schema_version === 4) &&
-      Array.isArray(parsed.files)) {
+  if (Array.isArray(parsed.files)) {
     for (const entry of parsed.files) {
       if (entry !== null && typeof entry === "object" &&
           "target_path" in entry && "sha256" in entry) {
@@ -207,27 +208,8 @@ async function readInstalledState(root: string): Promise<InstalledState> {
       }
     }
   }
-  const schemaVersion = typeof parsed.schema_version === "number" ? parsed.schema_version : null;
-  const adapters: HarnessAgent[] = (schemaVersion === 3 || schemaVersion === 4) &&
-    Array.isArray(parsed.adapters)
-    ? sortHarnessAgents(parsed.adapters.filter((value): value is HarnessAgent =>
-      value === "claude-code" || value === "codex" || value === "cursor" || value === "codebuddy" ||
-      value === "pi"
-    ))
-    : schemaVersion === 1 || schemaVersion === 2 ? ["claude-code"] : [];
-  const profiles = new Map<HarnessAgent, HarnessProfile>();
-  if (schemaVersion === 4 && parsed.profiles !== null &&
-      typeof parsed.profiles === "object" && !Array.isArray(parsed.profiles)) {
-    for (const agent of adapters) {
-      const value = (parsed.profiles as Record<string, unknown>)[agent];
-      const agentProfile = parseHarnessProfile(value);
-      if (agentProfile !== null) profiles.set(agent, agentProfile);
-    }
-  } else if (profile !== null) {
-    for (const agent of adapters) profiles.set(agent, profile);
-  }
   const files = Array.isArray(parsed.files)
-    ? parsed.files.filter((entry): entry is InstalledBundleStateV4["files"][number] =>
+    ? parsed.files.filter((entry): entry is InstalledBundleStateV5["files"][number] =>
       entry !== null && typeof entry === "object" &&
       typeof (entry as { target_path?: unknown }).target_path === "string" &&
       typeof (entry as { source_path?: unknown }).source_path === "string" &&
@@ -235,60 +217,31 @@ async function readInstalledState(root: string): Promise<InstalledState> {
       ("owner" in entry)
     )
     : [];
-  const manifests = schemaVersion === 4 && Array.isArray(parsed.manifests)
-    ? parsed.manifests.filter((entry): entry is InstalledBundleStateV4["manifests"][number] =>
+  const manifests = Array.isArray(parsed.manifests)
+    ? parsed.manifests.filter((entry): entry is InstalledBundleStateV5["manifests"][number] =>
       entry !== null && typeof entry === "object" &&
-      typeof (entry as { adapter?: unknown }).adapter === "string" &&
-      typeof (entry as { profile?: unknown }).profile === "string"
+      typeof (entry as { surface?: unknown }).surface === "string" &&
+      typeof (entry as { bundle_version?: unknown }).bundle_version === "string"
     )
     : [];
   const managedBlocks = Array.isArray(parsed.managed_blocks)
-    ? parsed.managed_blocks.filter((entry): entry is InstalledBundleStateV4["managed_blocks"][number] =>
+    ? parsed.managed_blocks.filter((entry): entry is InstalledBundleStateV5["managed_blocks"][number] =>
       entry !== null && typeof entry === "object" &&
       typeof (entry as { target_path?: unknown }).target_path === "string" &&
       typeof (entry as { block_id?: unknown }).block_id === "string"
     )
     : [];
-  // schema v1（仅记路径无 hash）：profile 可读，但无 per-file trusted hash → 需迁移 manifest 补足。
   return {
-    profile, schemaVersion, adapters, profiles, trusted, files, manifests,
+    schemaVersion: 5,
+    legacy: false,
+    trusted,
+    files,
+    manifests,
     managedBlocks
   };
 }
 
-export interface InstalledAgentConfiguration {
-  agents: HarnessAgent[];
-  profiles: Partial<Record<HarnessAgent, HarnessProfile>>;
-}
-
-/** Read-only view used by the CLI to render the actual multi-Agent state. */
-export async function readInstalledAgentConfiguration(
-  projectRoot: string
-): Promise<InstalledAgentConfiguration> {
-  const installed = await readInstalledState(resolve(projectRoot));
-  return {
-    agents: installed.adapters,
-    profiles: Object.fromEntries(installed.adapters.map((agent) => [
-      agent,
-      installed.profiles.get(agent) ?? installed.profile ?? "general"
-    ]))
-  };
-}
-
-async function readContextIndexBundleHash(root: string): Promise<string | null> {
-  const content = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
-  if (content === "") return null;
-  try {
-    const record = JSON.parse(content) as { skill_bundle?: { bundle_hash?: unknown } };
-    const hash = record.skill_bundle?.bundle_hash;
-    return typeof hash === "string" ? hash : null;
-  } catch {
-    return null;
-  }
-}
-
-// 删除旧 profile 独有目标后剪除因之变空的父目录（如 .claude/skills/agents/）。
-// 边界止于 .claude、.claude/skills、.claude/agents——不删除这些顶层目录，也不越出 .claude。
+// 删除目标后剪除因之变空的父目录；边界由 agent-adapters.pruneBoundaries 固定给出。
 async function pruneEmptyParentDirs(
   root: string, deletedPaths: readonly string[], boundaryPaths: readonly string[]
 ): Promise<void> {
@@ -377,11 +330,8 @@ function sortByTarget<T extends { target_path: string }>(items: T[]): T[] {
 
 async function reconcileContextIndex(
   root: string,
-  agents: HarnessAgent[],
-  profiles: ReadonlyMap<HarnessAgent, HarnessProfile>,
-  manifests: InstalledBundleStateV4["manifests"],
-  codebuddySurface: CodeBuddySurface,
-  verifications: ReadonlyMap<HarnessAgent, FreshnessIdentity>
+  manifests: InstalledBundleStateV5["manifests"],
+  verifications: ReadonlyMap<ProjectionSurface, FreshnessIdentity>
 ): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
   let existingSkillBundles: Record<string, Record<string, unknown>> = {};
@@ -402,11 +352,8 @@ async function reconcileContextIndex(
     schema_version: 2,
     project: {
       shared_instructions: "AGENTS.md",
-      adapters: Object.fromEntries(agents.map((agent) => [
-        agent, getAdapter(agent).contextIndex({
-          profile: profiles.get(agent) ?? "general",
-          codebuddySurface
-        })
+      adapters: Object.fromEntries(PROJECTION_SURFACES.map((surface) => [
+        surface, contextIndexEntryFor(surface)
       ]))
     },
     knowledge: {
@@ -416,8 +363,8 @@ async function reconcileContextIndex(
     },
     codebase,
     skill_bundles: Object.fromEntries(manifests.map((manifest) => {
-      const ver = verifications.get(manifest.adapter as HarnessAgent);
-      const previous = existingSkillBundles[manifest.adapter];
+      const ver = verifications.get(manifest.surface);
+      const previous = existingSkillBundles[manifest.surface];
       const mismatchDetails = ver?.mismatchDetails ?? [];
       const verificationUnchanged = previous !== undefined &&
         previous.registry_version === manifest.bundle_version &&
@@ -427,7 +374,7 @@ async function reconcileContextIndex(
         JSON.stringify(previous.mismatchDetails ?? []) ===
           JSON.stringify(mismatchDetails);
       return [
-        manifest.adapter,
+        manifest.surface,
         {
           registry_version: manifest.bundle_version,
           bundle_hash: manifest.bundle_manifest_hash,
@@ -472,42 +419,13 @@ async function projectedFileHex(
   return fileHex(join(root, path));
 }
 
-async function projectTransitionOperation(
-  root: string,
-  agents: HarnessAgent[],
-  profiles: ReadonlyMap<HarnessAgent, HarnessProfile>,
-  codebuddySurface: CodeBuddySurface
-): Promise<TransactionOperation | null> {
-  const path = ".harness/project.yaml";
-  const content = await readOptionalText(join(root, path));
-  if (content === "") return null;
-  const project = parseYaml(content) as Record<string, unknown>;
-  const activeProfiles = [...new Set(agents.map((agent) =>
-    profiles.get(agent) ?? "general"
-  ))].sort();
-  const next = stringifyYaml({
-    ...project,
-    project: { ...(project.project as object), profiles: activeProfiles },
-    adapters: { enabled: agents },
-    ...(agents.includes("codebuddy")
-      ? { adapter_options: { codebuddy: { surface: codebuddySurface } } }
-      : { adapter_options: undefined })
-  }, { sortMapEntries: true });
-  if (next === content) return null;
-  return {
-    operation: "modify",
-    path,
-    content: next
-  };
-}
-
 interface OwnedTarget extends ProjectedBundleFile {
-  owner: HarnessAgent;
+  owner: ProjectionSurface;
 }
 
 function mergeTargets(
   targets: OwnedTarget[]
-): Array<Omit<OwnedTarget, "owner"> & { owner: HarnessAgent | "shared" }> {
+): Array<Omit<OwnedTarget, "owner"> & { owner: ProjectionSurface | "shared" }> {
   const grouped = new Map<string, OwnedTarget[]>();
   for (const target of targets) {
     grouped.set(target.target_path, [...(grouped.get(target.target_path) ?? []), target]);
@@ -516,7 +434,7 @@ function mergeTargets(
     const first = values[0];
     if (first === undefined) throw new TargetCollisionError(path);
     if (values.some((value) => value.sha256 !== first.sha256)) throw new TargetCollisionError(path);
-    const owner: HarnessAgent | "shared" = new Set(values.map((value) => value.owner)).size === 1
+    const owner: ProjectionSurface | "shared" = new Set(values.map((value) => value.owner)).size === 1
       ? first.owner
       : "shared";
     return { ...first, owner };
@@ -533,113 +451,49 @@ function stateWithoutInstalledAt(value: unknown): unknown {
 export async function refreshProject(options: RefreshOptions): Promise<RefreshResult> {
   const root = resolve(options.projectRoot);
   const installed = await readInstalledState(root);
-  const oldAgents: HarnessAgent[] = installed.adapters.length > 0
-    ? installed.adapters
-    : ["claude-code"];
-  const removeSet = new Set<HarnessAgent>(sortHarnessAgents(options.removeAgents ?? []));
-  const selectedAgents = sortHarnessAgents(options.agents);
-  const selectedSet = new Set<HarnessAgent>(selectedAgents);
-  const agents = sortHarnessAgents(
-    [...new Set([...oldAgents, ...selectedAgents])].filter((agent) => !removeSet.has(agent))
-  );
-  if (agents.length === 0) {
-    throw new Error("不能移除全部工具，请至少保留一个。");
+  const legacyWarnings: string[] = [];
+  if (installed.legacy) {
+    legacyWarnings.push(
+      `检测到旧版安装状态（${INSTALLED_STATE_PATH}，schema_version=${installed.schemaVersion ?? "未知"}）：` +
+      "本次刷新按全新投影处理，本地已修改的旧文件将全部保留为冲突；" +
+      "建议运行 `npx hunter-harness uninstall` 彻底清理后重新 init。"
+    );
   }
-  const profiles = new Map(installed.profiles);
-  for (const agent of removeSet) profiles.delete(agent);
-  if (options.profile !== undefined) {
-    for (const agent of selectedAgents) {
-      if (!removeSet.has(agent)) profiles.set(agent, options.profile);
-    }
-  }
-  const profile = options.profile ?? selectedAgents
-    .map((agent) => profiles.get(agent))
-    .find((value): value is HarnessProfile => value !== undefined) ??
-    agents
-      .map((agent) => profiles.get(agent))
-      .find((value): value is HarnessProfile => value !== undefined) ??
-    installed.profile ?? "general";
-  const previousProfile = selectedAgents
-    .map((agent) => installed.profiles.get(agent))
-    .find((value): value is HarnessProfile => value !== undefined) ?? installed.profile;
-  const codebuddySurface = options.codebuddySurface ?? "both";
+  legacyWarnings.push(...formatLegacyResidueWarnings(await detectLegacyProjectionResidue(root)));
+
   const owned: OwnedTarget[] = [];
-  const manifests: InstalledBundleStateV4["manifests"] = [];
-  // 并行加载各 Agent Bundle：同一 Bundle 在进程内由模块级缓存复用，
-  // 多 Agent 的磁盘读（每个 ~718 文件 + 逐文件 sha256 校验）互不依赖，
-  // 串行会放大 Windows 上的 I/O 时延（实测 --agents all 加载占大头）。
-  const loadedAgents = await Promise.all(agents.map(async (agent) => {
-    const agentProfile = profiles.get(agent) ?? profile;
-    profiles.set(agent, agentProfile);
-    const bundle = await loadAgentBundle(options.resourcesRoot, agentProfile, agent);
-    return { agent, agentProfile, bundle };
+  const manifests: InstalledBundleStateV5["manifests"] = [];
+  // 并行加载两个投影面 Bundle：同一 Bundle 在进程内由模块级缓存复用。
+  const loadedSurfaces = await Promise.all(PROJECTION_SURFACES.map(async (surface) => {
+    const bundle = await loadBundle(options.resourcesRoot, surface);
+    return { surface, bundle };
   }));
-  for (const { agent, agentProfile, bundle } of loadedAgents) {
+  for (const { surface, bundle } of loadedSurfaces) {
     manifests.push({
-      adapter: agent,
-      profile: agentProfile,
+      surface,
       bundle_version: bundle.manifest.bundle_version,
       bundle_manifest_hash: sha256Bytes(canonicalJson(bundle.manifest.files))
     });
-    // Unselected Agent namespaces are a strict no-op. Their Bundle is loaded
-    // only to reconstruct shared metadata when migrating an older state.
-    if (selectedSet.has(agent)) {
-      const context = { profile: agentProfile, codebuddySurface };
-      for (const target of managedTargetsFor(getAdapter(agent), bundle, context)) {
-        owned.push({ ...target, owner: agent });
-      }
+    for (const target of projectBundleToSurface(bundle, surface)) {
+      owned.push({ ...target, owner: surface });
     }
   }
   const newManaged = mergeTargets(owned);
-  let trusted = installed.trusted;
-  // v1 state 无 per-file hash：按 context-index bundle_hash 匹配 0.1.1 迁移 manifest，
-  // 命中则补足可信 hash + 旧投影目标集（含 .claude/skills/agents/* 重复项）。
-  let migrationOldPaths: Set<string> | null = null;
-  if (installed.schemaVersion === 1 && selectedSet.has("claude-code")) {
-    const contextHash = await readContextIndexBundleHash(root);
-    if (contextHash !== null) {
-      const migrations = await loadMigrationManifests(options.resourcesRoot);
-      const match = migrations.find((m) =>
-        m.bundle_manifest_hash === contextHash && m.profile === installed.profile
-      );
-      if (match !== undefined) {
-        trusted = new Map(match.projection.map((entry) => [entry.target_path, entry.sha256]));
-        migrationOldPaths = new Set(match.projection.map((entry) => entry.target_path));
-      }
-    }
-  }
+  const trusted = installed.trusted;
 
   const newTargetSet = new Set(newManaged.map((target) => target.target_path));
-  let oldOnly: ProjectedBundleFile[] = [];
-  if (migrationOldPaths !== null) {
-    for (const targetPath of migrationOldPaths) {
-      if (!newTargetSet.has(targetPath)) {
-        oldOnly.push({
-          source_path: targetPath,
-          target_path: targetPath,
-          sha256: trusted.get(targetPath) ?? "",
-          bytes: new Uint8Array()
-        });
-      }
+  // 旧投影目标 = v5 state 中记录过、但已不在当前 Bundle 投影内的文件。
+  // 删除授权：盘上内容仍等于 state 记录哈希（clean）才删除；否则保留为冲突。
+  const oldOnly: ProjectedBundleFile[] = [];
+  for (const entry of installed.files) {
+    if (!newTargetSet.has(entry.target_path)) {
+      oldOnly.push({
+        source_path: entry.source_path,
+        target_path: entry.target_path,
+        sha256: entry.sha256,
+        bytes: new Uint8Array()
+      });
     }
-  } else {
-    const oldTargets: ProjectedBundleFile[] = [];
-    const agentsForOldTargets = sortHarnessAgents([
-      ...selectedAgents,
-      ...[...removeSet].filter((agent) => oldAgents.includes(agent))
-    ]);
-    for (const agent of agentsForOldTargets) {
-      const oldProfile = installed.profiles.get(agent) ?? installed.profile;
-      if (!oldAgents.includes(agent) || oldProfile === null || oldProfile === undefined) {
-        continue;
-      }
-      const bundle = await loadAgentBundle(options.resourcesRoot, oldProfile, agent);
-      oldTargets.push(...managedTargetsFor(getAdapter(agent), bundle, {
-        profile: oldProfile,
-        codebuddySurface
-      }));
-    }
-    oldOnly = oldTargets.filter((target) => !newTargetSet.has(target.target_path));
   }
 
   const applied: RefreshItem[] = [];
@@ -648,11 +502,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const unchanged: RefreshItem[] = [];
   const conflicts: RefreshConflict[] = [];
   const ops: TransactionOperation[] = [];
-  const remainingOwnerSet = new Set<HarnessAgent | "shared">(["shared", ...agents]);
-  const newStateFiles: InstalledBundleStateV4["files"] = installed.files.filter((entry) =>
-    remainingOwnerSet.has(entry.owner) &&
-    (entry.owner === "shared" || !selectedSet.has(entry.owner))
-  );
+  const newStateFiles: InstalledBundleStateV5["files"] = [];
 
   for (const target of newManaged) {
     const incoming = target.sha256;
@@ -696,18 +546,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     if (current === null) {
       continue; // 已不存在，无需操作
     }
-    // 删除授权只能来自受信旧 Bundle 投影 / migration manifest 的哈希（target.sha256），
-    // 不得来自 installed state（§14 / §19.5）。否则被篡改的 state 可让本地已改文件
-    // 被误判为 clean 而删除。
     const trustedHash = target.sha256 !== "" ? target.sha256 : undefined;
     const clean = trustedHash !== undefined && current === trustedHash;
     if (clean || options.forceManaged) {
       const reason: RefreshReason = clean ? "BASELINE_CLEAN" : "FORCE_MANAGED";
       removed.push(item(target, "delete", reason, current, null));
       ops.push({ operation: "delete", path: target.target_path });
-      // 旧 profile 独有目标删除后不进入新 state。
     } else {
-      const reason: RefreshReason = trustedHash === undefined ? "LEGACY_BASELINE_UNKNOWN" : "LEGACY_PROFILE_FILE_MODIFIED";
+      const reason: RefreshReason = trustedHash === undefined ? "LEGACY_BASELINE_UNKNOWN" : "LEGACY_FILE_MODIFIED";
       preserved.push(item(target, "preserve", reason, current, null));
       conflicts.push(await conflict(
         root,
@@ -717,7 +563,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
         null,
         trustedHash ?? null
       ));
-      // 保留的旧 profile 冲突文件不再受管（design §8），不进入新 state。
+      // 保留的冲突文件不再受管（design §8），不进入新 state。
     }
   }
 
@@ -725,8 +571,8 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   // 内置退役清单中的旧渲染器；本地改写过的同名文件继续保留，且本地 state
   // 不能伪造删除授权。
   const oldOnlyTargets = new Set(oldOnly.map((target) => target.target_path));
-  for (const agent of selectedAgents) {
-    const targetPath = RETIRED_ARCHIVE_RENDERER_TARGETS[agent];
+  for (const surface of PROJECTION_SURFACES) {
+    const targetPath = RETIRED_ARCHIVE_RENDERER_TARGETS[surface];
     if (newTargetSet.has(targetPath) || oldOnlyTargets.has(targetPath)) continue;
     const current = await fileHex(join(root, targetPath));
     if (current === null) continue;
@@ -750,14 +596,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       preserved.push(item(
         target,
         "preserve",
-        "LEGACY_PROFILE_FILE_MODIFIED",
+        "LEGACY_FILE_MODIFIED",
         current,
         null
       ));
       conflicts.push(await conflict(
         root,
         target,
-        "LEGACY_PROFILE_FILE_MODIFIED",
+        "LEGACY_FILE_MODIFIED",
         current,
         null,
         null
@@ -765,27 +611,11 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     }
   }
 
-  const projectOperation = await projectTransitionOperation(
-    root, agents, profiles, codebuddySurface
-  );
-  if (projectOperation !== null) ops.push(projectOperation);
-
-  // Verify the planned post-transaction view for every installed adapter.
-  // Selected agents control writes; they must not make unselected adapters
-  // regress from verified to unknown.
-  const verifications = new Map<HarnessAgent, FreshnessIdentity>();
-  for (const agent of agents) {
-    const agentProfile = profiles.get(agent) ?? profile;
-    let bundleForVerify: LoadedAgentBundle;
-    try {
-      bundleForVerify = await loadAgentBundle(options.resourcesRoot, agentProfile, agent);
-    } catch {
-      continue;
-    }
-    const verifyTargets = managedTargetsFor(getAdapter(agent), bundleForVerify, {
-      profile: agentProfile,
-      codebuddySurface
-    });
+  // Verify the planned post-transaction view for every surface so the
+  // context-index carries per-file verification proof after refresh.
+  const verifications = new Map<ProjectionSurface, FreshnessIdentity>();
+  for (const { surface, bundle } of loadedSurfaces) {
+    const verifyTargets = projectBundleToSurface(bundle, surface);
     const verifyMismatches: Array<{ relpath: string; expected: string; actual: string }> = [];
     const verifyEntries: Array<{ relpath: string; sha256: string }> = [];
     for (const target of verifyTargets) {
@@ -798,9 +628,9 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
         verifyMismatches.push({ relpath: rel, expected: target.sha256, actual });
       }
     }
-    verifications.set(agent, {
-      adapter: agent,
-      bundleVersion: bundleForVerify.manifest.bundle_version,
+    verifications.set(surface, {
+      adapter: surface,
+      bundleVersion: bundle.manifest.bundle_version,
       installedBundleVersion: null,
       manifestHash: null,
       installedManifestHash: null,
@@ -815,24 +645,16 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     });
   }
 
-  const contextOperation = await reconcileContextIndex(
-    root, agents, profiles, manifests, codebuddySurface, verifications
-  );
+  const contextOperation = await reconcileContextIndex(root, manifests, verifications);
   if (contextOperation !== null) ops.push(contextOperation);
 
-  const managedBlocks: InstalledBundleStateV4["managed_blocks"] = [];
-  const filesByTarget = new Map(newStateFiles.map((entry) => [entry.target_path, entry]));
-  const installedState: InstalledBundleStateV4 = {
-    schema_version: 4,
-    adapters: agents,
-    profiles: Object.fromEntries(agents.map((agent) => [
-      agent,
-      profiles.get(agent) ?? "general"
-    ])),
+  const installedState: InstalledBundleStateV5 = {
+    schema_version: 5,
+    surfaces: [...PROJECTION_SURFACES],
     installed_at: options.planTimestamp ?? new Date().toISOString(),
-    manifests: manifests.sort((left, right) => left.adapter.localeCompare(right.adapter)),
-    files: [...filesByTarget.values()].sort((left, right) => left.target_path.localeCompare(right.target_path) || left.source_path.localeCompare(right.source_path)),
-    managed_blocks: managedBlocks
+    manifests: manifests.sort((left, right) => left.surface.localeCompare(right.surface)),
+    files: newStateFiles.sort((left, right) => left.target_path.localeCompare(right.target_path) || left.source_path.localeCompare(right.source_path)),
+    managed_blocks: installed.managedBlocks
   };
   const existingState = await readOptionalText(join(root, INSTALLED_STATE_PATH));
   let existingParsed: unknown = null;
@@ -858,7 +680,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       : sha256Bytes(resolve(root).replaceAll("\\", "/")),
     cliVersion: options.cliVersion ?? "unknown",
     targetBundleVersion: manifests
-      .map((item) => item.bundle_version)
+      .map((entry) => entry.bundle_version)
       .sort()
       .join("+") || "unknown",
     ownershipManifestHash: sha256Bytes(canonicalJson(manifests))
@@ -889,23 +711,19 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     recoveryId = transaction.recoveryId;
     await pruneEmptyParentDirs(
       root,
-      removed.map((item) => item.target_path),
-      getAdapters(selectedAgents).flatMap((adapter) => adapter.pruneBoundaries({
-        profile: profiles.get(adapter.name) ?? profile,
-        codebuddySurface
-      }))
+      removed.map((entry) => entry.target_path),
+      pruneBoundaries()
     );
   }
 
   return {
-    profile,
-    previous_profile: previousProfile,
     dry_run: options.dryRun,
     applied: sortByTarget(applied),
     removed: sortByTarget(removed),
     preserved: sortByTarget(preserved),
     unchanged: sortByTarget(unchanged),
     conflicts: sortByTarget(conflicts),
+    legacy_warnings: legacyWarnings,
     plan_hash: planHash,
     recovery_id: recoveryId
   };
@@ -914,14 +732,13 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
 // ---------------------------------------------------------------------------
 // Post-adaptation freshness projection（变更簇 D / task 12，RET-29..33）。
 //
-// 只读：复用 loadAgentBundle + managedTargetsFor 的 post-adaptation projection，
-// 绝不调用 raw build 产物做字节比较。六态判定顺序（implementation-detail §5.1）：
+// 只读：复用 loadBundle + projectBundleToSurface 的 post-adaptation projection，
+// 绝不调用 raw build 产物做字节比较。五态判定顺序（implementation-detail §5.1）：
 //   1. identity/schema 不足 → UNVERIFIABLE
-//   2. agent/profile 不匹配 → PROFILE_MISMATCH
-//   3. 正式发布身份落后 → VERSION_BEHIND
-//   4. managed target 缺失 → MISSING
-//   5. installed 文件相对正式 manifest 漂移 → LOCALLY_MODIFIED
-//   6. 全部一致 → CURRENT
+//   2. 正式发布身份落后 → VERSION_BEHIND
+//   3. managed target 缺失 → MISSING
+//   4. installed 文件相对正式 manifest 漂移 → LOCALLY_MODIFIED
+//   5. 全部一致 → CURRENT
 // ---------------------------------------------------------------------------
 
 export type FreshnessStatus =
@@ -929,11 +746,10 @@ export type FreshnessStatus =
   | "LOCALLY_MODIFIED"
   | "MISSING"
   | "VERSION_BEHIND"
-  | "PROFILE_MISMATCH"
   | "UNVERIFIABLE";
 
 export interface FreshnessIdentity {
-  adapter: HarnessAgent;
+  adapter: ProjectionSurface;
   bundleVersion: string | null;
   installedBundleVersion: string | null;
   manifestHash: string | null;
@@ -965,8 +781,7 @@ export interface FreshnessIdentity {
 }
 
 export interface AgentFreshness {
-  agent: HarnessAgent;
-  profile: HarnessProfile | null;
+  agent: ProjectionSurface;
   status: FreshnessStatus;
   identity: FreshnessIdentity;
   driftedFiles: string[];
@@ -982,18 +797,14 @@ export interface FreshnessReport {
 export interface FreshnessOptions {
   projectRoot: string;
   resourcesRoot: string;
-  profile?: HarnessProfile;
-  agents: HarnessAgent[];
-  codebuddySurface?: CodeBuddySurface;
 }
 
 function freshnessEntry(
-  agent: HarnessAgent,
-  profile: HarnessProfile | null,
+  agent: ProjectionSurface,
   status: FreshnessStatus,
   identity: FreshnessIdentity
 ): AgentFreshness {
-  return { agent, profile, status, identity, driftedFiles: [], missingFiles: [] };
+  return { agent, status, identity, driftedFiles: [], missingFiles: [] };
 }
 
 function emptyVerification(): Pick<
@@ -1023,20 +834,17 @@ function buildMarkerCoreHash(text: string | null): string | null {
   }
 }
 
-/** Read-only freshness collector: classifies each agent into the six states. */
+/** Read-only freshness collector: classifies each projection surface into the five states. */
 export async function collectFreshness(
   options: FreshnessOptions
 ): Promise<FreshnessReport> {
   const root = resolve(options.projectRoot);
   const installed = await readInstalledState(root);
-  const codebuddySurface = options.codebuddySurface ?? "both";
   const agents: AgentFreshness[] = [];
 
-  for (const agent of sortHarnessAgents(options.agents)) {
-    const installedProfile = installed.profiles.get(agent) ?? installed.profile;
-    const requestedProfile = options.profile ?? installedProfile ?? "general";
+  for (const agent of PROJECTION_SURFACES) {
     const installedManifest = installed.manifests.find(
-      (entry) => entry.adapter === agent
+      (entry) => entry.surface === agent
     );
     const identity: FreshnessIdentity = {
       adapter: agent,
@@ -1056,7 +864,7 @@ export async function collectFreshness(
     let officialVersion: string | null = null;
     let bundle: LoadedAgentBundle | null;
     try {
-      bundle = await loadAgentBundle(options.resourcesRoot, requestedProfile, agent);
+      bundle = await loadBundle(options.resourcesRoot, agent);
       officialHash = sha256Bytes(canonicalJson(bundle.manifest.files));
       officialVersion = bundle.manifest.bundle_version;
       identity.bundleVersion = officialVersion;
@@ -1071,23 +879,18 @@ export async function collectFreshness(
 
     // 1. identity/schema 不足 → UNVERIFIABLE
     if (
+      installed.legacy ||
       installed.schemaVersion === null ||
-      !installed.adapters.includes(agent) ||
-      installedProfile === null ||
-      installedProfile === undefined ||
       installedManifest === undefined ||
       bundle === null
     ) {
-      agents.push(freshnessEntry(agent, installedProfile ?? null, "UNVERIFIABLE", identity));
+      agents.push(freshnessEntry(agent, "UNVERIFIABLE", identity));
       continue;
     }
 
     // Post-adaptation projection（read-only）：为所有后续状态提供 installed marker
     // 身份与 drift/missing 比对；分类顺序仍按 §5.1 判定，不受影响。
-    const targets = managedTargetsFor(getAdapter(agent), bundle, {
-      profile: installedProfile,
-      codebuddySurface
-    });
+    const targets = projectBundleToSurface(bundle, agent);
     identity.adapterHash = sha256Bytes(canonicalJson(
       targets
         .map((target) => ({ path: target.target_path.replace(/\\/g, "/"), sha256: target.sha256 }))
@@ -1138,22 +941,16 @@ export async function collectFreshness(
     identity.verificationStatus = mismatchDetails.length === 0 ? "verified" : "degraded";
     identity.mismatchDetails = mismatchDetails;
 
-    // 2. agent/profile 不匹配 → PROFILE_MISMATCH
-    if (requestedProfile !== installedProfile) {
-      agents.push(freshnessEntry(agent, installedProfile, "PROFILE_MISMATCH", identity));
-      continue;
-    }
-
-    // 3. 正式发布身份落后 → VERSION_BEHIND
+    // 2. 正式发布身份落后 → VERSION_BEHIND
     if (
       installedManifest.bundle_manifest_hash !== officialHash ||
       installedManifest.bundle_version !== officialVersion
     ) {
-      agents.push(freshnessEntry(agent, installedProfile, "VERSION_BEHIND", identity));
+      agents.push(freshnessEntry(agent, "VERSION_BEHIND", identity));
       continue;
     }
 
-    // 4/5. post-adaptation projection vs installed files
+    // 3/4. post-adaptation projection vs installed files
     const drifted: string[] = [];
     const missing: string[] = [];
     for (const target of targets) {
@@ -1165,21 +962,21 @@ export async function collectFreshness(
       }
     }
     if (missing.length > 0) {
-      const entry = freshnessEntry(agent, installedProfile, "MISSING", identity);
+      const entry = freshnessEntry(agent, "MISSING", identity);
       entry.missingFiles = missing.sort();
       entry.driftedFiles = drifted.sort();
       agents.push(entry);
       continue;
     }
     if (drifted.length > 0) {
-      const entry = freshnessEntry(agent, installedProfile, "LOCALLY_MODIFIED", identity);
+      const entry = freshnessEntry(agent, "LOCALLY_MODIFIED", identity);
       entry.driftedFiles = drifted.sort();
       agents.push(entry);
       continue;
     }
 
-    // 6. 全部一致 → CURRENT
-    agents.push(freshnessEntry(agent, installedProfile, "CURRENT", identity));
+    // 5. 全部一致 → CURRENT
+    agents.push(freshnessEntry(agent, "CURRENT", identity));
   }
 
   return {

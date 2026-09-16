@@ -25,8 +25,7 @@ journal，再覆写记录（记录带 last_operation_id）。记录覆写失败�
 ASSET_OUTBOX_CAPACITY_EXCEEDED。dead_letter/delivered 是终端证据不占额度。
 
 CLI 归属（O6-F6）：投递语义的 status/drain 子命令由本模块自带 main() 承载
-（python harness_asset_outbox.py status|drain）；消费回执语义（receipt/receipts）
-在 harness_assets.py——两通道是不同生命周期事实，模块各管各的（决策点 7）。
+（python harness_asset_outbox.py status|drain）。
 """
 from __future__ import annotations
 
@@ -557,7 +556,7 @@ def status(project: Path, *, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
-# --- CLI（O6-F6：投递语义门面自 harness_assets.py 迁入）--------------------
+# --- CLI（O6-F6：投递语义门面）----------------------------------------------
 
 
 def _emit(payload: dict[str, Any]) -> None:

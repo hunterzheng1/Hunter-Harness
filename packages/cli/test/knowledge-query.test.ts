@@ -35,7 +35,7 @@ describe("hunter-harness knowledge query", () => {
     stdout = [];
     stderr = [];
     await seededInit(root, "knowledge-query-general", async (seedRoot) => {
-      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+      expect(await runCli(["--non-interactive", "--yes"], {
         cwd: seedRoot,
         resourcesRoot,
         stdout: () => undefined,

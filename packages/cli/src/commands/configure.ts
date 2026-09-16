@@ -2,20 +2,14 @@ import {
   ensureHarnessGitignore,
   existingRootInstructionDocuments,
   initializeProject,
-  readInstalledAgentConfiguration,
   readLocalCredentials,
   resolveRecoveryRoot,
   ROOT_INSTRUCTION_DOCUMENTS,
   uuidV7
 } from "@hunter-harness/core";
-import {
-  HARNESS_AGENT_ORDER,
-  type HarnessAgent
-} from "@hunter-harness/contracts";
 
 import {
   harnessErrorInfo,
-  parseAgentsInput,
   resolveInitConfig,
   type InitFlagValues
 } from "../config/init-config.js";
@@ -27,14 +21,10 @@ import {
   applyCodeBuddySetup,
   inspectCodeBuddySetup
 } from "../config/codebuddy-setup.js";
-import { agentLabel, agentMenuLines, profileLabel } from "../ui/labels.js";
 import {
-  detectProject,
-  runRefresh,
-  type RefreshCommandOptions
+  detectProject
 } from "./refresh.js";
 import {
-  runInitializedProjectMenu,
   runPlatformConnectionMenu
 } from "./project-menu.js";
 import { readCliVersion } from "../version.js";
@@ -71,58 +61,27 @@ export interface CommandDependencies {
   gitExec?: (args: readonly string[], cwd: string) => Promise<string>;
 }
 
+/** v1.0：附加配置只剩 CodeGraph MCP 合并（检测到 .codegraph 索引时）。 */
 async function configureAgentExtras(
-  agents: readonly HarnessAgent[],
-  surface: "both" | "ide" | "cli",
   options: ConfigureOptions,
   dependencies: CommandDependencies
 ): Promise<void> {
-  const codebuddySelected = agents.includes("codebuddy");
-  // CodeGraph MCP 合并对 codebuddy 与 pi 都有意义：.mcp.json 是标准 MCP 配置，
-  // Claude Code/CodeBuddy 直读，pi 经 pi-mcp-adapter 扩展读取。
-  const codeGraphRelevant = codebuddySelected || agents.includes("pi");
-  if (!codeGraphRelevant) return;
-  const plan = await inspectCodeBuddySetup(dependencies.cwd, surface);
-  if (codebuddySelected && plan.conflictingClaudeRules.length > 0) {
-    dependencies.stderr(
-      `以下 CodeBuddy 规则与 Claude 源规则内容不同，已保留目标文件：${plan.conflictingClaudeRules.join(", ")}\n`
-    );
-  }
-  const syncClaudeRules = false;
-  let configureCodeGraph = false;
-  if (codebuddySelected && plan.claudeRules.length > 0) {
-    dependencies.stdout(
-      `发现 ${plan.claudeRules.length} 个 Claude 自定义规则；不会直接复制到其他 Agent。` +
-      "请在初始化后运行 hunter-harness instructions audit 生成统一优化提案。\n"
-    );
-  }
-  if (plan.hasCodeGraphIndex && !plan.codeGraphConfigured) {
-    configureCodeGraph = options.nonInteractive === true
-      ? options.yes === true
-      : /^(?:|y|yes)$/i.test((await dependencies.prompt(
-        "检测到 .codegraph 索引，是否合并 CodeGraph MCP 到项目 .mcp.json？[Y/n]："
-      )).trim());
-  }
+  const plan = await inspectCodeBuddySetup(dependencies.cwd);
+  if (!plan.hasCodeGraphIndex || plan.codeGraphConfigured) return;
+  const configureCodeGraph = options.nonInteractive === true
+    ? options.yes === true
+    : /^(?:|y|yes)$/i.test((await dependencies.prompt(
+      "检测到 .codegraph 索引，是否合并 CodeGraph MCP 到项目 .mcp.json？[Y/n]："
+    )).trim());
+  if (!configureCodeGraph) return;
   if (options.dryRun === true) {
-    if (syncClaudeRules || configureCodeGraph) {
-      dependencies.stdout("附加配置处于 dry-run，未写入规则或 .mcp.json。\n");
-    }
+    dependencies.stdout("附加配置处于 dry-run，未写入 .mcp.json。\n");
     return;
   }
   const result = await applyCodeBuddySetup({
     projectRoot: dependencies.cwd,
-    surface,
-    syncClaudeRules,
     configureCodeGraph
   });
-  if (result.copied.length > 0) {
-    dependencies.stdout(`已安全复制 ${result.copied.length} 个 CodeBuddy 规则文件。\n`);
-  }
-  if (result.skippedSensitive.length > 0) {
-    dependencies.stderr(
-      `检测到 ${result.skippedSensitive.length} 个疑似含凭据的 Claude 规则，已保留原处且未复制。\n`
-    );
-  }
   if (result.mcpUpdated) dependencies.stdout("已合并 CodeGraph MCP 到 .mcp.json。\n");
   for (const warning of result.warnings) dependencies.stderr(warning + "\n");
 }
@@ -134,23 +93,7 @@ async function runFirstInstall(
   const requestId = uuidV7();
   try {
     const warnings: string[] = [];
-    const config = await resolveInitConfig(
-      dependencies.cwd,
-      options,
-      options.nonInteractive === true
-        ? {}
-        : {
-          agents: () => dependencies.prompt(
-            "请选择目标 Agent（可多选，使用逗号分隔）\n" +
-            agentMenuLines() +
-            "\n请输入编号 [1]: "
-          ).then((answer) => answer.trim()),
-          profile: () => dependencies.prompt(
-            "请选择 Harness 配置：\n  1. 通用（默认）\n  2. Java\n请输入编号 [1]："
-          ).then((answer) => answer.trim())
-        },
-      warnings
-    );
+    const config = await resolveInitConfig(dependencies.cwd, options, warnings);
     for (const warning of warnings) {
       dependencies.stderr(warning + "\n");
     }
@@ -189,12 +132,7 @@ async function runFirstInstall(
         cliVersion,
         recoveryStore
       });
-    await configureAgentExtras(
-      config.agents,
-      config.codebuddy_surface,
-      options,
-      dependencies
-    );
+    await configureAgentExtras(options, dependencies);
     const generatedRootDocuments = ROOT_INSTRUCTION_DOCUMENTS.filter((path) =>
       result.paths.includes(path) && !preexistingRootDocuments.has(path)
     );
@@ -218,13 +156,19 @@ async function runFirstInstall(
       project_id: result.projectConfig.project.project_id,
       summary: { planned: outputPaths.length, applied: options.dryRun === true ? 0 : outputPaths.length },
       items: outputPaths.map((path) => ({ path, status: options.dryRun === true ? "planned" : "applied" })),
-      warnings: gitignore.trackedMigrationNotice?.shouldDisplay === true
-        ? [{
-            code: "TRACKED_HARNESS_FILES_NEED_MIGRATION",
-            message: gitignore.trackedMigrationNotice.message,
-            paths: gitignore.trackedMigrationNotice.patterns
-          }]
-        : [],
+      warnings: [
+        ...result.legacyWarnings.map((message) => ({
+          code: "LEGACY_RESIDUE_DETECTED",
+          message
+        })),
+        ...gitignore.trackedMigrationNotice?.shouldDisplay === true
+          ? [{
+              code: "TRACKED_HARNESS_FILES_NEED_MIGRATION",
+              message: gitignore.trackedMigrationNotice.message,
+              paths: gitignore.trackedMigrationNotice.patterns
+            }]
+          : []
+      ],
       errors: [],
       plan_hash: result.planHash,
       recovery_id: result.recoveryId
@@ -233,6 +177,9 @@ async function runFirstInstall(
       ? serializeCliResult(output)
       : "Hunter Harness 初始化完成，共处理 " + outputPaths.length + " 个文件。\n" +
         formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n" +
+        (result.legacyWarnings.length > 0
+          ? result.legacyWarnings.map((warning) => `提示：${warning}\n`).join("")
+          : "") +
         (gitignore.trackedMigrationNotice?.shouldDisplay === true
           ? `迁移提示：${gitignore.trackedMigrationNotice.message}\n涉及：${gitignore.trackedMigrationNotice.patterns.join("、")}\n`
           : ""));
@@ -257,7 +204,7 @@ async function runFirstInstall(
         request_id: requestId,
         dry_run: options.dryRun === true,
         ok: false,
-        exit_code: exitCode,
+        exit_code: exitCode as CliResult["exit_code"],
         project_id: null,
         summary: { planned: 0, applied: 0 },
         items: [],
@@ -267,99 +214,6 @@ async function runFirstInstall(
     }
     return exitCode;
   }
-}
-
-/**
- * Interactive / non-interactive flow to add or refresh specific agents.
- * Unselected namespaces stay a strict no-op (removal is a separate menu path).
- */
-export async function runConfigureAgentsFlow(
-  options: ConfigureOptions,
-  dependencies: CommandDependencies,
-  currentProfile: "general" | "java",
-  currentSurface: "both" | "ide" | "cli"
-): Promise<number> {
-  // exactOptionalPropertyTypes: 可选属性不接受显式 undefined，按字段条件赋值。
-  const refreshOptions: RefreshCommandOptions = {};
-  if (options.agents !== undefined) refreshOptions.agents = options.agents;
-  if (options.codebuddySurface !== undefined) {
-    refreshOptions.codebuddySurface = options.codebuddySurface;
-  }
-  if (options.profile !== undefined) refreshOptions.profile = options.profile;
-  if (options.nonInteractive !== undefined) refreshOptions.nonInteractive = options.nonInteractive;
-  if (options.yes !== undefined) refreshOptions.yes = options.yes;
-  if (options.dryRun !== undefined) refreshOptions.dryRun = options.dryRun;
-  if (options.json !== undefined) refreshOptions.json = options.json;
-  if (options.forceManaged !== undefined) refreshOptions.forceManaged = options.forceManaged;
-  if (options.recoveryRoot !== undefined) {
-    refreshOptions.recoveryRoot = options.recoveryRoot;
-  }
-  const installed = await readInstalledAgentConfiguration(dependencies.cwd);
-  const currentAgents = installed.agents.length > 0
-    ? installed.agents
-    : ["claude-code" as const];
-  if (options.nonInteractive === true) {
-    const selectedAgents = options.agents === undefined
-      ? currentAgents
-      : parseAgentsInput(options.agents);
-    const code = await runRefresh(refreshOptions, dependencies);
-    if (code === 0) {
-      const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
-        options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
-      await configureAgentExtras(selectedAgents, surface, options, dependencies);
-    }
-    return code;
-  }
-  const currentLines = currentAgents.map((agent) =>
-    `- ${formatAgentStatus(agent, installed.profiles[agent] ?? currentProfile)}`
-  ).join("\n");
-
-  if (refreshOptions.agents === undefined) {
-    const defaultSelection = currentAgents
-      .map((agent) => String(HARNESS_AGENT_ORDER.indexOf(agent) + 1))
-      .join(",");
-    const answer = await dependencies.prompt(
-      `当前已安装：\n${currentLines}\n\n` +
-      "请选择本次要新增或刷新的工具（可多选，逗号分隔；未选中的保持不变）：\n" +
-      agentMenuLines(installed.profiles) +
-      `\n请输入编号 [${defaultSelection}]，或输入 0 取消：`
-    );
-    if (answer.trim() === "0" || /^c/i.test(answer.trim())) return 2;
-    refreshOptions.agents = answer.trim() === ""
-      ? currentAgents.join(",")
-      : answer.trim();
-  }
-
-  if (refreshOptions.profile === undefined) {
-    const selected = parseAgentsInput(refreshOptions.agents);
-    const selectedProfiles = new Set(selected.flatMap((agent) => {
-      const profile = installed.profiles[agent];
-      return profile === undefined ? [] : [profile];
-    }));
-    const defaultProfile = selectedProfiles.size === 1
-      ? [...selectedProfiles][0] ?? currentProfile
-      : currentProfile;
-    const answer = await dependencies.prompt(
-      "请选择上述工具使用的 Harness 配置：\n" +
-      "  1. 通用\n" +
-      "  2. Java\n" +
-      `请输入编号 [${defaultProfile === "java" ? "2" : "1"}]：`
-    );
-    refreshOptions.profile = answer.trim() === "" ? defaultProfile : answer.trim();
-  }
-  refreshOptions.confirmed = true;
-  const selectedAgents = parseAgentsInput(refreshOptions.agents);
-  const code = await runRefresh(refreshOptions, dependencies);
-  if (code === 0) {
-    const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
-      options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
-    await configureAgentExtras(selectedAgents, surface, options, dependencies);
-  }
-  return code;
-}
-
-function formatAgentStatus(agent: HarnessAgent, profile: string): string {
-  return `${agentLabel(agent)}：${profileLabel(profile)}`;
 }
 
 export async function runConfigure(
@@ -424,16 +278,20 @@ export async function runConfigure(
     return 3;
   }
   if (detection.status === "valid") {
-    const currentProfile = (detection.config.project.profiles[0] ?? "general") as "general" | "java";
-    const currentSurface = detection.config.adapter_options?.codebuddy?.surface ?? "both";
-    if (
-      options.nonInteractive === true ||
-      options.agents !== undefined ||
-      options.profile !== undefined
-    ) {
-      return runConfigureAgentsFlow(options, dependencies, currentProfile, currentSurface);
+    // v1.0：投影面固定，已初始化项目不再有工具/配置选择——非交互直接刷新，
+    // 交互进入主菜单。
+    const { runRefresh } = await import("./refresh.js");
+    if (options.nonInteractive === true) {
+      return runRefresh({
+        confirmed: true,
+        ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+        ...(options.json === undefined ? {} : { json: options.json }),
+        ...(options.forceManaged === undefined ? {} : { forceManaged: options.forceManaged }),
+        ...(options.recoveryRoot === undefined ? {} : { recoveryRoot: options.recoveryRoot })
+      }, dependencies);
     }
-    return runInitializedProjectMenu(options, dependencies, currentProfile, currentSurface);
+    const { runInitializedProjectMenu } = await import("./project-menu.js");
+    return runInitializedProjectMenu(options, dependencies);
   }
   return runFirstInstall(options, dependencies);
 }

@@ -18,12 +18,12 @@ describe("hunter-harness sync", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
     const projectedSkill = join(
       root,
-      ".claude",
+      ".agents",
       "skills",
       "harness-sync",
       "SKILL.md"
@@ -33,7 +33,7 @@ describe("hunter-harness sync", () => {
     const stdout: string[] = [];
     try {
       const code = await runCli([
-        "sync", "--project", root, "--profile", "interactive", "--dry-run", "--verbose", "--json"
+        "sync", "--project", root, "--dry-run", "--verbose", "--json"
       ], {
         cwd: root,
         resourcesRoot,
@@ -85,13 +85,13 @@ describe("hunter-harness sync", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
     const stdout: string[] = [];
     try {
       const code = await runCli([
-        "sync", "--project", root, "--profile", "interactive", "--json"
+        "sync", "--project", root, "--json"
       ], {
         cwd: root,
         resourcesRoot,
@@ -125,18 +125,18 @@ describe("hunter-harness sync", () => {
     }
   }, 120_000);
 
-  it("validates only instruction entrypoints owned by enabled Agents", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-sync-codebuddy-entrypoint-"));
+  it("validates the single AGENTS.md instruction entrypoint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-sync-agents-entrypoint-"));
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["codebuddy"], profile: "general" },
+      config: {},
       dryRun: false
     });
     const stdout: string[] = [];
     try {
       const code = await runCli([
-        "sync", "--project", root, "--profile", "interactive", "--dry-run", "--verbose", "--json"
+        "sync", "--project", root, "--dry-run", "--verbose", "--json"
       ], {
         cwd: root,
         resourcesRoot,
@@ -161,8 +161,9 @@ describe("hunter-harness sync", () => {
       );
       expect(instructionGraph?.status).not.toBe("FAIL");
       expect(instructionGraph?.details?.unresolvedReferenceSamples ?? []).not.toContain("CLAUDE.md");
+      expect(instructionGraph?.details?.unresolvedReferenceSamples ?? []).not.toContain("CODEBUDDY.md");
       expect(instructionGraph?.details?.reachableFileSamples).toEqual(
-        expect.arrayContaining(["AGENTS.md", "CODEBUDDY.md"])
+        expect.arrayContaining(["AGENTS.md"])
       );
     } finally {
       await rm(root, { recursive: true, force: true });

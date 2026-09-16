@@ -5,11 +5,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AdapterBundleError,
-  loadAgentBundle,
-  loadProfileBundle,
-  parseMigrationManifest,
-  projectBundle,
-  type ProfileBundle
+  FIXED_PROFILE,
+  loadBundle,
+  PROJECTION_SURFACES
 } from "../src/project/profile-bundle.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
@@ -18,123 +16,41 @@ function shaHex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// 合成 bundle 用于纯投影逻辑测试，绕过 loadProfileBundle 的文件读取，
-// 直接驱动 projectBundle 的路径校验与目标去重。
-function syntheticBundle(
-  entries: Array<{ path: string; bytes: Uint8Array }>
-): ProfileBundle {
-  const files = new Map<string, Uint8Array>();
-  for (const entry of entries) files.set(entry.path, entry.bytes);
-  return {
-    manifest: {
-      schema_version: 2,
-      profile: "general",
-      adapter: "claude-code",
-      bundle_version: "0.0.0-test",
-      generator: "harness_deploy.py",
-      files: entries.map((entry) => ({
-        path: entry.path,
-        sha256: shaHex(entry.bytes)
-      }))
-    },
-    files
-  };
-}
-
-describe("Installation Projection", () => {
-  it("keeps agents definitions in the canonical Bundle with manifest-valid hashes", async () => {
-    const bundle = await loadProfileBundle(resourcesRoot, "general");
-    const agents = bundle.manifest.files.filter((f) => f.path.startsWith("agents/"));
-    expect(agents.length).toBeGreaterThan(0);
-    for (const agent of agents) {
-      const bytes = bundle.files.get(agent.path);
-      expect(bytes, agent.path).toBeDefined();
-      expect(shaHex(bytes as Uint8Array)).toBe(agent.sha256);
+describe("loadBundle (v1.0 flattened single-bundle layout)", () => {
+  it("loads every projection surface from harness/bundles/<surface> with manifest-valid hashes", async () => {
+    for (const surface of PROJECTION_SURFACES) {
+      const bundle = await loadBundle(resourcesRoot, surface);
+      expect(bundle.manifest.adapter).toBe(surface);
+      expect(bundle.manifest.profile).toBe(FIXED_PROFILE);
+      expect(bundle.manifest.schema_version).toBe(2);
+      expect(bundle.manifest.files.length).toBeGreaterThan(0);
+      for (const entry of bundle.manifest.files) {
+        const bytes = bundle.files.get(entry.path);
+        expect(bytes, entry.path).toBeDefined();
+        expect(shaHex(bytes as Uint8Array), entry.path).toBe(entry.sha256);
+      }
     }
   });
 
-  it("routes agent definitions only to .claude/agents, never to .claude/skills/agents", async () => {
-    const bundle = await loadProfileBundle(resourcesRoot, "general");
-    const projected = projectBundle(bundle);
-    const agentTargets = projected.filter((p) => p.target_path.startsWith(".claude/agents/"));
-    expect(agentTargets.length).toBeGreaterThan(0);
-    for (const agent of agentTargets) {
-      expect(agent.source_path).toMatch(/^agents\/[^/]+\.md$/);
-      expect(agent.target_path).toBe(`.claude/agents/${agent.source_path.slice("agents/".length)}`);
-    }
-    // 投影不得产生 .claude/skills/agents/ 下的任何目标（消除旧的双重安装）。
-    expect(projected.some((p) => p.target_path.startsWith(".claude/skills/agents/"))).toBe(false);
-  });
-
-  it("routes every non-agent Bundle path to .claude/skills/<source-path>", async () => {
-    const bundle = await loadProfileBundle(resourcesRoot, "general");
-    const projected = projectBundle(bundle);
-    const nonAgents = projected.filter((p) => !p.source_path.startsWith("agents/"));
-    expect(nonAgents.length).toBeGreaterThan(0);
-    for (const item of nonAgents) {
-      expect(item.target_path).toBe(`.claude/skills/${item.source_path}`);
+  it("excludes the .harness-build.json marker from every manifest", async () => {
+    for (const surface of PROJECTION_SURFACES) {
+      const bundle = await loadBundle(resourcesRoot, surface);
+      expect(bundle.manifest.files.some((f) => f.path === ".harness-build.json")).toBe(false);
+      expect(bundle.files.has(".harness-build.json")).toBe(false);
     }
   });
 
-  it("records byte-identical content and manifest hash for each projected file", async () => {
-    const bundle = await loadProfileBundle(resourcesRoot, "general");
-    const projected = projectBundle(bundle);
-    for (const item of projected) {
-      const manifestEntry = bundle.manifest.files.find((f) => f.path === item.source_path);
-      expect(manifestEntry, item.source_path).toBeDefined();
-      expect(item.sha256).toBe(manifestEntry?.sha256);
-      expect(shaHex(item.bytes)).toBe(item.sha256);
-      expect(item.bytes).toBe(bundle.files.get(item.source_path));
-    }
+  it("caches per resourcesRoot+surface and returns the same manifest object", async () => {
+    const first = await loadBundle(resourcesRoot, "codex");
+    const second = await loadBundle(resourcesRoot, "codex");
+    expect(second.manifest).toBe(first.manifest);
   });
 
-  it("sorts projected files by target path deterministically", async () => {
-    const bundle = await loadProfileBundle(resourcesRoot, "general");
-    const targets = projectBundle(bundle).map((p) => p.target_path);
-    expect([...targets].sort((a, b) => a.localeCompare(b))).toEqual(targets);
-  });
-
-  it("rejects a malicious source path that would escape the project", () => {
-    const bundle = syntheticBundle([
-      { path: "agents/../../escape.md", bytes: new TextEncoder().encode("x") }
-    ]);
-    expect(() => projectBundle(bundle)).toThrow();
-  });
-
-  it("rejects an absolute or drive-bearing source path", () => {
-    const bundle = syntheticBundle([
-      { path: "/etc/passwd", bytes: new TextEncoder().encode("x") }
-    ]);
-    expect(() => projectBundle(bundle)).toThrow();
-  });
-
-  it("rejects duplicate projected targets that collide case-insensitively", () => {
-    const bundle = syntheticBundle([
-      { path: "agents/Foo.md", bytes: new TextEncoder().encode("a") },
-      { path: "agents/foo.md", bytes: new TextEncoder().encode("b") }
-    ]);
-    expect(() => projectBundle(bundle)).toThrow(/collision/i);
-  });
-
-  it("rejects an unsafe migration projection before it can become trusted metadata", () => {
-    expect(() => parseMigrationManifest({
-      schema_version: 1,
-      profile: "general",
-      bundle_version: "0.1.1",
-      bundle_manifest_hash: "sha256:" + "a".repeat(64),
-      projection: [{
-        source_path: "agents/harness-reviewer.md",
-        target_path: "../../notes.txt",
-        sha256: "b".repeat(64)
-      }]
-    })).toThrow();
-  });
-
-  it("raises ADAPTER_BUNDLE_MISSING (exit 7) when an offline manifest is absent", async () => {
+  it("raises ADAPTER_BUNDLE_MISSING (exit 7) when the bundle directory is absent", async () => {
     const missingRoot = fileURLToPath(new URL("../test/__no_such_resources__", import.meta.url));
     let caught: unknown;
     try {
-      await loadAgentBundle(missingRoot, "general", "codex");
+      await loadBundle(missingRoot, "codex");
     } catch (error) {
       caught = error;
     }
@@ -143,42 +59,10 @@ describe("Installation Projection", () => {
     expect((caught as AdapterBundleError).exitCode).toBe(7);
   });
 
-  it("parses a safe migration projection as trusted metadata", () => {
-    const parsed = parseMigrationManifest({
-      schema_version: 1,
-      profile: "general",
-      bundle_version: "0.1.1",
-      bundle_manifest_hash: "sha256:" + "a".repeat(64),
-      projection: [{
-        source_path: "agents/harness-reviewer.md",
-        target_path: ".claude/agents/harness-reviewer.md",
-        sha256: "b".repeat(64)
-      }]
+  it("rejects unknown surfaces before hitting the filesystem", async () => {
+    await expect(loadBundle(resourcesRoot, "pi" as never)).rejects.toMatchObject({
+      name: "AdapterBundleError",
+      code: "ADAPTER_BUNDLE_INVALID"
     });
-    expect(parsed.profile).toBe("general");
-  });
-});
-
-describe("loadAgentBundle caching", () => {
-  it("returns cached result on second call with same key (no disk read)", async () => {
-    // First call may or may not hit cache depending on test order;
-    // key assertion: result is identical and second call is fast (cache hit, no disk IO)
-    const first = await loadAgentBundle(resourcesRoot, "general", "claude-code");
-    const secondStart = Date.now();
-    const second = await loadAgentBundle(resourcesRoot, "general", "claude-code");
-    const secondDuration = Date.now() - secondStart;
-    expect(secondDuration).toBeLessThan(200);
-    expect(second.manifest).toEqual(first.manifest);
-    expect([...second.files.keys()]).toEqual([...first.files.keys()]);
-    // Verify cached copy is independent (mutation doesn't leak)
-    second.files.set("__test_mutation__", new Uint8Array(0));
-    const third = await loadAgentBundle(resourcesRoot, "general", "claude-code");
-    expect(third.files.has("__test_mutation__")).toBe(false);
-  });
-
-  it("does not cache across different agents", async () => {
-    const claude = await loadAgentBundle(resourcesRoot, "general", "claude-code");
-    const codex = await loadAgentBundle(resourcesRoot, "general", "codex");
-    expect([...claude.files.keys()]).not.toEqual([...codex.files.keys()]);
   });
 });

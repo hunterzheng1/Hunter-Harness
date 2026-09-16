@@ -34,13 +34,13 @@ function preview(direction: "push" | "pull", outcome: "ready" | "no_changes" = "
       direction,
       preview_hash: `preview-${direction}`,
       source_ref: sourceRef,
-      scopes: ["rules"] as const,
+      scopes: ["instructions"] as const,
       outcome,
       base_version: "pv-1",
       remote_version: undefined,
       operations: outcome === "no_changes" ? [] : [{
-        path: ".harness/rules/example.md",
-        content_kind: "rule" as const,
+        path: "AGENTS.md",
+        content_kind: "instruction" as const,
         action: "modify" as const
       }],
       conflicts: [],
@@ -111,12 +111,12 @@ function execution(direction: "push" | "pull", retryable = false) {
         preview_hash: `preview-${direction}`,
         no_changes: false,
         applied: retryable ? [] : [{
-          path: ".harness/rules/example.md", content_kind: "rule" as const,
+          path: "AGENTS.md", content_kind: "instruction" as const,
           action: "modify" as const
         }],
         skipped: [],
         retryable: retryable ? [{
-          path: ".harness/rules/example.md", content_kind: "rule" as const,
+          path: "AGENTS.md", content_kind: "instruction" as const,
           action: "modify" as const
         }] : [],
         ...(retryable ? { reason_code: "REMOTE_UNAVAILABLE" as const } : {})
@@ -141,7 +141,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const deps = dependencies(dispatch);
 
     const code = await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json", "--non-interactive"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json", "--non-interactive"
     ], deps);
 
     expect(code).toBe(0);
@@ -153,11 +153,11 @@ describe("Stage 03 Push/Pull CLI commands", () => {
         schema_version: 1,
         source_ref: sourceRef,
         source_mode: "current",
-        scopes: ["rules"]
+        scopes: ["instructions"]
       }
     });
     expect(deps.fetch).not.toHaveBeenCalled();
-    expect(buildPushPreview).toHaveBeenCalledWith(expect.objectContaining({ scopes: ["rules"] }));
+    expect(buildPushPreview).toHaveBeenCalledWith(expect.objectContaining({ scopes: ["instructions"] }));
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       command: "push",
       dry_run: true,
@@ -189,7 +189,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-push-pull-source-"));
     const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
     expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
+      "--non-interactive", "--yes"
     ], { cwd: root, resourcesRoot, stdout: () => undefined, stderr: () => undefined, env: { ...recoveryEnv } }))
       .toBe(0);
     const projectPath = join(root, ".harness", "project.yaml");
@@ -235,7 +235,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     }) as PushPullCliPort["dispatch"];
     const deps = dependencies(dispatch);
 
-    expect(await runCli(["harness-push", "--scope", "rules"], deps)).toBe(2);
+    expect(await runCli(["harness-push", "--scope", "instructions"], deps)).toBe(2);
 
     expect(vi.mocked(dispatch).mock.calls.map(([request]) => (request as { operation: string }).operation))
       .toEqual(["preview", "confirm"]);
@@ -293,7 +293,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const deps = dependencies(dispatch);
 
     expect(await runCli([
-      "harness-pull", "--scope", "rules", "--branch", "release", "--dry-run"
+      "harness-pull", "--scope", "instructions", "--branch", "release", "--dry-run"
     ], deps)).toBe(0);
 
     const output = vi.mocked(deps.stdout).mock.calls.join("");
@@ -315,7 +315,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     }) as PushPullCliPort["dispatch"];
     const deps = dependencies(dispatch);
 
-    expect(await runCli(["harness-pull", "--scope", "rules", "--yes", "--json"], deps))
+    expect(await runCli(["harness-pull", "--scope", "instructions", "--yes", "--json"], deps))
       .toBe(0);
     expect(vi.mocked(dispatch).mock.calls[1]?.[0]).toMatchObject({
       decision: { conflict_decisions: [] }
@@ -325,7 +325,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
   it("requires explicit conflict decisions in non-interactive mode", async () => {
     const conflicted = preview("pull");
     conflicted.result.conflicts = [{
-      path: ".harness/rules/conflict.md", content_kind: "rule",
+      path: "AGENTS.md", content_kind: "instruction",
       kind: "both_modified", base_hash: "sha256:base",
       local_hash: "sha256:local", remote_hash: "sha256:remote"
     }] as never;
@@ -333,7 +333,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const deps = dependencies(dispatch);
 
     expect(await runCli([
-      "harness-pull", "--scope", "rules", "--non-interactive", "--yes", "--json"
+      "harness-pull", "--scope", "instructions", "--non-interactive", "--yes", "--json"
     ], deps)).toBe(5);
 
     expect(dispatch).toHaveBeenCalledOnce();
@@ -354,7 +354,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     }) as PushPullCliPort["dispatch"];
     const deps = dependencies(dispatch);
 
-    expect(await runCli(["harness-push", "--scope", "rules", "--yes", "--json"], deps))
+    expect(await runCli(["harness-push", "--scope", "instructions", "--yes", "--json"], deps))
       .toBe(3);
     expect(vi.mocked(dispatch).mock.calls.map(([request]) => (request as { operation: string }).operation))
       .toEqual(["preview", "confirm"]);
@@ -370,7 +370,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const deps = dependencies(vi.fn(async () => { throw hostile; }));
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(3);
     expect(getter).not.toHaveBeenCalled();
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
@@ -385,7 +385,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     }));
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       errors: [{ code: "REMOTE_UNAVAILABLE" }],
@@ -418,7 +418,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const deps = dependencies(dispatch);
     deps.prompt = vi.fn(async () => "y");
 
-    expect(await runCli(["harness-push", "--scope", "rules", "--yes", "--json"], deps))
+    expect(await runCli(["harness-push", "--scope", "instructions", "--yes", "--json"], deps))
       .toBe(0);
 
     expect(vi.mocked(dispatch).mock.calls.slice(2).map(([request]) => request)).toEqual([
@@ -488,7 +488,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     deps.cwd = root;
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
     expect(deps.fetch).not.toHaveBeenCalled();
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
@@ -511,7 +511,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
 
     expect(deps.fetch).toHaveBeenCalled();
@@ -539,7 +539,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
 
     const [url, init] = vi.mocked(deps.fetch).mock.calls[0] as [string, RequestInit];
@@ -558,7 +558,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     deps.fetch = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) }));
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
 
     // 只尝试过 key-info 自动补全，未进入同步传输。
@@ -590,7 +590,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
 
     const calls = vi.mocked(deps.fetch).mock.calls.map(([url]) => String(url));
@@ -622,7 +622,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
 
     expect(await runCli([
-      "harness-push", "--scope", "rules", "--dry-run", "--json"
+      "harness-push", "--scope", "instructions", "--dry-run", "--json"
     ], deps)).toBe(4);
 
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({

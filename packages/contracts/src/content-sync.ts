@@ -60,7 +60,6 @@ const incompleteV1StatusesSchema = z.boolean().superRefine((value, context) => {
 
 const contentKindValues = [
   "config",
-  "rule",
   "architecture",
   "instruction",
   "branch_file",
@@ -75,7 +74,6 @@ export const contentKindSchema: FrozenStringEnumSchema<typeof contentKindValues>
 
 const syncScopeValues = [
   "config",
-  "rules",
   "architecture",
   "instructions",
   "branch_files",
@@ -177,10 +175,11 @@ export const candidateProvenanceSourceKindSchema: FrozenStringEnumSchema<
   typeof candidateProvenanceSourceKindValues
 > = frozenStringEnumSchema(candidateProvenanceSourceKindValues);
 
+// v1.0: AGENTS.md is the only instruction entrypoint (CLAUDE.md / CODEBUDDY.md
+// projections retired; CodeBuddy loads AGENTS.md natively when CODEBUDDY.md is
+// absent, and a stray CODEBUDDY.md would shadow AGENTS.md instead).
 export const INSTRUCTION_ENTRYPOINTS = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "CODEBUDDY.md"
+  "AGENTS.md"
 ] as const;
 const maxSelectedInstructionEntrypoints = INSTRUCTION_ENTRYPOINTS.length;
 
@@ -775,13 +774,6 @@ const contentPathClassificationSuccessValueSchema = z.union([
   }).strict(),
   z.object({
     schema_version: correlatedSchemaVersionSchema,
-    content_kind: correlatedStringLiteralSchema("rule"),
-    sync_scope: correlatedStringLiteralSchema("rules"),
-    pull_policy: correlatedStringLiteralSchema("regular"),
-    content_scan_policy: correlatedStringLiteralSchema("required")
-  }).strict(),
-  z.object({
-    schema_version: correlatedSchemaVersionSchema,
     content_kind: correlatedStringLiteralSchema("architecture"),
     sync_scope: correlatedStringLiteralSchema("architecture"),
     pull_policy: correlatedStringLiteralSchema("regular"),
@@ -1167,7 +1159,6 @@ const windowsIllegalCharacter = /[<>:"|?*]/u;
 const canonicalHarnessPrefixes = [
   "project.yaml",
   "config",
-  "rules",
   "codebase",
   "state",
   "runtime",
@@ -1381,9 +1372,6 @@ export function classifyContentPath(input: unknown): ContentPathClassificationRe
   if (parsedInput.data.path === ".harness/project.yaml" ||
       parsedInput.data.path.startsWith(".harness/config/")) {
     return classificationSuccess("config", "config", "regular", "skip_content_scan");
-  }
-  if (parsedInput.data.path.startsWith(".harness/rules/")) {
-    return classificationSuccess("rule", "rules", "regular", "required");
   }
   if (parsedInput.data.path === ".harness/codebase/map-manifest.json" ||
       parsedInput.data.path.startsWith(".harness/codebase/map/")) {

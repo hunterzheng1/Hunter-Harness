@@ -1,19 +1,19 @@
 # Hunter Harness
 
-Hunter Harness installs a selected, self-contained Harness workflow into an agent project.
+Hunter Harness installs the canonical, self-contained Harness workflow into an agent project (zero-choice since v1.0).
 
 ## Language
 
-**Installation Profile**:
-The user-selected workflow family installed into a project. The supported profiles are `general` and `java`, and each profile has its own exact file set.
+**Installation Profile** (retired in v1.0):
+Formerly the user-selected workflow family (`general`/`java`) installed into a project. v1.0 removed profile selection entirely: installation is zero-choice and every project receives the same canonical content set. Retained here only for reading pre-1.0 documents.
 _Avoid_: mode, flavor, preset
 
 **Harness Bundle**:
-The complete, self-contained set of Skills, agents, scripts, protocols, templates, and supporting files belonging to one Installation Profile.
-_Avoid_: partial skill pack, shared superset
+The complete, self-contained set of Skills, agents, scripts, protocols, templates, and supporting files for the canonical content set. Since v1.0 there is exactly one Harness Bundle per Workflow Family version.
+_Avoid_: partial skill pack, shared superset, per-profile bundle
 
 **Harness Source**:
-The maintained canonical Harness tree from which profile-specific Harness Bundles are produced.
+The maintained canonical Harness tree from which the Harness Bundle is produced.
 _Avoid_: npm resources, installed copy
 
 **Bundle Fidelity**:
@@ -21,8 +21,20 @@ The requirement that the Public Distribution contains every file and byte produc
 _Avoid_: identical installation tree, same filenames, equivalent content
 
 **Installation Projection**:
-The deterministic routing from paths in a Harness Bundle to their runtime locations. Skills and supporting material are routed under `.claude/skills`, while agent definitions are routed only to `.claude/agents`.
-_Avoid_: Bundle copy, content transformation
+The deterministic routing from paths in the Harness Bundle to their runtime locations. Since v1.0 skills are routed under `.agents/skills` (canonical) and unconditionally dual-written to `.codebuddy/skills`; project instructions live in a single managed `AGENTS.md` block; bundle-carried subagent definitions route to `.codex/agents/*.toml` and `.codebuddy/agents/*.md`.
+_Avoid_: Bundle copy, content transformation, per-agent projection choice
+
+**Managed AGENTS.md Block**:
+The single instruction surface since v1.0: harness content lives in a delimited managed block inside `AGENTS.md`, surrounded by user-owned content. CLAUDE.md/CODEBUDDY.md managed blocks and static rules projections (`.claude/rules`, `.harness/rules`) were removed; CodeBuddy officially falls back to AGENTS.md.
+_Avoid_: CLAUDE.md block, per-agent instruction files
+
+**Archive-Learned Rules**:
+High-confidence rule candidates extracted automatically after `archive upload` finalizes and refreshed idempotently into a dedicated managed section of `AGENTS.md`, replacing the former manual rules-review queue and static rules files.
+_Avoid_: rules review queue, static rules projection
+
+**Uninstall**:
+The `hunter-harness uninstall` command: precise removal of every file and managed block any harness version wrote (including historical `.claude`/`.cursor`/`.pi` surfaces, CLAUDE.md/CODEBUDDY.md blocks, and `.mcp.json` entries), defaulting to dry-run. User-authored content is never touched.
+_Avoid_: manual cleanup, blind directory deletion
 
 **Public Distribution**:
 The set of public npm packages that carry Hunter Harness to installation machines: a thin CLI package containing only logic, plus one data-only package per Workflow Family carrying its Harness Bundles. Installation requires npm but never the Hunter Harness server or the Harness Source. Workflow data package versions map one-to-one to Workflow Family versions.
@@ -32,8 +44,8 @@ _Avoid_: bundled CLI, server-dependent install, Vault deployment
 The default path when a project already has a Harness Project. It preserves user-owned content and changes only files that the update policy identifies as clean and managed.
 _Avoid_: reinitialization, blind overwrite
 
-**Profile Transition**:
-A Conservative Update that changes an existing Harness Project from one Installation Profile to another after presenting the resulting managed-file additions and removals. Non-interactive execution requires explicit confirmation.
+**Profile Transition** (retired in v1.0):
+Formerly a Conservative Update switching a project between Installation Profiles. Removed together with profiles; the v1.0 migration path is `uninstall` followed by `init`.
 _Avoid_: fresh installation, silent profile replacement
 
 **Managed File Conflict**:
@@ -61,7 +73,7 @@ The optimistic concurrency guard on push: finalize carries the artifact identity
 _Avoid_: locking, server-side merge, last-write-wins
 
 **Semantic Index**:
-The server-side structured view derived from a project's latest artifact by parsing known managed-file kinds (knowledge documents, rules, harness records, agent instruction files). It is a rebuildable derivative, never a second source of truth; the graph, search, and MCP surfaces all read from it. CLI push is the only channel that feeds it.
+The server-side structured view derived from a project's latest artifact by parsing known managed-file kinds (knowledge documents, codebase map, harness records, agent instruction files). It is a rebuildable derivative, never a second source of truth; the graph, search, and MCP surfaces all read from it. CLI push is the only channel that feeds it.
 _Avoid_: manual project upload, web-edited knowledge, second data source
 
 **Semantic MCP**:
@@ -69,7 +81,7 @@ The read-only MCP surface built into the server (HTTP transport, API-token auth)
 _Avoid_: write-capable MCP, local proxy package, per-project server MCP
 
 **Workflow Family**:
-The server-side registry entity for one workflow line (for example `harness`). A Family carries a single version number; each version contains one self-contained Harness Bundle per Installation Profile, built locally from the canonical source tree plus overlays and uploaded as final bytes. It replaces the former skill-binding workflow manifest.
+The server-side registry entity for one workflow line (for example `harness`). A Family carries a single version number; since v1.0 each version contains exactly one self-contained Harness Bundle, built locally from the canonical source tree and uploaded as final bytes. It replaces the former skill-binding workflow manifest.
 _Avoid_: workflow manifest, skill binding list, per-profile versioning
 
 **Bundle-Internal Skill**:

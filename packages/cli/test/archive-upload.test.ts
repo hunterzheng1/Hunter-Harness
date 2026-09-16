@@ -36,7 +36,7 @@ describe("hunter-harness archive upload", () => {
     stdout = [];
     stderr = [];
     expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
+      "--non-interactive", "--yes"
     ], {
       cwd: root,
       resourcesRoot,

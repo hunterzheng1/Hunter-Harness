@@ -19,9 +19,7 @@ export const platformInformationViewSchema = z.enum([
   "branch_monitor",
   "branch_files",
   "project_materials",
-  "project_knowledge",
-  "change_records",
-  "version_records"
+  "project_knowledge"
 ]);
 
 export const platformInformationPageStateSchema = z.enum([
@@ -35,18 +33,14 @@ export const platformInformationContentTypeSchema = z.enum([
   "rule",
   "architecture",
   "instruction",
-  "knowledge_entry",
-  "change_document",
-  "archive_package",
-  "project_content_candidate"
+  "knowledge_entry"
 ]);
 
 export const platformInformationSortSchema = z.enum([
   "last_event_at_desc_run_id_asc",
   "uploaded_at_desc_snapshot_version_asc",
   "category_asc_path_asc_version_desc",
-  "extracted_at_desc_knowledge_id_asc",
-  "archived_at_desc_change_key_asc"
+  "extracted_at_desc_knowledge_id_asc"
 ]);
 
 /** Stage 12 canonical Plan phases consumed by the branch-monitor projection. */
@@ -54,8 +48,6 @@ export const platformInformationPlanPhaseSchema = z.enum([
   "plan",
   "execute",
   "review",
-  "package",
-  "apidoc",
   "submit",
   "merge",
   "archive"
@@ -81,16 +73,6 @@ const viewPolicy = {
     sort: "extracted_at_desc_knowledge_id_asc",
     contentTypes: ["knowledge_entry"],
     itemKind: "knowledge_entry"
-  },
-  change_records: {
-    sort: "archived_at_desc_change_key_asc",
-    contentTypes: ["change_document", "archive_package", "project_content_candidate"],
-    itemKind: "change_record"
-  },
-  version_records: {
-    sort: "uploaded_at_desc_snapshot_version_asc",
-    contentTypes: ["branch_file"],
-    itemKind: "version_record"
   }
 } as const;
 
@@ -159,8 +141,29 @@ const branchSnapshotItemSchema = z.object({
   uploaded_at: timestampSchema,
   file_count: z.number().int().nonnegative(),
   changed_file_count: z.number().int().nonnegative(),
+  /** 服务端签发的快照文件清单定位符（bf_<branch>~<version>），files 子路由参数。 */
+  detail_id: idSchema.optional(),
   sort_key: sortKeySchema
 }).strict();
+
+const branchFileEntrySchema = z.object({
+  path: pathSchema,
+  size: z.number().int().nonnegative(),
+  content_hash: hashSchema,
+  /** 服务端签发的文件内容定位符（bff_<branch>~<version>~<path>），detail 请求原样回传。 */
+  detail_id: idSchema
+}).strict();
+
+/** 分支文件清单页（files 子路由响应）。 */
+export const platformInformationBranchFilesPageSchema = z.object({
+  schema_version: schemaVersionSchema,
+  contract_kind: z.literal("branch_files_page"),
+  project_id: projectIdSchema,
+  detail_id: idSchema,
+  items: z.array(branchFileEntrySchema).max(100),
+  next_cursor: z.string().min(16).max(512).nullable()
+}).strict();
+export type PlatformInformationBranchFilesPage = z.infer<typeof platformInformationBranchFilesPageSchema>;
 
 const projectMaterialItemSchema = z.object({
   item_kind: z.literal("project_material"),
@@ -184,43 +187,11 @@ const knowledgeItemSchema = z.object({
   sort_key: sortKeySchema
 }).strict();
 
-const archiveDownloadRefSchema = z.object({
-  archive_id: idSchema,
-  package_hash: hashSchema
-}).strict();
-
-const changeRecordItemSchema = z.object({
-  item_kind: z.literal("change_record"),
-  change_key: idSchema,
-  title: z.string().min(1).max(240),
-  archived_at: timestampSchema,
-  archive_status: z.enum(["absent", "uploading", "stored", "failed"]),
-  knowledge_extraction_status: z.enum(["not_scheduled", "queued", "extracting", "ready", "failed"]),
-  document_refs: z.array(idSchema).max(20),
-  candidate_count: z.number().int().nonnegative(),
-  archive_download_ref: archiveDownloadRefSchema.nullable(),
-  sort_key: sortKeySchema
-}).strict();
-
-const versionRecordItemSchema = z.object({
-  item_kind: z.literal("version_record"),
-  snapshot_version: idSchema,
-  branch_name: idSchema,
-  commit_sha: commitShaSchema,
-  uploaded_at: timestampSchema,
-  file_count: z.number().int().nonnegative(),
-  changed_file_count: z.number().int().nonnegative(),
-  diff_ref: idSchema,
-  sort_key: sortKeySchema
-}).strict();
-
 export const platformInformationItemSchema = z.discriminatedUnion("item_kind", [
   branchMonitorItemSchema,
   branchSnapshotItemSchema,
   projectMaterialItemSchema,
-  knowledgeItemSchema,
-  changeRecordItemSchema,
-  versionRecordItemSchema
+  knowledgeItemSchema
 ]);
 
 const failureSchema = z.object({
@@ -290,7 +261,7 @@ export const platformInformationDetailRequestSchema = z.object({
 });
 
 const contentDetailSchema = z.object({
-  detail_kind: z.enum(["branch_file", "project_material", "knowledge_entry", "change_document"]),
+  detail_kind: z.enum(["branch_file", "project_material", "knowledge_entry"]),
   content: z.string().max(2_000_000),
   content_hash: hashSchema,
   media_type: z.enum(["text/plain", "text/markdown", "application/json", "application/yaml"])
@@ -302,35 +273,19 @@ const monitorDetailSchema = z.object({
   event_refs: z.array(idSchema).max(100)
 }).strict();
 
-const changeDetailSchema = z.object({
-  detail_kind: z.literal("change_record"),
-  document_refs: z.array(idSchema).max(20),
-  candidate_refs: z.array(idSchema).max(100),
-  archive_download_ref: archiveDownloadRefSchema.nullable()
-}).strict();
-
-const versionDiffDetailSchema = z.object({
-  detail_kind: z.literal("version_diff"),
-  from_version: idSchema,
-  to_version: idSchema,
-  changed_paths: z.array(pathSchema).max(1000)
-}).strict();
-
 export const platformInformationDetailResponseSchema = z.object({
   schema_version: schemaVersionSchema,
   contract_kind: z.literal("detail_response"),
   view: platformInformationViewSchema,
   project_id: projectIdSchema,
   detail_id: idSchema,
-  detail: z.union([contentDetailSchema, monitorDetailSchema, changeDetailSchema, versionDiffDetailSchema])
+  detail: z.union([contentDetailSchema, monitorDetailSchema])
 }).strict().superRefine((value, context) => {
   const allowedDetailKinds = {
     branch_monitor: ["branch_monitor"],
     branch_files: ["branch_file"],
     project_materials: ["project_material"],
-    project_knowledge: ["knowledge_entry"],
-    change_records: ["change_document", "change_record"],
-    version_records: ["version_diff"]
+    project_knowledge: ["knowledge_entry"]
   } as const;
   if (!(allowedDetailKinds[value.view] as readonly string[]).includes(value.detail.detail_kind)) {
     context.addIssue({ code: "custom", path: ["detail", "detail_kind"], message: "detail does not match view" });

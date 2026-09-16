@@ -40,7 +40,7 @@ export async function readLastServerUrl(
       await readFile(join(resolveUserStateRoot(env), FILE_NAME), "utf8")
     ) as { server_url?: unknown };
     const url = parsed?.server_url;
-    return typeof url === "string" && isAllowedServerUrl(url) ? url : undefined;
+    return typeof url === "string" && isAllowedServerUrl(url, true) ? url : undefined;
   } catch {
     return undefined;
   }
@@ -51,7 +51,7 @@ export async function writeLastServerUrl(
   env: Readonly<Record<string, string | undefined>>
 ): Promise<void> {
   try {
-    if (!isAllowedServerUrl(serverUrl)) return;
+    if (!isAllowedServerUrl(serverUrl, true)) return;
     const root = resolveUserStateRoot(env);
     await mkdir(root, { recursive: true });
     await writeFile(

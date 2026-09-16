@@ -926,20 +926,20 @@ describe("stage 01 content and sync contracts", () => {
     const classifySelected = (selected: unknown): ContentPathClassificationResult =>
       classifyContentPath({
         schema_version: 1,
-        path: "CLAUDE.md",
+        path: "AGENTS.md",
         selected_instruction_entrypoints: selected
       });
-    const ownKeysFailure = new Proxy(["CLAUDE.md"], {
+    const ownKeysFailure = new Proxy(["AGENTS.md"], {
       ownKeys() {
         throw new Error("selected ownKeys trap");
       }
     });
-    const descriptorFailure = new Proxy(["CLAUDE.md"], {
+    const descriptorFailure = new Proxy(["AGENTS.md"], {
       getOwnPropertyDescriptor() {
         throw new Error("selected descriptor trap");
       }
     });
-    const revoked = Proxy.revocable(["CLAUDE.md"], {});
+    const revoked = Proxy.revocable(["AGENTS.md"], {});
     revoked.revoke();
 
     for (const selected of [ownKeysFailure, descriptorFailure, revoked.proxy]) {
@@ -950,7 +950,7 @@ describe("stage 01 content and sync contracts", () => {
     }
 
     let getCalls = 0;
-    const stable = new Proxy(["CLAUDE.md"], {
+    const stable = new Proxy(["AGENTS.md"], {
       get() {
         getCalls += 1;
         throw new Error("selected get trap executed");
@@ -1112,7 +1112,7 @@ describe("stage 01 content and sync contracts", () => {
   });
 
   it("caps selected entrypoints at the frozen domain cardinality before enumeration", () => {
-    const tooMany = Array.from({ length: 4 }, () => "AGENTS.md");
+    const tooMany = Array.from({ length: 2 }, () => "AGENTS.md");
     expect(contentPathClassificationInputSchema.safeParse({
       schema_version: 1,
       path: "AGENTS.md",
@@ -1147,12 +1147,12 @@ describe("stage 01 content and sync contracts", () => {
     const atLimit = [...INSTRUCTION_ENTRYPOINTS];
     expect(contentPathClassificationInputSchema.safeParse({
       schema_version: 1,
-      path: "CODEBUDDY.md",
+      path: "AGENTS.md",
       selected_instruction_entrypoints: atLimit
     }).success).toBe(true);
     expect(classifyContentPath({
       schema_version: 1,
-      path: "CODEBUDDY.md",
+      path: "AGENTS.md",
       selected_instruction_entrypoints: atLimit
     })).toMatchObject({
       schema_version: 1,
@@ -1232,7 +1232,6 @@ describe("stage 01 content and sync contracts", () => {
     expect(fixture.schema_version).toBe(1);
     expectExactEnum(contentKindSchema, enums.content_kind, [
       "config",
-      "rule",
       "architecture",
       "instruction",
       "branch_file",
@@ -1244,7 +1243,6 @@ describe("stage 01 content and sync contracts", () => {
     ]);
     expectExactEnum(syncScopeSchema, enums.sync_scope, [
       "config",
-      "rules",
       "architecture",
       "instructions",
       "branch_files",
@@ -1286,11 +1284,9 @@ describe("stage 01 content and sync contracts", () => {
       ["archive", "plan", "review", "manual", "migration"]
     );
     expectExactEnum(instructionEntrypointSchema, enums.instruction_entrypoint, [
-      "AGENTS.md",
-      "CLAUDE.md",
-      "CODEBUDDY.md"
+      "AGENTS.md"
     ]);
-    expect(INSTRUCTION_ENTRYPOINTS).toEqual(["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md"]);
+    expect(INSTRUCTION_ENTRYPOINTS).toEqual(["AGENTS.md"]);
     expectExactEnum(archiveStatusValueSchema, enums.archive_status, [
       "absent",
       "uploading",
@@ -1593,7 +1589,7 @@ describe("stage 01 content and sync contracts", () => {
 
     it("preserves exact inferred unions for wrapped frozen string schemas", () => {
       expectTypeOf(contentKindSchema.parse("config")).toEqualTypeOf<
-        "config" | "rule" | "architecture" | "instruction" | "branch_file" |
+        "config" | "architecture" | "instruction" | "branch_file" |
         "change_document" | "archive_package" | "knowledge_entry" |
         "knowledge_candidate" | "project_content_candidate"
       >();
@@ -1953,9 +1949,7 @@ describe("stage 01 content and sync contracts", () => {
     [".HARNESS/PROJECT.YAML", "CONTENT_PATH_NON_CANONICAL"],
     [".harness/CONFIG/x.yaml", "CONTENT_PATH_NON_CANONICAL"],
     [".harness/STATE/local.json", "CONTENT_PATH_NON_CANONICAL"],
-    ["agents.md", "CONTENT_PATH_NON_CANONICAL"],
-    ["claude.md", "CONTENT_PATH_NON_CANONICAL"],
-    ["codebuddy.md", "CONTENT_PATH_NON_CANONICAL"]
+    ["agents.md", "CONTENT_PATH_NON_CANONICAL"]
   ])("rejects non-canonical cross-platform path %s with %s", (path, reasonCode) => {
     expect(classifyContentPath({
       schema_version: 1,
@@ -1994,7 +1988,7 @@ describe("stage 01 content and sync contracts", () => {
     });
   });
 
-  it("allows only frozen root instruction entrypoints", () => {
+  it("allows only the frozen root instruction entrypoint", () => {
     const instruction = {
       schema_version: 1,
       content_kind: "instruction",
@@ -2004,12 +1998,25 @@ describe("stage 01 content and sync contracts", () => {
     } as const;
 
     expect(classifyContentPath("AGENTS.md")).toEqual(instruction);
+    expect(classifyContentPath({
+      schema_version: 1,
+      path: "AGENTS.md",
+      selected_instruction_entrypoints: ["AGENTS.md"]
+    })).toEqual(instruction);
+    // v1.0 起 CLAUDE.md/CODEBUDDY.md 退役为普通未分类路径，不再是指令入口。
     for (const path of ["CLAUDE.md", "CODEBUDDY.md"] as const) {
+      expect(classifyContentPath(path)).toEqual({
+        schema_version: 1,
+        reason_code: "CONTENT_PATH_UNCLASSIFIED"
+      });
       expect(classifyContentPath({
         schema_version: 1,
         path,
         selected_instruction_entrypoints: [path]
-      })).toEqual(instruction);
+      })).toEqual({
+        schema_version: 1,
+        reason_code: "CONTENT_PATH_SELECTED_ENTRYPOINT_INVALID"
+      });
     }
   });
 
@@ -2330,7 +2337,7 @@ describe("stage 01 content and sync contracts", () => {
     ["mismatched scope", {
       schema_version: 1,
       content_kind: "instruction",
-      sync_scope: "rules",
+      sync_scope: "config",
       pull_policy: "regular",
       content_scan_policy: "required"
     }],
@@ -2359,7 +2366,7 @@ describe("stage 01 content and sync contracts", () => {
       pull_policy: "regular",
       content_scan_policy: "skip_content_scan"
     });
-    expectTypeOf(parsed.content_kind).toEqualTypeOf<"config" | "rule" | "architecture" |
+    expectTypeOf(parsed.content_kind).toEqualTypeOf<"config" | "architecture" |
       "instruction" | "branch_file">();
     if (parsed.content_kind === "config") {
       expectTypeOf(parsed.sync_scope).toEqualTypeOf<"config">();
@@ -2648,7 +2655,7 @@ describe("stage 01 content and sync contracts", () => {
     });
     expect(filePage.items.map((item) => item.path)).toEqual([
       ".harness/project.yaml",
-      ".harness/rules/security.md",
+      ".harness/codebase/map/architecture.md",
       "AGENTS.md"
     ]);
   });

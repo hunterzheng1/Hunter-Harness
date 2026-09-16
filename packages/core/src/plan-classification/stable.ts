@@ -56,7 +56,7 @@ const MODE_POLICY: Readonly<Record<PlanMode, PlanModePolicy>> = {
   quick: {
     mode: "quick",
     required_phases: ["plan", "execute", "archive"],
-    optional_phases: ["review", "package", "apidoc", "submit", "merge"],
+    optional_phases: ["review", "submit", "merge"],
     required_validations: ["deterministic_check"],
     max_clarification_rounds: 1,
     reason_code: "low_risk_scope"
@@ -64,7 +64,7 @@ const MODE_POLICY: Readonly<Record<PlanMode, PlanModePolicy>> = {
   standard: {
     mode: "standard",
     required_phases: ["plan", "execute", "archive"],
-    optional_phases: ["review", "package", "apidoc", "submit", "merge"],
+    optional_phases: ["review", "submit", "merge"],
     required_validations: ["deterministic_check", "semantic_consistency"],
     max_clarification_rounds: 3,
     reason_code: "ordinary_change"
@@ -72,7 +72,7 @@ const MODE_POLICY: Readonly<Record<PlanMode, PlanModePolicy>> = {
   assurance: {
     mode: "assurance",
     required_phases: ["plan", "execute", "review", "archive"],
-    optional_phases: ["package", "apidoc", "submit", "merge"],
+    optional_phases: ["submit", "merge"],
     required_validations: [
       "deterministic_check", "semantic_consistency", "adversarial_review"
     ],

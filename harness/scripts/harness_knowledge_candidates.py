@@ -30,8 +30,7 @@ WI-E2 (O3/O4, design-o3-o4-outcome-assets-2026-09-14 §6): every candidate also
 carries four asset-metadata keys — applicable_versions / validation_status /
 supersedes / expires_when (see _asset_fields()). The contract takes them as an
 optional/nullable increment (same evolution path as entry_type/body/keywords;
-schema_version stays 1). Consumption receipts land via harness_assets.py under
-.harness/state/local/asset-receipts/.
+schema_version stays 1).
 """
 from __future__ import annotations
 

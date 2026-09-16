@@ -54,7 +54,7 @@ describe("PlanEventBundle shared contract", () => {
       value: current
     });
     expect(PLAN_EVENT_PHASES).toEqual([
-      "plan", "execute", "review", "package", "apidoc", "submit", "merge", "archive"
+      "plan", "execute", "review", "submit", "merge", "archive"
     ]);
     expect(PLAN_EVENT_TYPES).toEqual([
       "phase_started", "decision_recorded", "risk_found", "artifact_published",

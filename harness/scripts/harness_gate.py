@@ -75,7 +75,7 @@ CAPABILITY_MARKERS: dict[str, tuple[str, ...]] = {
     "integration-lock": ("harness_change.py integration-lock",),
 }
 
-DESIGN_GATE_CAPABILITIES = frozenset({"deployment", "container", "api", "database"})
+DESIGN_GATE_CAPABILITIES = frozenset({"database"})
 VALIDATION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "compile": (),
     "unitTest": ("compile",),
@@ -83,7 +83,6 @@ VALIDATION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "apiTest": ("unitTest",),
     "browserTest": ("unitTest",),
     "dbCompatibility": ("unitTest",),
-    "package": ("unitTestFull", "apiTest", "dbCompatibility"),
 }
 
 
@@ -184,8 +183,6 @@ PHASE_GATE_RULES: dict[str, frozenset[str]] = {
         "ledger_blocking", "head_may_advance",
     }),
     "review": frozenset({"review_outputs"}),
-    "package": frozenset({"ledger_blocking"}),
-    "apidoc": frozenset(),
     "submit": frozenset({"head_may_advance", "projection_drift"}),
     "merge": frozenset({"head_may_advance"}),
     "archive": frozenset({"projection_drift"}),
@@ -1110,10 +1107,9 @@ def validate_identity(
         raise ValueError("BUNDLE_IDENTITY_INVALID: context bundle metadata missing")
     registry_version = str(bundle.get("registry_version") or "")
     bundle_hash = str(bundle.get("bundle_hash") or "")
-    profile = str((installed.get("profiles") or {}).get(agent) or "")
     manifests = installed.get("manifests")
     manifest = next((item for item in manifests if isinstance(item, dict)
-                     and item.get("adapter") == agent and item.get("profile") == profile), None) \
+                     and item.get("adapter") == agent), None) \
         if isinstance(manifests, list) else None
     if not isinstance(manifest, dict) or \
             str(manifest.get("bundle_version") or "") != registry_version or \
@@ -1137,7 +1133,6 @@ def validate_identity(
         "bundleHash": bundle_hash,
         "coreHash": core_hash,
         "overlay": str(build.get("overlay") or "none"),
-        "profile": profile,
         "adapter": agent,
         "buildMarkerHash": actual_hash,
         "contextIndexPresent": True,
@@ -1453,15 +1448,7 @@ def _apply_required_gate_contract(
     for stage_name, decision in sorted(stage_decisions.items()):
         if not decision.get("required"):
             continue
-        if stage_name == "package":
-            dependencies = [
-                f"validation:{item}" for item in required
-                if hp.resolve_phase_name(validation_phases.get(item)) == "execute"
-            ]
-        elif stage_name == "apidoc" and "apiTest" in required_set:
-            dependencies = ["validation:apiTest"]
-        else:
-            dependencies = []
+        dependencies: list[str] = []
         node_id = f"stage:{stage_name}"
         nodes.append({
             "id": node_id,
@@ -1922,19 +1909,7 @@ def lint_skill_tree(skills_root: Path) -> dict[str, Any]:
             }
         )
         workflow = {"skills": {}}
-    active_profile: str | None = None
-    build_marker = skills_root / ".harness-build.json"
-    if build_marker.is_file():
-        try:
-            marker = json.loads(build_marker.read_text(encoding="utf-8"))
-            active_profile = "java" if marker.get("overlay") == "java" else "general"
-        except (OSError, json.JSONDecodeError):
-            active_profile = None
     for skill_name, contract in sorted(workflow["skills"].items()):
-        if active_profile is not None and active_profile not in contract.get(
-            "profiles", ["general", "java"]
-        ):
-            continue
         skill_files = sorted(skills_root.rglob(f"{skill_name}/SKILL.md"))
         if not skill_files:
             violations.append(

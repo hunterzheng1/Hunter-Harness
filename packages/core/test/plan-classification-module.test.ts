@@ -46,8 +46,6 @@ function capabilities(overrides: Partial<PlanCapabilities> = {}): PlanCapabiliti
       "plan",
       "execute",
       "review",
-      "package",
-      "apidoc",
       "submit",
       "merge",
       "archive"
@@ -409,7 +407,7 @@ describe("PlanClassificationModule strict current schemas", () => {
       mode: "quick" as const,
       required_phases: ["plan", "execute", "archive"] as const,
       optional_phases: [
-        "review", "package", "apidoc", "submit", "merge"
+        "review", "submit", "merge"
       ] as const,
       required_validations: ["deterministic_check"] as const,
       interaction_budget: {
@@ -679,7 +677,7 @@ describe("PlanClassificationModule legacy compatibility", () => {
     )) as Record<string, unknown>;
     const altered = structuredClone(legacy);
     altered.skippedPhases = [{
-      phase: "package",
+      phase: "merge",
       reason: "任意中文展示原因，不可作为机器恢复输入",
       operator: "另一个操作人",
       decidedAt: "2030-01-01T00:00:00Z"

@@ -10,11 +10,6 @@ import {
   refreshProject,
   validateInstructionGraph
 } from "@hunter-harness/core";
-import {
-  HARNESS_AGENT_ORDER,
-  type CodeBuddySurface,
-  type HarnessAgent
-} from "@hunter-harness/contracts";
 
 import type { CommandDependencies } from "./configure.js";
 import { inspectConfigOrigins } from "./config-origins.js";
@@ -31,7 +26,6 @@ import { readCliVersion } from "../version.js";
 
 export interface SyncCommandOptions {
   project?: string;
-  profile?: string;
   json?: boolean;
   dryRun?: boolean;
   check?: boolean;
@@ -46,7 +40,7 @@ export interface SyncCommandOptions {
 }
 
 /** `--push` 默认只推配置类内容——与 push 自身省略 --scope 时的默认范围一致。 */
-const SYNC_PUSH_DEFAULT_SCOPES = "config,rules,architecture,instructions";
+const SYNC_PUSH_DEFAULT_SCOPES = "config,architecture,instructions";
 
 export interface SyncPushPlan {
   readonly push: boolean;
@@ -147,17 +141,8 @@ export async function runProcess(
   return runManagedProcess(argv, cwd, env, onStderr, budgetInput);
 }
 
-function configuredAgents(values: readonly string[]): HarnessAgent[] {
-  const enabled = new Set(values);
-  return HARNESS_AGENT_ORDER.filter((agent) => enabled.has(agent));
-}
-
-function instructionEntrypointsForAgents(agents: readonly HarnessAgent[]): string[] {
-  const entrypoints = new Set(["AGENTS.md"]);
-  if (agents.includes("claude-code")) entrypoints.add("CLAUDE.md");
-  if (agents.includes("codebuddy")) entrypoints.add("CODEBUDDY.md");
-  return [...entrypoints];
-}
+// v1.0：指令入口固定为 AGENTS.md 单文件。
+const INSTRUCTION_ENTRYPOINTS_FOR_SYNC = ["AGENTS.md"] as const;
 
 function receipt(
   component: string,
@@ -292,29 +277,27 @@ function statusCounts(components: readonly ComponentReceipt[]): Record<string, n
   );
 }
 
+// v1.0：投影面只剩 .agents（codex 规范面）与 .codebuddy（派生面）。
 function adapterName(targetPath: string): string {
-  const match = /^\.(agents|claude|codebuddy|cursor|pi)(?:\/|$)/.exec(
+  const match = /^\.(agents|codebuddy)(?:\/|$)/.exec(
     targetPath.replaceAll("\\", "/")
   );
   return match?.[1] ?? "unknown";
 }
 
-const ADAPTER_REMEDIATION_AGENTS = {
+const ADAPTER_REMEDIATION_SURFACES = {
   agents: "codex",
-  claude: "claude-code",
-  cursor: "cursor",
-  codebuddy: "codebuddy",
-  pi: "pi"
-} as const satisfies Record<string, HarnessAgent>;
+  codebuddy: "codebuddy"
+} as const;
 
 export function adapterAgentForRemediation(
   remediationId: string | undefined
-): HarnessAgent | null {
+): "codex" | "codebuddy" | null {
   const prefix = "refresh-managed-adapters-";
   if (remediationId === undefined || !remediationId.startsWith(prefix)) return null;
   const adapter = remediationId.slice(prefix.length);
-  return ADAPTER_REMEDIATION_AGENTS[
-    adapter as keyof typeof ADAPTER_REMEDIATION_AGENTS
+  return ADAPTER_REMEDIATION_SURFACES[
+    adapter as keyof typeof ADAPTER_REMEDIATION_SURFACES
   ] ?? null;
 }
 
@@ -351,7 +334,6 @@ export function buildSyncRemediations(
             ? []
             : [
                 `.${adapter}/**`,
-                ".harness/rules/**",
                 ".harness/context-index.json"
               ],
           backup: ".harness/state/transactions/<latest-committed-refresh>/before",
@@ -368,47 +350,7 @@ export function buildSyncRemediations(
       }
       continue;
     }
-    if (component.component === "knowledge") {
-      remediations.push({
-        id: "configure-remote-knowledge",
-        component: component.component,
-        severity: component.status === "FAIL"
-          ? "FAIL"
-          : component.status === "ADVISORY"
-            ? "ADVISORY"
-            : "WARN",
-        title: "配置或恢复远端知识服务",
-        autoFixable: false,
-        risk: "low",
-        writes: [],
-        backup: null,
-        rollback: null,
-        estimatedDurationMs: null,
-        requiresConfirmation: true,
-        previewCommand: "npx hunter-harness knowledge query \"项目概览\" --json",
-        applyCommand: ""
-      });
-      continue;
-    }
-    if (component.component === "rules" &&
-        component.reasonCode === "INSTRUCTION_AUDIT_REQUIRED") {
-      remediations.push({
-        id: "audit-project-instructions",
-        component: component.component,
-        severity: "ADVISORY",
-        title: "生成中文项目文档与规则优化提案",
-        autoFixable: false,
-        risk: "medium",
-        writes: [".harness/state/local/instruction-proposals/**"],
-        backup: null,
-        rollback: null,
-        estimatedDurationMs: null,
-        requiresConfirmation: true,
-        previewCommand: "npx hunter-harness instructions audit --json",
-        applyCommand: "npx hunter-harness instructions apply --proposal <proposal.json> --yes --json"
-      });
-      continue;
-    }
+    // v1.0：knowledge/rules 伪组件已删除，不会再出现对应 receipt。
     // S1（2026-08-30 实测）：applyCommand 不得为空——WARN 到可执行修复之间
     // 不能断链。无法自动修复的组件，applyCommand 给出明确的下一步指令
     //（skill 调用或 CLI 命令），而不是空字符串。
@@ -467,13 +409,13 @@ export function buildSyncRemediations(
         title: `修复指令图：${component.reasonCode}`,
         autoFixable: false,
         risk: "medium",
-        writes: ["AGENTS.md", "CLAUDE.md", ".harness/rules/**"],
+        writes: ["AGENTS.md"],
         backup: null,
         rollback: null,
         estimatedDurationMs: null,
         requiresConfirmation: true,
-        previewCommand: "npx hunter-harness instructions audit --json",
-        applyCommand: "npx hunter-harness instructions audit --json 生成提案，审阅后用 npx hunter-harness instructions apply --proposal <proposal.json> --yes --json 应用"
+        previewCommand: "npx hunter-harness sync --check --json",
+        applyCommand: "修复 AGENTS.md 中的缺失/无效/循环引用后重跑 npx hunter-harness sync --check --json"
       });
       continue;
     }
@@ -719,23 +661,13 @@ export interface SyncWritePolicy {
   adapterReadOnly: boolean;
 }
 
+// check（只读评估）模式下适配器只读；apply / --fix remediation 均允许写入。
+// options 保留在签名中供未来 write policy 维度扩展（现有调用方与测试已按双参调用）。
 export function deriveSyncWritePolicy(
   options: Pick<SyncCommandOptions, "apply" | "fix">,
   checkMode: boolean
 ): SyncWritePolicy {
-  if (checkMode) {
-    return {
-      adapterReadOnly: true
-    };
-  }
-  if (options.fix?.startsWith("refresh-managed-adapters-") === true) {
-    return {
-      adapterReadOnly: false
-    };
-  }
-  return {
-    adapterReadOnly: false
-  };
+  return { adapterReadOnly: checkMode };
 }
 
 export async function runSync(
@@ -835,38 +767,19 @@ export async function runSync(
     emitSyncResult(dependencies, options, compact);
     return 7;
   }
-  const agents = configuredAgents(detection.config.adapters.enabled);
-  const selectedProfile = options.profile === undefined || options.profile === "interactive"
-    ? detection.config.project.profiles[0] ?? "general"
-    : options.profile;
-  if (selectedProfile !== "general" && selectedProfile !== "java") {
-    dependencies.stderr("SYNC_PROFILE_INVALID: profile must be interactive, general or java\n");
-    return 3;
-  }
-  const surface = (
-    detection.config.adapter_options?.codebuddy?.surface ?? "both"
-  ) as CodeBuddySurface;
-  const primaryAgent = agents[0] ?? "codex";
+  // v1.0：固定投影面，工作流脚本来自规范面（codex）bundle。
   const workflowBundleRoot = join(
     dependencies.resourcesRoot,
     "harness",
     "bundles",
-    selectedProfile,
-    primaryAgent
+    "codex"
   );
   const adapterFixRequested = options.fix?.startsWith(
     "refresh-managed-adapters-"
   ) === true;
-  const adapterFixAgent = adapterAgentForRemediation(options.fix);
   if (adapterFixRequested && !checkMode && options.yes !== true) {
     dependencies.stderr(
       "SYNC_REMEDIATION_CONFIRMATION_REQUIRED: adapter refresh requires --yes\n"
-    );
-    return 3;
-  }
-  if (adapterFixAgent !== null && !agents.includes(adapterFixAgent)) {
-    dependencies.stderr(
-      `SYNC_REMEDIATION_UNAVAILABLE: ${options.fix} is not enabled in this project\n`
     );
     return 3;
   }
@@ -886,9 +799,6 @@ export async function runSync(
     const result = await refreshProject({
       projectRoot: root,
       resourcesRoot: dependencies.resourcesRoot,
-      profile: selectedProfile,
-      agents: adapterFixAgent === null ? agents : [adapterFixAgent],
-      codebuddySurface: surface,
       dryRun: writePolicy.adapterReadOnly,
       forceManaged: adapterFixRequested && options.yes === true
     });
@@ -940,44 +850,7 @@ export async function runSync(
     ));
   }
 
-  const knowledgeStarted = Date.now();
-  components.push(receipt(
-    "knowledge",
-    knowledgeStarted,
-    "OK",
-    "KNOWLEDGE_REMOTE_OWNED",
-    {
-      ingest: "server-after-archive-upload",
-      query: "remote-only",
-      fallback: false,
-      localIndex: false
-    },
-    null,
-    {
-      persisted: [],
-      notPersisted: ["本地不生成或维护知识索引"]
-    }
-  ));
-
-  const rulesStarted = Date.now();
-  components.push(receipt(
-    "rules",
-    rulesStarted,
-    "ADVISORY",
-    "INSTRUCTION_AUDIT_REQUIRED",
-    {
-      workflow: ["远端审计", "生成中文提案", "人工确认后事务化应用"],
-      inputs: ["项目类型", "现有文档", "Codebase Map", "近期变更总结"],
-      localMutation: false,
-      automaticRuleCandidateApplication: false,
-      legacyMarkerInjection: false
-    },
-    "运行 `npx hunter-harness instructions audit --json` 生成提案；审阅后再使用 `npx hunter-harness instructions apply`。",
-    {
-      persisted: [],
-      notPersisted: ["sync 不直接改写 AGENTS.md、Agent 文档或规则"]
-    }
-  ));
+  // v1.0：knowledge/rules 伪组件已删除（知识为纯远端查询，规则改由归档后自动学习）。
 
   const mapStarted = Date.now();
   const map = await assessCodebaseMapOnDisk(root);
@@ -996,7 +869,7 @@ export async function runSync(
   const instructionStarted = Date.now();
   const instructions = await validateInstructionGraph(
     root,
-    instructionEntrypointsForAgents(agents)
+    [...INSTRUCTION_ENTRYPOINTS_FOR_SYNC]
   );
   components.push(receipt(
     "instruction-graph",

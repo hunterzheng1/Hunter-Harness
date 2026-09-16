@@ -1,6 +1,7 @@
 import {
   ApiError,
   ArchiveUploadError,
+  refreshLearnedRules,
   uploadArchivePackage,
   validateArchivePackage
 } from "@hunter-harness/core";
@@ -68,6 +69,18 @@ export async function runArchiveUpload(
       fetch: dependencies.fetch
     });
     await options.onReceipt?.(receipt);
+    // 归档后自动规则学习（best-effort）：上传成功意味着本地存在新归档，
+    // 顺势把高置信候选刷新进 AGENTS.md 受管段；失败不拖垮上传结果。
+    let learnedRulesNote: string | null = null;
+    try {
+      const learned = await refreshLearnedRules(dependencies.cwd);
+      if (learned.changed) {
+        learnedRulesNote = `经验规则已更新（${learned.learned_rules.length} 条）。`;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      dependencies.stderr(`经验规则刷新失败（不影响归档上传）：${message}\n`);
+    }
     const output = {
       schema_version: 1,
       command: "archive upload",
@@ -86,8 +99,9 @@ export async function runArchiveUpload(
         : []
     };
     dependencies.stdout(options.json === true
-      ? JSON.stringify(output) + "\n"
-      : `归档 ${receipt.change_key} 已保存到服务端，知识状态：${receipt.knowledge_status}。\n`);
+      ? JSON.stringify(learnedRulesNote === null ? output : { ...output, learned_rules: learnedRulesNote }) + "\n"
+      : `归档 ${receipt.change_key} 已保存到服务端，知识状态：${receipt.knowledge_status}。\n` +
+        (learnedRulesNote === null ? "" : learnedRulesNote + "\n"));
     return 0;
   } catch (error) {
     // The server's own code is the only thing that says *why* an upload was

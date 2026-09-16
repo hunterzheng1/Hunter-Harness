@@ -44,21 +44,7 @@ powershell.exe -Command "npx hunter-harness knowledge query '<用户需求原文
 2. 执行一次远端查询，不在查询前重建或同步知识。
 3. 读取 JSON 中的命中项、来源路径、变更键和相关度。
 4. 把命中内容作为历史线索；涉及当前行为时仍以当前代码和验证结果为准。
-5. 消费回执（WI-E2 / O4）：对实际采纳、部分采纳或拒绝的命中逐条记录
-   verdict（O4 要求区分被检索、被采用与被验证有效，且本地可追踪）：
-
-   ```powershell
-   python harness/scripts/harness_assets.py receipt `
-     --candidate-id <kc_...> --verdict <adopted|partially_adopted|rejected|retrieved|verified_effective> `
-     [--reason "采纳了多少/为何拒绝（partially_adopted 与 rejected 必填）"] `
-     [--change <当前任务 change_id>] [--detail "补充说明"]
-   ```
-
-   回执落 `.harness/state/local/asset-receipts/<candidate_id>.ndjson`，
-   按项目隔离、不进归档包；它是审计记录，不是本地索引，不违反上述禁令。
-   读回：`python harness/scripts/harness_assets.py receipts [--candidate-id <kc_...>]`。
-6. 若命令返回远端不可达、未绑定或未认证，记录明确 issue 后继续，不重试本地方案；
-   查询失败本身不是资产消费，无需回执。
+5. 若命令返回远端不可达、未绑定或未认证，记录明确 issue 后继续，不重试本地方案。
 
 ## Output Contract
 

@@ -121,10 +121,10 @@ describe("Remote Sync v1 shared contract", () => {
       artifact_id: "art_4",
       manifest_hash: "sha256:300887d0c256cd87b3e0b4a2d26f425bd02170fab88b034bf1b85830413ac085",
       files: [{
-        path: ".harness/rules/a.md",
+        path: ".harness/codebase/map/architecture.md",
         content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         size: 2,
-        content_kind: "rule"
+        content_kind: "architecture"
       }]
     };
     expect(remoteSyncRemoteSnapshotSchema.safeParse(snapshot).success).toBe(true);
@@ -136,8 +136,8 @@ describe("Remote Sync v1 shared contract", () => {
 
   it("freezes strict operation records for transaction receipts", () => {
     const operation = {
-      path: ".harness/rules/a.md",
-      content_kind: "rule",
+      path: ".harness/codebase/map/architecture.md",
+      content_kind: "architecture",
       action: "modify",
       local_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       remote_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

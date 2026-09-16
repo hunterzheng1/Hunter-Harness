@@ -35,7 +35,6 @@ describe("hunter-harness push", () => {
     stderr = [];
     await seededInit(root, "push-java", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "java",
         "--server-url", "https://server.example.test",
         "--token-env", "TEST_HUNTER_TOKEN", "--non-interactive", "--yes"
       ], {
@@ -133,7 +132,7 @@ describe("hunter-harness push", () => {
 
   it("excludes adapter bundle copies and does not invent proposal-owned instruction files", async () => {
     expect(await runCli([
-      "--agents", "all", "--non-interactive", "--yes"
+      "--non-interactive", "--yes"
     ], {
       cwd: root,
       resourcesRoot,
@@ -155,32 +154,21 @@ describe("hunter-harness push", () => {
     const paths = (JSON.parse(stdout.join("")) as { items: Array<{ path: string }> })
       .items.map((item) => item.path);
     expect(paths).toContain("AGENTS.md");
-    expect(paths).toContain("CLAUDE.md");
+    expect(paths).not.toContain("CLAUDE.md");
     expect(paths).not.toContain("CODEBUDDY.md");
-    expect(paths).toContain(".claude/rules/harness-general.md");
-    expect(paths).toContain(".cursor/rules/harness-general.mdc");
-    expect(paths.some((path) => /^\.claude\/skills\/harness-/.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.claude\//.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.cursor\//.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.pi\//.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.harness\/rules\//.test(path))).toBe(false);
     expect(paths.some((path) => /^\.agents\/skills\/harness-/.test(path))).toBe(false);
-    expect(paths.some((path) => /^\.cursor\/skills\/harness-/.test(path))).toBe(false);
     expect(paths.some((path) => /^\.codebuddy\/(?:skills|agents)\/harness-/.test(path))).toBe(false);
-    expect(paths.some((path) => /^\.pi\/skills\/harness-/.test(path))).toBe(false);
   }, 240000);
 
   it("扫描停用后 dry-run 对含密钥文件照常出预览（上传不查敏感信息）", async () => {
+    // v1.0：AGENTS.md 是随 push 上传的用户可编辑文件，把密钥放在这里即可覆盖扫描豁免路径。
     await writeFile(
-      join(root, ".claude", "rules", "harness-general.md"),
-      "authorization: Bearer secret-test-token\n"
-    );
-    const installed = JSON.parse(await readFile(
-      join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8"
-    )) as { files: string[] };
-    await writeFile(
-      join(root, ".harness", "state", "local", "installed-harness-bundle.json"),
-      JSON.stringify({
-        schema_version: 1,
-        profile: "java",
-        files: [...installed.files, ".claude/rules/harness-general.md"]
-      })
+      join(root, "AGENTS.md"),
+      `${await readFile(join(root, "AGENTS.md"), "utf8")}\nauthorization: Bearer secret-test-token\n`
     );
 
     const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
@@ -381,8 +369,8 @@ describe("hunter-harness push", () => {
 
   it("含密钥内容不阻断上传（扫描已停用），且输出不回显密钥", async () => {
     await writeFile(
-      join(root, ".harness", "rules", "unsafe.md"),
-      "Authorization: Bearer unsafe-secret-token-1234567890\n"
+      join(root, "AGENTS.md"),
+      (await readFile(join(root, "AGENTS.md"), "utf8")) + "`nAuthorization: Bearer unsafe-secret-token-1234567890`n"
     );
     const fetch = vi.fn();
     const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
@@ -403,8 +391,8 @@ describe("hunter-harness push", () => {
 
   it("passes sensitive_scan_skip to finalize when --skip-sensitive-scan --yes", async () => {
     await writeFile(
-      join(root, ".harness", "rules", "unsafe.md"),
-      "Authorization: Bearer unsafe-secret-token-1234567890\n"
+      join(root, "AGENTS.md"),
+      (await readFile(join(root, "AGENTS.md"), "utf8")) + "`nAuthorization: Bearer unsafe-secret-token-1234567890`n"
     );
     let finalizeBody: Record<string, unknown> | null = null;
     const fetch = vi.fn(async (
@@ -481,8 +469,8 @@ describe("hunter-harness push", () => {
 
   it("INT-002: interactively confirms sensitive scan skip and sends reason to finalize", async () => {
     await writeFile(
-      join(root, ".harness", "rules", "unsafe.md"),
-      "Authorization: Bearer unsafe-secret-token-1234567890\n"
+      join(root, "AGENTS.md"),
+      (await readFile(join(root, "AGENTS.md"), "utf8")) + "`nAuthorization: Bearer unsafe-secret-token-1234567890`n"
     );
     let finalizeBody: Record<string, unknown> | null = null;
     const fetch = vi.fn(async (

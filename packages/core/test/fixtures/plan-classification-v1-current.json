@@ -18,8 +18,6 @@
       "plan",
       "execute",
       "review",
-      "package",
-      "apidoc",
       "submit",
       "merge",
       "archive"
@@ -32,7 +30,7 @@
   },
   "profile": {
     "schema_version": 1,
-    "profile_id": "plan_profile:bf8fcf74838c9d87ebe969d1f2e34d0ca368fb80f93daf0a5a9545d2681443ac",
+    "profile_id": "plan_profile:12350756b6ea16a1de842f85f0312caddc04d6dcbd5dd726502076e6aaa543b4",
     "profile_version": 1,
     "change_id": "current-plan-change",
     "mode": "standard",
@@ -47,8 +45,6 @@
     ],
     "optional_phases": [
       "review",
-      "package",
-      "apidoc",
       "submit",
       "merge"
     ],
@@ -63,7 +59,7 @@
         "concise_design_approval"
       ]
     },
-    "classification_hash": "sha256:32340adea865a4271570c80ed47613dafa76b30998a4f54eb0c049cfbc5a321a",
+    "classification_hash": "sha256:5e19d5b89603ed75c704c3217ddfd1b41db4fc3f134a6811a76d5746cb9f2a4c",
     "reason_codes": [
       "ordinary_change"
     ],
@@ -71,9 +67,9 @@
   },
   "phase_set": {
     "schema_version": 1,
-    "phase_set_id": "planned_phase_set:838016584b6e7d4546cebce1043c88b597baee638eb7c9073b007bf4aa242444",
+    "phase_set_id": "planned_phase_set:6c583fc32d138c5e32e128134511c35aa11bcfa03c4057fa54bd2f284fdb2f37",
     "phase_set_version": 1,
-    "profile_classification_hash": "sha256:32340adea865a4271570c80ed47613dafa76b30998a4f54eb0c049cfbc5a321a",
+    "profile_classification_hash": "sha256:5e19d5b89603ed75c704c3217ddfd1b41db4fc3f134a6811a76d5746cb9f2a4c",
     "planned_phases": [
       "plan",
       "execute",
@@ -83,22 +79,12 @@
     ],
     "omitted_phases": [
       {
-        "phase": "package",
-        "disposition": "optional_not_selected",
-        "reason_code": "optional_phase_not_selected"
-      },
-      {
-        "phase": "apidoc",
-        "disposition": "optional_not_selected",
-        "reason_code": "optional_phase_not_selected"
-      },
-      {
         "phase": "merge",
         "disposition": "optional_not_selected",
         "reason_code": "optional_phase_not_selected"
       }
     ],
-    "capability_snapshot_hash": "sha256:1b78e69ba2d4d6cbdb11c344948f880c6b6423f95c4f644ab2dadf9f772d328c",
+    "capability_snapshot_hash": "sha256:8bbaa8477c769df2f80f96aca27eb8c60e4f33e218e0ea6dbdf11126c60fe314",
     "source_reason_codes": [
       "optional_phase_not_selected",
       "profile_required_phases"

@@ -8,8 +8,8 @@
   "plannedPhases": ["plan", "run", "test", "review", "submit", "archive"],
   "skippedPhases": [
     {
-      "phase": "package",
-      "reason": "本次不需要构建发布包",
+      "phase": "merge",
+      "reason": "本次不需要合并阶段",
       "operator": "legacy-agent",
       "decidedAt": "2026-08-12T00:00:00Z"
     }

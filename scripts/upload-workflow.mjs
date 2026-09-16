@@ -20,7 +20,6 @@ function parseArgs(argv) {
     family: "harness",
     server: "http://127.0.0.1:8787",
     token: process.env.HUNTER_HARNESS_TOKEN ?? "",
-    profiles: ["general", "java"],
     sync: false
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -28,11 +27,10 @@ function parseArgs(argv) {
     if (arg === "--family") options.family = argv[++i] ?? options.family;
     else if (arg === "--server") options.server = argv[++i] ?? options.server;
     else if (arg === "--token") options.token = argv[++i] ?? options.token;
-    else if (arg === "--profile") options.profiles = [argv[++i] ?? "general"];
     else if (arg === "--sync") options.sync = true;
     else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: node scripts/upload-workflow.mjs [--family harness] [--server URL] [--token TOKEN] [--profile general|java] [--sync]\n"
+        "Usage: node scripts/upload-workflow.mjs [--family harness] [--server URL] [--token TOKEN] [--sync]\n"
       );
       process.exit(0);
     }
@@ -50,27 +48,28 @@ async function filesUnder(directory, base = directory) {
   return result;
 }
 
-async function buildProfileZip(profile) {
+// v1.0：单 bundle 已拍平（bundles/<surface>/ + manifests/<surface>.json），
+// profile 维度退役；服务端仍按 profile=general 通道接收草稿。
+async function buildBundleZip() {
   const zip = new AdmZip();
-  const bundleDir = join(bundlesRoot, profile);
-  const manifestDir = join(manifestsRoot, profile);
-  for (const item of await filesUnder(bundleDir)) {
-    zip.addFile(join(profile, item.path).replaceAll("\\", "/"), await readFile(item.full));
+  for (const item of await filesUnder(bundlesRoot)) {
+    zip.addFile(join("bundles", item.path).replaceAll("\\", "/"), await readFile(item.full));
   }
-  for (const item of await filesUnder(manifestDir)) {
+  for (const item of await filesUnder(manifestsRoot)) {
     zip.addFile(join("manifests", item.path).replaceAll("\\", "/"), await readFile(item.full));
   }
   return zip.toBuffer();
 }
 
-async function uploadProfile({ family, server, token, profile, zipBytes }) {
+async function uploadBundle({ family, server, token, zipBytes }) {
   const boundary = "----upload-workflow-" + randomUUID();
   const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${profile}.zip"\r\nContent-Type: application/zip\r\n\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="harness.zip"\r\nContent-Type: application/zip\r\n\r\n`),
     zipBytes,
     Buffer.from(`\r\n--${boundary}--\r\n`)
   ]);
-  const response = await fetch(`${server.replace(/\/$/, "")}/api/v1/workflow-families/${encodeURIComponent(family)}/draft/profiles/${encodeURIComponent(profile)}`, {
+  // 服务端 profile 维度退役由 hunter-platform 配套计划执行；落地前仍走 general 通道。
+  const response = await fetch(`${server.replace(/\/$/, "")}/api/v1/workflow-families/${encodeURIComponent(family)}/draft/profiles/general`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
@@ -82,9 +81,9 @@ async function uploadProfile({ family, server, token, profile, zipBytes }) {
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`upload ${profile} failed (${response.status}): ${text}`);
+    throw new Error(`upload failed (${response.status}): ${text}`);
   }
-  process.stdout.write(`uploaded ${family}/${profile}\n`);
+  process.stdout.write(`uploaded ${family}\n`);
 }
 
 const options = parseArgs(process.argv.slice(2));
@@ -97,9 +96,7 @@ if (options.token === "") {
   process.exit(1);
 }
 
-for (const profile of options.profiles) {
-  const zipBytes = await buildProfileZip(profile);
-  await uploadProfile({ ...options, profile, zipBytes });
-}
+const zipBytes = await buildBundleZip();
+await uploadBundle({ ...options, zipBytes });
 
 process.stdout.write(`workflow family draft updated: ${options.family}\n`);

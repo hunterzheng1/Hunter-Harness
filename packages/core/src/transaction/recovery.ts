@@ -170,17 +170,13 @@ export interface RecoveryInspection {
 }
 
 export interface RecoveryTargetBundleState {
-  adapters: string[];
-  profiles: Record<string, string>;
+  surfaces: string[];
   manifests: Array<{
-    adapter: string;
-    profile: string;
+    surface: string;
     bundleVersion: string;
     bundleManifestHash: string;
   }>;
   projectIdentity: string | null;
-  projectAdapters: string[] | null;
-  projectProfiles: string[] | null;
 }
 
 export interface RecoveryDiagnosis {
@@ -545,23 +541,17 @@ async function readRecoveryTargetBundleStateFromLocation(
   }
   const record = parsed as {
     schema_version?: unknown;
-    adapters?: unknown;
-    profiles?: unknown;
+    surfaces?: unknown;
     manifests?: unknown;
   };
-  if (record.schema_version !== 4 ||
-      !Array.isArray(record.adapters) ||
-      !record.adapters.every((value) => typeof value === "string") ||
-      record.profiles === null ||
-      typeof record.profiles !== "object" ||
-      Array.isArray(record.profiles) ||
-      !Object.values(record.profiles).every((value) => typeof value === "string") ||
+  if (record.schema_version !== 5 ||
+      !Array.isArray(record.surfaces) ||
+      !record.surfaces.every((value) => typeof value === "string") ||
       !Array.isArray(record.manifests) ||
       !record.manifests.every((value) =>
         value !== null &&
         typeof value === "object" &&
-        typeof (value as { adapter?: unknown }).adapter === "string" &&
-        typeof (value as { profile?: unknown }).profile === "string" &&
+        typeof (value as { surface?: unknown }).surface === "string" &&
         typeof (value as { bundle_version?: unknown }).bundle_version === "string" &&
         typeof (value as { bundle_manifest_hash?: unknown })
           .bundle_manifest_hash === "string" &&
@@ -574,31 +564,25 @@ async function readRecoveryTargetBundleStateFromLocation(
       "planned installed Bundle state is invalid"
     );
   }
-  const adapters = [...record.adapters] as string[];
-  const profiles = { ...record.profiles } as Record<string, string>;
+  const surfaces = [...record.surfaces] as string[];
   const manifests = record.manifests.map((value) => ({
-    adapter: (value as { adapter: string }).adapter,
-    profile: (value as { profile: string }).profile,
+    surface: (value as { surface: string }).surface,
     bundleVersion: (value as { bundle_version: string }).bundle_version,
     bundleManifestHash: (
       value as { bundle_manifest_hash: string }
     ).bundle_manifest_hash
   }));
-  const sortedAdapters = sortedUnique(adapters);
-  const sortedManifestAdapters = sortedUnique(
-    manifests.map((item) => item.adapter)
+  const sortedSurfaces = sortedUnique(surfaces);
+  const sortedManifestSurfaces = sortedUnique(
+    manifests.map((item) => item.surface)
   );
-  const sortedProfileAdapters = sortedUnique(Object.keys(profiles));
-  if (sortedAdapters === null ||
-      sortedManifestAdapters === null ||
-      sortedProfileAdapters === null ||
-      new Set(manifests.map((item) => item.adapter)).size !== manifests.length ||
-      JSON.stringify(sortedAdapters) !== JSON.stringify(sortedManifestAdapters) ||
-      JSON.stringify(sortedAdapters) !== JSON.stringify(sortedProfileAdapters) ||
-      manifests.some((manifest) => profiles[manifest.adapter] !== manifest.profile)) {
+  if (sortedSurfaces === null ||
+      sortedManifestSurfaces === null ||
+      new Set(manifests.map((item) => item.surface)).size !== manifests.length ||
+      JSON.stringify(sortedSurfaces) !== JSON.stringify(sortedManifestSurfaces)) {
     throw new RecoveryPreconditionError(
       "RECOVERY_PRECONDITION_FAILED",
-      "planned installed Bundle adapters are inconsistent"
+      "planned installed Bundle surfaces are inconsistent"
     );
   }
   const projectContent = await readPlannedTargetContent(
@@ -609,12 +593,9 @@ async function readRecoveryTargetBundleStateFromLocation(
   );
   if (projectContent === null) {
     return {
-      adapters,
-      profiles,
+      surfaces,
       manifests,
-      projectIdentity: null,
-      projectAdapters: null,
-      projectProfiles: null
+      projectIdentity: null
     };
   }
   let projectRaw: unknown;
@@ -633,31 +614,20 @@ async function readRecoveryTargetBundleStateFromLocation(
       "planned project configuration is invalid"
     );
   }
-  const projectAdapters = sortedUnique(project.data.adapters.enabled);
-  const projectProfiles = sortedUnique(project.data.project.profiles);
-  const manifestProfiles = sortedUnique(
-    manifests.map((manifest) => manifest.profile)
-  );
+  // v1.0: projection surfaces are fixed — only the project identity needs to
+  // match the recovery plan; adapter/profile dimensions no longer exist.
   if (journal.project_identity === null ||
       journal.project_identity === undefined ||
-      project.data.project.local_project_key !== journal.project_identity ||
-      projectAdapters === null ||
-      projectProfiles === null ||
-      manifestProfiles === null ||
-      JSON.stringify(projectAdapters) !== JSON.stringify(sortedAdapters) ||
-      JSON.stringify(projectProfiles) !== JSON.stringify(manifestProfiles)) {
+      project.data.project.local_project_key !== journal.project_identity) {
     throw new RecoveryPreconditionError(
       "RECOVERY_PRECONDITION_FAILED",
       "planned project and installed Bundle identities are inconsistent"
     );
   }
   return {
-    adapters,
-    profiles,
+    surfaces,
     manifests,
-    projectIdentity: project.data.project.local_project_key,
-    projectAdapters,
-    projectProfiles
+    projectIdentity: project.data.project.local_project_key
   };
 }
 

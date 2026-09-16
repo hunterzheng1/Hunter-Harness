@@ -6,140 +6,81 @@ import { describe, expect, it } from "vitest";
 
 import {
   InitConfigurationError,
-  parseAgentsInput,
   resolveInitConfig
 } from "../src/config/init-config.js";
 
-describe("parseAgentsInput", () => {
-  it.each([
-    ["", ["claude-code"]],
-    ["1", ["claude-code"]],
-    ["1,2,4", ["claude-code", "codex", "codebuddy"]],
-    ["claude-code,codex,codebuddy", ["claude-code", "codex", "codebuddy"]],
-    ["all", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
-    ["5", ["pi"]],
-    ["6", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
-    ["1,6", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
-    ["pi", ["pi"]],
-    ["4,1,4", ["claude-code", "codebuddy"]],
-    [" 2 , 3 ", ["codex", "cursor"]]
-  ])("parses %j", (input, expected) => {
-    expect(parseAgentsInput(input)).toEqual(expected);
-  });
-
-  it("rejects unknown agent tokens", () => {
-    expect(() => parseAgentsInput("codex,7")).toThrow(InitConfigurationError);
-    expect(() => parseAgentsInput("gpt")).toThrow(InitConfigurationError);
-    try {
-      parseAgentsInput("gpt");
-    } catch (error) {
-      expect(error).toBeInstanceOf(InitConfigurationError);
-      expect((error as InitConfigurationError).code).toBe("AGENT_UNSUPPORTED");
-      expect((error as InitConfigurationError).exitCode).toBe(3);
-    }
-  });
-});
-
-describe("resolveInitConfig agents/legacy/surface", () => {
+describe("resolveInitConfig (v1.0)", () => {
   async function writeConfig(root: string, body: unknown): Promise<string> {
     const path = join(root, "harness.init.json");
     await writeFile(path, JSON.stringify(body));
     return path;
   }
 
-  it("legacy adapter=claude-code normalizes with warning", async () => {
+  it("strips retired v0 fields with a deprecation warning", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
     const warnings: string[] = [];
     const config = await resolveInitConfig(
-      root,
-      { config: await writeConfig(root, { adapter: "claude-code", profile: "general" }) },
-      {},
-      warnings
-    );
-    expect(config.agents).toEqual(["claude-code"]);
-    expect(warnings.some((w) => /deprecat/i.test(w))).toBe(true);
-  });
-
-  it("legacy adapter with non-claude value exits 3 AGENT_UNSUPPORTED", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
-    await expect(resolveInitConfig(
-      root,
-      { config: await writeConfig(root, { adapter: "cursor", profile: "general" }) }
-    )).rejects.toMatchObject({
-      code: "AGENT_UNSUPPORTED",
-      exitCode: 3
-    });
-  });
-
-  it("agents and adapter in the same JSON exits 3 AGENT_OPTIONS_CONFLICT", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
-    await expect(resolveInitConfig(
       root,
       {
         config: await writeConfig(root, {
           agents: ["codex"],
           adapter: "claude-code",
-          profile: "general"
+          profile: "java",
+          codebuddy_surface: "ide",
+          server_url: "https://platform.example.test"
         })
-      }
-    )).rejects.toMatchObject({
-      code: "AGENT_OPTIONS_CONFLICT",
-      exitCode: 3
-    });
+      },
+      warnings
+    );
+    expect(config.server_url).toBe("https://platform.example.test");
+    expect(warnings.filter((w) => w.startsWith("DEPRECATION:"))).toHaveLength(4);
   });
 
-  it("surface without codebuddy exits 3 CODEBUDDY_SURFACE_UNUSED", async () => {
+  it("keeps a clean config warning-free", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
-    await expect(resolveInitConfig(
+    const warnings: string[] = [];
+    const config = await resolveInitConfig(
       root,
-      {
-        config: await writeConfig(root, {
-          agents: ["codex"],
-          profile: "general",
-          codebuddy_surface: "ide"
-        })
-      }
-    )).rejects.toMatchObject({
-      code: "CODEBUDDY_SURFACE_UNUSED",
-      exitCode: 3
-    });
-
-    await expect(resolveInitConfig(root, {
-      agents: "codex",
-      profile: "general",
-      codebuddySurface: "ide"
-    })).rejects.toMatchObject({
-      code: "CODEBUDDY_SURFACE_UNUSED",
-      exitCode: 3
-    });
+      { config: await writeConfig(root, { server_url: "https://platform.example.test" }) },
+      warnings
+    );
+    expect(config.server_url).toBe("https://platform.example.test");
+    expect(warnings).toEqual([]);
   });
 
-  it("config file agents take precedence over --agents flag", async () => {
+  it("defaults to a local-only config without flags or file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
+    const config = await resolveInitConfig(root, {});
+    expect(config.server_url).toBeNull();
+    expect(config.token_env).toBe("HUNTER_HARNESS_TOKEN");
+  });
+
+  it("prefers the config file over flags for server_url", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
     const config = await resolveInitConfig(root, {
-      config: await writeConfig(root, { agents: ["codex"], profile: "java" }),
-      agents: "cursor",
-      profile: "general"
+      config: await writeConfig(root, { server_url: "https://file.example.test" }),
+      serverUrl: "https://flag.example.test"
     });
-    expect(config.agents).toEqual(["codex"]);
-    expect(config.profile).toBe("java");
+    expect(config.server_url).toBe("https://file.example.test");
   });
 
-  it("non-interactive without agents keeps claude-code default", async () => {
+  it("rejects a missing config file", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
-    const config = await resolveInitConfig(root, { profile: "general" });
-    expect(config.agents).toEqual(["claude-code"]);
-    expect(config.codebuddy_surface).toBe("both");
+    await expect(resolveInitConfig(root, { config: "nope.json" }))
+      .rejects.toMatchObject({ message: expect.stringContaining("INIT_CONFIG_MISSING") });
+    await expect(resolveInitConfig(root, { config: "nope.json" }))
+      .rejects.toBeInstanceOf(InitConfigurationError);
   });
 
-  it("codebuddy with surface both is accepted", async () => {
+  it("rejects invalid JSON and non-object shapes", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-init-cfg-"));
-    const config = await resolveInitConfig(root, {
-      agents: "codebuddy",
-      profile: "general",
-      codebuddySurface: "both"
-    });
-    expect(config.agents).toEqual(["codebuddy"]);
-    expect(config.codebuddy_surface).toBe("both");
+    const badJson = join(root, "bad.json");
+    await writeFile(badJson, "{not json");
+    await expect(resolveInitConfig(root, { config: badJson }))
+      .rejects.toMatchObject({ message: expect.stringContaining("INIT_CONFIG_INVALID_JSON") });
+
+    const arrayConfig = await writeConfig(root, [1, 2]);
+    await expect(resolveInitConfig(root, { config: arrayConfig }))
+      .rejects.toMatchObject({ message: expect.stringContaining("INIT_CONFIG_INVALID_SHAPE") });
   });
 });

@@ -46,7 +46,6 @@ SKILL_KEYS = frozenset(
         "events",
         "allowedInteractions",
         "capabilities",
-        "profiles",
     }
 )
 
@@ -202,10 +201,6 @@ def validate_policy(data: Any) -> dict[str, Any]:
         _require_type(skill["phase"], str, f"{path}.phase")
         for key in ("inputs", "artifacts", "events", "allowedInteractions", "capabilities"):
             _require_type(skill[key], list, f"{path}.{key}")
-        profiles = skill.get("profiles", ["general", "java"])
-        _require_type(profiles, list, f"{path}.profiles")
-        if not profiles or any(item not in {"general", "java"} for item in profiles):
-            raise PolicyValidationError(f"{path}.profiles must contain general and/or java")
 
     for section in ("requiredArtifacts", "requiredValidations"):
         section_data = data[section]

@@ -31,7 +31,7 @@ describe("guarded project plan binding", () => {
     const preview = await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: true,
       ...stablePlan
     });
@@ -39,7 +39,7 @@ describe("guarded project plan binding", () => {
     const applied = await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false,
       expectedPlanHash: preview.planHash,
       ...stablePlan
@@ -55,7 +55,7 @@ describe("guarded project plan binding", () => {
     const preview = await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: true,
       ...stablePlan
     });
@@ -64,7 +64,7 @@ describe("guarded project plan binding", () => {
     await expect(initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false,
       expectedPlanHash: preview.planHash,
       ...stablePlan
@@ -77,7 +77,7 @@ describe("guarded project plan binding", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
     const before = await readdir(stateLayout(root).transactions);
@@ -85,8 +85,6 @@ describe("guarded project plan binding", () => {
     const result = await refreshProject({
       projectRoot: root,
       resourcesRoot,
-      profile: "general",
-      agents: ["claude-code"],
       dryRun: false,
       forceManaged: false
     });
@@ -100,27 +98,23 @@ describe("guarded project plan binding", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
     const preview = await refreshProject({
       projectRoot: root,
       resourcesRoot,
-      profile: "java",
-      agents: ["claude-code"],
       dryRun: true,
       forceManaged: false,
       cliVersion: "0.2.44",
       planTimestamp: "2026-07-31T08:01:00.000Z"
     });
-    const managedPath = ".claude/skills/harness-review/SKILL.md";
+    const managedPath = ".agents/skills/harness-review/SKILL.md";
     await writeFile(join(root, managedPath), "operator changed the managed target\n");
 
     await expect(refreshProject({
       projectRoot: root,
       resourcesRoot,
-      profile: "java",
-      agents: ["claude-code"],
       dryRun: false,
       forceManaged: false,
       cliVersion: "0.2.44",

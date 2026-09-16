@@ -1,71 +1,96 @@
 import { z } from "zod";
 
-const projectIdSchema = z.string().regex(/^prj_[A-Za-z0-9_-]+$/);
-const tokenEnvSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
-const SERVER_URL_PROTOCOL_MESSAGE =
-  "server URL must use HTTPS unless it targets a loopback host";
+const serverUrlSchema = z.string()
+  .min(1)
+  .max(2048)
+  .refine((value) => {
+    if (!/^https?:\/\//.test(value)) return false;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "https:" || parsed.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }, "server_url must be an http(s) URL")
+  .refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }, "server_url must not embed credentials");
 
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (normalized === "localhost" || normalized === "::1") return true;
-  const octets = normalized.split(".");
-  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet)) &&
-    Number(octets[0]) === 127 && octets.every((octet) => Number(octet) <= 255);
-}
-
-export function isAllowedServerUrl(value: string): boolean {
+export function isAllowedServerUrl(url: string, allowHttp = false): boolean {
   try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" ||
-      (parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname));
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:") return true;
+    if (!allowHttp || parsed.protocol !== "http:") return false;
+    return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
   } catch {
     return false;
   }
 }
 
-export const serverUrlSchema = z.url().refine(
-  isAllowedServerUrl,
-  SERVER_URL_PROTOCOL_MESSAGE
-);
+const tokenEnvSchema = z.string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Z][A-Z0-9_]*$/, "token_env must be an uppercase env var name");
 
-export const HARNESS_AGENT_ORDER = [
-  "claude-code",
-  "codex",
-  "cursor",
-  "codebuddy",
-  "pi"
-] as const;
+const projectIdSchema = z.string().min(1).max(128);
 
-export const harnessAgentSchema = z.enum(HARNESS_AGENT_ORDER);
-export type HarnessAgent = z.infer<typeof harnessAgentSchema>;
+// v1.0: fixed projection (`.agents/skills` + `AGENTS.md` canonical, `.codebuddy/skills`
+// derived) — the 0.x agent/profile/surface selection fields no longer exist. Legacy
+// config files are accepted after stripping the retired keys (callers surface a
+// deprecation warning listing `stripped`).
+export const LEGACY_INIT_CONFIG_FIELDS = ["agents", "profile", "codebuddy_surface"] as const;
+export const LEGACY_PROJECT_CONFIG_FIELDS = ["adapters", "adapter_options"] as const;
+export const LEGACY_PROJECT_CONFIG_PROJECT_FIELDS = ["profiles"] as const;
 
-export const codebuddySurfaceSchema = z.enum(["both", "ide", "cli"]);
-export type CodeBuddySurface = z.infer<typeof codebuddySurfaceSchema>;
-
-export function sortHarnessAgents(agents: readonly HarnessAgent[]): HarnessAgent[] {
-  return HARNESS_AGENT_ORDER.filter((agent) => agents.includes(agent));
+export interface LegacyConfigStripResult {
+  value: unknown;
+  stripped: string[];
 }
 
-export const adapterNameSchema = z.enum([
-  "claude-code",
-  "codex",
-  "cursor",
-  "codebuddy",
-  "pi",
-  "generic",
-  "mcp"
-]);
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Remove retired 0.x config keys before strict parsing (soft landing for old projects). */
+export function stripLegacyConfigFields(value: unknown): LegacyConfigStripResult {
+  if (!isPlainObject(value)) return { value, stripped: [] };
+  const stripped: string[] = [];
+  const legacyTopLevel = new Set<string>([...LEGACY_INIT_CONFIG_FIELDS, ...LEGACY_PROJECT_CONFIG_FIELDS]);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (legacyTopLevel.has(key)) {
+      stripped.push(key);
+      continue;
+    }
+    out[key] = entry;
+  }
+  if (isPlainObject(out.project)) {
+    const legacyProjectKeys = new Set<string>(LEGACY_PROJECT_CONFIG_PROJECT_FIELDS);
+    const project: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(out.project)) {
+      if (legacyProjectKeys.has(key)) {
+        stripped.push(`project.${key}`);
+        continue;
+      }
+      project[key] = entry;
+    }
+    out.project = project;
+  }
+  return { value: out, stripped };
+}
 
 export const initConfigSchema = z.object({
-  agents: z.array(harnessAgentSchema).min(1),
-  profile: z.enum(["general", "java"]),
-  codebuddy_surface: codebuddySurfaceSchema.default("both"),
   server_url: serverUrlSchema.nullable().optional(),
   token_env: tokenEnvSchema.nullable().optional(),
   project_id: projectIdSchema.nullable().optional(),
   features: z.object({
-    codegraph_check: z.boolean().default(true),
-    superpowers_check: z.boolean().default(true)
+    codegraph_check: z.boolean().optional(),
+    superpowers_check: z.boolean().optional()
   }).strict().optional()
 }).strict();
 
@@ -75,24 +100,15 @@ export const projectConfigSchema = z.object({
     schema_version: z.literal(1)
   }).strict(),
   project: z.object({
-    name: z.string().min(1),
+    name: z.string().min(1).max(128),
     root: z.literal("."),
     local_project_key: z.uuid(),
-    project_id: projectIdSchema.nullable(),
-    profiles: z.array(z.string().min(1)).min(1)
+    project_id: projectIdSchema.nullable()
   }).strict(),
   server: z.object({
     url: serverUrlSchema.nullable(),
     token_env: tokenEnvSchema
-  }).strict(),
-  adapters: z.object({
-    enabled: z.array(adapterNameSchema).min(1)
-  }).strict(),
-  adapter_options: z.object({
-    codebuddy: z.object({
-      surface: codebuddySurfaceSchema
-    }).strict()
-  }).strict().optional()
+  }).strict()
 }).strict();
 
 export type InitConfig = z.infer<typeof initConfigSchema>;

@@ -23,7 +23,7 @@ describe("updateProject auth credentials.local fallback", () => {
       await initializeProject({
         projectRoot: initSeedRoot,
         resourcesRoot,
-        config: { agents: ["claude-code"], profile: "general" },
+        config: {},
         dryRun: false
       });
     }

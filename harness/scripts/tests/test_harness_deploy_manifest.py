@@ -2,8 +2,10 @@
 """Tests for per-file bundle manifest generation/verification (C1/T2).
 
 Covers retro 5.1/5.25: registry_version+bundle_hash alone cannot prove each
-installed file belongs to the bundle; install must verify per-file content
-before the atomic switch and never update metadata on partial failure.
+installed file belongs to the bundle; installed trees must verify per-file
+content. v1.0: the install transaction moved to the TypeScript CLI, so these
+tests cover manifest generation and ``verify-installed`` against a tree
+staged to look like an installed skills directory.
 """
 from __future__ import annotations
 
@@ -33,6 +35,12 @@ def _marked_build(root: Path) -> Path:
     _write(root / "scripts" / "harness_events.py", "#!/usr/bin/env python3\nprint('events')\n")
     _write(root / "scripts" / "harness_archive.py", "#!/usr/bin/env python3\nprint('archive')\n")
     return root
+
+
+def _stage_installed(build: Path, dest: Path) -> Path:
+    """Copy build output into a directory that mimics an installed tree."""
+    shutil.copytree(build, dest, ignore=shutil.ignore_patterns("__pycache__"))
+    return dest
 
 
 class BuildManifestTests(unittest.TestCase):
@@ -72,62 +80,6 @@ class BuildManifestTests(unittest.TestCase):
         self.assertNotEqual(hash1, hd.compute_bundle_manifest_hash(mutated))
 
 
-class InstallTransactionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-install-"))
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_install_verifies_staging_against_manifest(self) -> None:
-        build = _marked_build(self.tmp / "build")
-        entries = hd.build_manifest(build, transformation_id="adapted")
-        manifest = {
-            "schemaVersion": 1,
-            "bundleVersion": "0.2.14",
-            "bundleManifestHash": hd.compute_bundle_manifest_hash(entries),
-            "files": entries,
-        }
-        _write(build / "bundle-manifest.json", json.dumps(manifest))
-        # Corrupt one file AFTER manifest generation: staging must not switch.
-        target_file = build / "scripts" / "harness_events.py"
-        target_file.write_text("#!/usr/bin/env python3\nprint('tampered')\n", encoding="utf-8")
-
-        project = self.tmp / "project"
-        project.mkdir()
-        with self.assertRaises(ValueError):
-            hd.cmd_install(build, project, None)
-        # Destination must not have been created with tampered content.
-        dest = project / ".claude" / "skills"
-        events = dest / "scripts" / "harness_events.py"
-        if events.exists():
-            self.assertNotIn("tampered", events.read_text(encoding="utf-8"))
-
-    def test_install_success_writes_bundle_manifest(self) -> None:
-        build = _marked_build(self.tmp / "build")
-        entries = hd.build_manifest(build, transformation_id="adapted")
-        manifest = {
-            "schemaVersion": 1,
-            "bundleVersion": "0.2.14",
-            "bundleManifestHash": hd.compute_bundle_manifest_hash(entries),
-            "files": entries,
-        }
-        _write(build / "bundle-manifest.json", json.dumps(manifest))
-
-        project = self.tmp / "project"
-        project.mkdir()
-        result = hd.cmd_install(build, project, None)
-        self.assertTrue(result["ok"])
-        dest = project / ".claude" / "skills"
-        installed_manifest = json.loads(
-            (dest / "bundle-manifest.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(installed_manifest["bundleVersion"], "0.2.14")
-        self.assertEqual(
-            installed_manifest["bundleManifestHash"], manifest["bundleManifestHash"]
-        )
-
-
 class VerifyInstalledTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="deploy-verify-"))
@@ -137,15 +89,12 @@ class VerifyInstalledTests(unittest.TestCase):
 
     def _installed(self) -> Path:
         build = _marked_build(self.tmp / "build")
-        project = self.tmp / "project"
-        project.mkdir()
-        hd.cmd_install(build, project, None)
-        return project / ".claude" / "skills"
+        return _stage_installed(build, self.tmp / "installed")
 
     def test_verify_installed_ok(self) -> None:
         dest = self._installed()
         entries = hd.build_manifest(dest, transformation_id="adapted")
-        result = hd.cmd_verify_installed(dest, entries, "0.2.14")
+        result = hd.cmd_verify_installed(dest, entries, "1.0.0")
         self.assertTrue(result["ok"])
         self.assertEqual(result["verificationStatus"], "verified")
         self.assertEqual(len(result["installedContentHash"]), 64)
@@ -157,7 +106,7 @@ class VerifyInstalledTests(unittest.TestCase):
         # Tamper one installed file: simulates retro 5.1 stale-script drift.
         target = dest / "scripts" / "harness_archive.py"
         target.write_text("#!/usr/bin/env python3\nprint('old-loose-contract')\n", encoding="utf-8")
-        result = hd.cmd_verify_installed(dest, entries, "0.2.14")
+        result = hd.cmd_verify_installed(dest, entries, "1.0.0")
         self.assertFalse(result["ok"])
         self.assertEqual(result["verificationStatus"], "degraded")
         mismatches = {m["relpath"] for m in result["mismatchDetails"]}

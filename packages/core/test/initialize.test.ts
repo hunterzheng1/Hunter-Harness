@@ -13,8 +13,7 @@ import { miniResources } from "./mini-resources.js";
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 // 合成 mini bundle（见 mini-resources.ts）：init 的布局、幂等与内容逻辑和
-// bundle 文件数无关；真实 718 文件 bundle 的端到端保真由
-// “installs all four agents”用例保留。
+// bundle 文件数无关；真实 bundle 的端到端保真由下方真实资源用例承担。
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -28,7 +27,6 @@ async function exists(path: string): Promise<boolean> {
 const REQUIRED_CORE_LAYOUT = [
   ".harness/project.yaml",
   ".harness/context-index.json",
-  ".harness/rules/project-guidance.md",
   ".harness/state/baseline/manifest.json",
   ".harness/state/local/installed-harness-bundle.json"
 ];
@@ -42,9 +40,19 @@ const OPTIONAL_MUST_NOT_EXIST = [
   ".harness/knowledge/_candidates",
   ".harness/knowledge/project-local",
   ".harness/README.md",
+  ".harness/rules",
   ".harness/state/local/.gitkeep",
   ".harness/knowledge/_candidates/.gitkeep",
   ".harness/codebase/map/.gitkeep"
+];
+
+// v1.0 起不再投影的旧 agent 根与指令文件。
+const RETIRED_PROJECTION_PATHS = [
+  ".claude",
+  ".cursor",
+  ".pi",
+  "CLAUDE.md",
+  "CODEBUDDY.md"
 ];
 
 describe("minimal first installation", () => {
@@ -53,7 +61,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
 
@@ -74,7 +82,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
 
@@ -99,7 +107,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["claude-code"], profile: "general" },
+      config: {},
       dryRun: false
     });
 
@@ -112,97 +120,96 @@ describe("minimal first installation", () => {
   });
 });
 
-describe("multi-agent initialize", () => {
-  it("INS-CODEX: projects only Codex roots", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-ins-codex-"));
+describe("fixed dual-surface projection", () => {
+  it("projects .agents/skills + .codebuddy/skills and AGENTS.md managed blocks only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-fixed-"));
     await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["codex"], profile: "general" },
+      config: {},
       dryRun: false
     });
-    expect(await exists(join(root, "AGENTS.md"))).toBe(true);
+
     expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await exists(join(root, "CLAUDE.md"))).toBe(false);
-    expect(await exists(join(root, ".claude"))).toBe(false);
-    expect(await exists(join(root, ".codex"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    for (const retired of RETIRED_PROJECTION_PATHS) {
+      expect(await exists(join(root, retired)), retired).toBe(false);
+    }
+
     const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(agents).toContain("# 项目协作指南");
-    expect(agents).not.toContain("hunter-harness:start");
+    expect(agents).toContain("hunter-harness:start id=hunter-harness-core");
+    expect(agents).toContain("hunter-harness:start id=hunter-harness-learned-rules");
   });
 
-  it("INS-CURSOR: emits .mdc rules and cursor skills", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cursor-"));
+  it("preserves existing user AGENTS.md content and appends managed blocks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-agents-keep-"));
+    const existing = "# My Project\n\nUser-written guidance.\n";
+    await writeFile(join(root, "AGENTS.md"), existing);
+
     await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["cursor"], profile: "general" },
+      config: {},
       dryRun: false
     });
-    const mdc = await readFile(join(root, ".cursor", "rules", "harness-general.mdc"), "utf8");
-    expect(mdc.startsWith("---\n")).toBe(true);
-    expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await exists(join(root, ".cursor", "rules", "harness-general.md"))).toBe(false);
+
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agents).toContain(existing.trimEnd());
+    expect(agents).toContain("hunter-harness:start id=hunter-harness-core");
+    expect(agents).toContain("hunter-harness:start id=hunter-harness-learned-rules");
   });
 
-  it("INS-CB: projects CodeBuddy skills/agents and CODEBUDDY.md", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cb-"));
-    await initializeProject({
+  it("never reads or rewrites an existing CLAUDE.md", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-claude-keep-"));
+    const existing = "# Existing Claude instructions\n";
+    await writeFile(join(root, "CLAUDE.md"), existing);
+
+    const result = await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
+      config: {},
       dryRun: false
     });
-    const cb = await readFile(join(root, "CODEBUDDY.md"), "utf8");
-    expect(cb).toContain("# 项目协作说明");
-    expect(cb).not.toContain("hunter-harness:start");
-    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await exists(join(root, ".codebuddy", "agents", "harness-reviewer.md"))).toBe(true);
-    expect(await exists(join(root, ".codebuddy", "settings.json"))).toBe(false);
-    expect(await exists(join(root, ".codebuddy", ".rules", "harness-general.mdc"))).toBe(true);
-    expect(await exists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
+
+    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe(existing);
+    // 无 hunter-harness 受管块的 CLAUDE.md 不算旧版投影残留。
+    expect(result.legacyWarnings).toEqual([]);
   });
 
-  it("installs CodeBuddy without inspecting existing instruction content", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cb-existing-"));
-    const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-ins-cb-recovery-"));
-    const existing = [
-      "# Existing project instructions",
-      "Authorization: Bearer project-owned-placeholder-token-1234567890",
-      ""
-    ].join("\n");
-    await writeFile(join(root, "CODEBUDDY.md"), existing);
+  it("warns about pre-1.0 projection residue without deleting it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-legacy-"));
+    await mkdir(join(root, ".claude", "skills", "harness-review"), { recursive: true });
+    await writeFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "old\n");
 
-    await initializeProject({
+    const result = await initializeProject({
       projectRoot: root,
       resourcesRoot: await miniResources(),
-      config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
-      dryRun: false,
-      recoveryStore: { root: recoveryRoot }
+      config: {},
+      dryRun: false
     });
 
-    expect(await readFile(join(root, "CODEBUDDY.md"), "utf8")).toBe(existing);
-    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(result.legacyWarnings.length).toBeGreaterThan(0);
+    expect(result.legacyWarnings.join("\n")).toContain(".claude/skills");
+    expect(await readFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "utf8")).toBe("old\n");
   });
 
-  it("installs all four agents with marker-free Chinese docs, context v2, state v4", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-ins-all-"));
+  it("installs the real bundle to both surfaces with context v2 and state v5", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-real-"));
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: {
-        agents: ["claude-code", "codex", "cursor", "codebuddy"],
-        profile: "general"
-      },
+      config: {},
       dryRun: false
     });
-    expect(await exists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+
     expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    for (const retired of RETIRED_PROJECTION_PATHS) {
+      expect(await exists(join(root, retired)), retired).toBe(false);
+    }
     const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(agents).toContain("# 项目协作指南");
-    expect(agents).not.toContain("hunter-harness:start");
+    expect(agents).toContain("## Harness Core Instructions");
+    expect(agents).toContain("hunter-harness:start id=hunter-harness-core");
 
     const index = JSON.parse(
       await readFile(join(root, ".harness", "context-index.json"), "utf8")
@@ -212,38 +219,37 @@ describe("multi-agent initialize", () => {
       skill_bundles: Record<string, unknown>;
     };
     expect(index.schema_version).toBe(2);
-    expect(Object.keys(index.project.adapters).sort()).toEqual(
-      ["claude-code", "codebuddy", "codex", "cursor"]
-    );
-    expect(Object.keys(index.skill_bundles).sort()).toEqual(
-      Object.keys(index.project.adapters).sort()
-    );
+    expect(Object.keys(index.project.adapters).sort()).toEqual(["codebuddy", "codex"]);
+    expect(Object.keys(index.skill_bundles).sort()).toEqual(["codebuddy", "codex"]);
 
     const state = JSON.parse(
       await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
     ) as {
       schema_version: number;
+      surfaces: string[];
       files: Array<{ owner: string; target_path: string }>;
       managed_blocks: Array<{ block_id: string }>;
     };
-    expect(state.schema_version).toBe(4);
+    expect(state.schema_version).toBe(5);
+    expect(state.surfaces).toEqual(["codex", "codebuddy"]);
     const owners = new Set(state.files.map((f) => f.owner));
-    expect(owners.has("claude-code")).toBe(true);
-    expect(owners.has("codex")).toBe(true);
-    expect(owners.has("cursor")).toBe(true);
-    expect(owners.has("codebuddy")).toBe(true);
+    expect([...owners].sort()).toEqual(["codebuddy", "codex"]);
     const targets = state.files.map((f) => f.target_path);
     expect(new Set(targets).size).toBe(targets.length);
-    expect(state.managed_blocks).toEqual([]);
+    expect(state.managed_blocks.map((block) => block.block_id).sort()).toEqual([
+      "hunter-harness-core",
+      "hunter-harness-learned-rules"
+    ]);
   }, 240_000);
 
   it("is idempotent across two installs except installed_at", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-idem-"));
-    const config = {
-      agents: ["claude-code", "codex"] as const,
-      profile: "general" as const
-    };
-    await initializeProject({ projectRoot: root, resourcesRoot: await miniResources(), config: { ...config }, dryRun: false });
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot: await miniResources(),
+      config: {},
+      dryRun: false
+    });
     const firstState = JSON.parse(
       await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
     ) as { installed_at: string };
@@ -270,7 +276,12 @@ describe("multi-agent initialize", () => {
       return map;
     };
     const before = await snapshot();
-    await initializeProject({ projectRoot: root, resourcesRoot: await miniResources(), config: { ...config }, dryRun: false });
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot: await miniResources(),
+      config: {},
+      dryRun: false
+    });
     const after = await snapshot();
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     for (const [path, hash] of before) {

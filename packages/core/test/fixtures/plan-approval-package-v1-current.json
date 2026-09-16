@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "approval_input_hash": "sha256:3d64ce7599b35e5762071e2d8f97da575fa2f5f527908e44de64540f61260ca4",
+  "approval_input_hash": "sha256:378a3d64268694fbe6afe7ca318619240b212bacc7e9b39f73ef75837783b80c",
   "intent_contract_ref": "intent:abb9d036bd3171a514ceb5916d4d0168d157e0461136c8f6e50ed1d253999daf",
-  "planning_context_ref": "planning_context:6faf74013089d8191a58c3135ed700fba2e66ce4958a964f1762500a16fe28e1",
-  "plan_profile_ref": "plan_profile:5696985e8a92013ce4beedabcb8d8cf0d6dcddb7509d735cbf77e06d3b85d1af",
-  "planned_phase_set_ref": "planned_phase_set:66474ac8763ae7e4f59ddba5d82a7c8e608fe684acf4406071ef9509d69269f9",
-  "decision_graph_ref": "decision_graph:d4c7782201da0b74801fe64f039575d8f4d49f3fe218290b05df4dc4a92ff3dd",
+  "planning_context_ref": "planning_context:e3807b8a4cdbb9058d9e034871e0bd275c0adfef134da13fd5ac326b09074599",
+  "plan_profile_ref": "plan_profile:723708214c1eb8565865affb35056b0a85c835f9ad994d79fd025e0b0104b215",
+  "planned_phase_set_ref": "planned_phase_set:27815a48ea7cfc9582d05a1aaa3e6d8ec85306213757adf3f6c59e7ecf1d8a3b",
+  "decision_graph_ref": "decision_graph:7e1c6226bbce4b8e3434262308b1abb858a704955739f85422c6c2f355b571de",
   "status": "ready",
   "sections": {
     "goal_and_outcome": {
@@ -51,6 +51,6 @@
     "unresolved_decisions": []
   },
   "created_at": "2026-08-13T10:00:00.000Z",
-  "approval_package_hash": "sha256:d562b7050c641596427874fdbb867f8fe3d48e4d369c0a2b5b1e7460d37f22ad",
-  "approval_package_id": "approval_package:d562b7050c641596427874fdbb867f8fe3d48e4d369c0a2b5b1e7460d37f22ad"
+  "approval_package_hash": "sha256:ef367682e08518b8ba3a76e30b9a6025fd13476a6d46ffb1177c4d06f4b9e54b",
+  "approval_package_id": "approval_package:ef367682e08518b8ba3a76e30b9a6025fd13476a6d46ffb1177c4d06f4b9e54b"
 }

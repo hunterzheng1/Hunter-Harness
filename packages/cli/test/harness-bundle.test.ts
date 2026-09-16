@@ -8,12 +8,11 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 const resources = join(root, "packages", "workflow-data-harness", "harness");
 const packagedResources = join(root, "packages", "workflow-data-harness");
 const harnessSource = join(root, "harness");
-const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
-const PROFILES = ["general", "java"] as const;
+const ADAPTERS = ["codex", "codebuddy"] as const;
 
 interface ManifestV2 {
   schema_version: 2;
-  profile: "general" | "java";
+  profile: "general";
   adapter: string;
   files: Array<{ path: string; sha256: string }>;
 }
@@ -32,22 +31,22 @@ async function filePaths(directory: string, base = directory): Promise<string[]>
   return paths;
 }
 
+function bundleRoot(adapter: string): string {
+  return join(resources, "bundles", adapter);
+}
+
 describe("embedded Harness Bundles", () => {
   it("omits the retired local HTML archive report", async () => {
     expect(await exists(join(
       harnessSource, "harness-archive", "templates", "render-summary.mjs"
     ))).toBe(false);
 
-    for (const profile of PROFILES) {
-      for (const agent of AGENTS) {
-        const archiveRoot = join(
-          resources, "bundles", profile, agent, "harness-archive"
-        );
-        expect(await exists(join(archiveRoot, "templates", "render-summary.mjs")))
-          .toBe(false);
-        const skill = await readFile(join(archiveRoot, "SKILL.md"), "utf8");
-        expect(skill).not.toContain("final-summary.html");
-      }
+    for (const adapter of ADAPTERS) {
+      const archiveRoot = join(bundleRoot(adapter), "harness-archive");
+      expect(await exists(join(archiveRoot, "templates", "render-summary.mjs")))
+        .toBe(false);
+      const skill = await readFile(join(archiveRoot, "SKILL.md"), "utf8");
+      expect(skill).not.toContain("final-summary.html");
     }
   });
 
@@ -66,14 +65,12 @@ describe("embedded Harness Bundles", () => {
       expect(text).toContain("不得将编码阶段降级为 WARN");
     }
 
-    for (const profile of PROFILES) {
-      for (const agent of AGENTS) {
-        const executeProtocols = await readFile(
-          join(resources, "bundles", profile, agent, "harness-execute", "protocols.md"), "utf8"
-        );
-        expect(executeProtocols).toContain("ownerPhase=test");
-        expect(executeProtocols).toContain("不得将编码阶段降级为 WARN");
-      }
+    for (const adapter of ADAPTERS) {
+      const executeProtocols = await readFile(
+        join(bundleRoot(adapter), "harness-execute", "protocols.md"), "utf8"
+      );
+      expect(executeProtocols).toContain("ownerPhase=test");
+      expect(executeProtocols).toContain("不得将编码阶段降级为 WARN");
     }
   });
 
@@ -82,9 +79,6 @@ describe("embedded Harness Bundles", () => {
     const submitSkill = await readFile(join(harnessSource, "harness-submit", "SKILL.md"), "utf8");
     const ledgerProtocol = await readFile(
       join(harnessSource, "protocols", "ledger-protocol.md"), "utf8"
-    );
-    const javaProfile = await readFile(
-      join(harnessSource, "overlays", "java", "PROJECT-PROFILE-EXAMPLE.md"), "utf8"
     );
 
     // run/test 合并后四类标记统一由 execute SKILL 承载
@@ -96,19 +90,17 @@ describe("embedded Harness Bundles", () => {
     expect(submitSkill).toContain("禁止全局 force-add");
     expect(ledgerProtocol).toContain("diff-hash --repo <projectRoot> --base <baseCommit> --change-dir");
     expect(ledgerProtocol).toContain("content-changeset-2");
-    expect(javaProfile).toContain('"testTracking"');
     expect(await exists(join(harnessSource, "scripts", "harness_test_guard.py"))).toBe(true);
   });
 
-  it.each(PROFILES)("ships test tracking guard and policies to every %s adapter", async (profile) => {
-    for (const agent of AGENTS) {
-      const bundleRoot = join(resources, "bundles", profile, agent);
+  it("ships test tracking guard and policies to every adapter", async () => {
+    for (const adapter of ADAPTERS) {
       expect(
-        await exists(join(bundleRoot, "scripts", "harness_test_guard.py")),
-        `${profile}/${agent} missing harness_test_guard.py`
+        await exists(join(bundleRoot(adapter), "scripts", "harness_test_guard.py")),
+        `${adapter} missing harness_test_guard.py`
       ).toBe(true);
-      const executeSkill = await readFile(join(bundleRoot, "harness-execute", "SKILL.md"), "utf8");
-      const submitSkill = await readFile(join(bundleRoot, "harness-submit", "SKILL.md"), "utf8");
+      const executeSkill = await readFile(join(bundleRoot(adapter), "harness-execute", "SKILL.md"), "utf8");
+      const submitSkill = await readFile(join(bundleRoot(adapter), "harness-submit", "SKILL.md"), "utf8");
       expect(executeSkill).toContain("stale-test-repair");
       expect(executeSkill).toContain("BLOCKED_PREEXISTING");
       expect(submitSkill).toContain("harness_test_guard.py stage");
@@ -158,40 +150,6 @@ describe("embedded Harness Bundles", () => {
     }
   });
 
-  it.each(PROFILES)(
-    "routes fixed subagents only on supported %s adapters",
-    async (profile) => {
-      for (const agent of ["codex", "cursor"] as const) {
-        const bundleRoot = join(resources, "bundles", profile, agent);
-        const planSkill = await readFile(join(bundleRoot, "harness-plan", "SKILL.md"), "utf8");
-        const reviewSkill = await readFile(join(bundleRoot, "harness-review", "SKILL.md"), "utf8");
-        expect(planSkill).toContain("无固定 agent 预检");
-        expect(planSkill).toContain("不运行 `check-agents --agent harness-explorer`");
-        expect(reviewSkill).toContain("不运行固定 `harness-reviewer` 预检");
-        expect(planSkill).not.toContain(
-          "harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer"
-        );
-        expect(reviewSkill).not.toContain(
-          "harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer"
-        );
-      }
-
-      for (const agent of ["claude-code", "codebuddy"] as const) {
-        const bundleRoot = join(resources, "bundles", profile, agent);
-        const planSkill = await readFile(join(bundleRoot, "harness-plan", "SKILL.md"), "utf8");
-        const reviewSkill = await readFile(join(bundleRoot, "harness-review", "SKILL.md"), "utf8");
-        expect(planSkill).toContain(
-          "check-agents --skills-root <skills-root> --agent harness-explorer"
-        );
-        expect(reviewSkill).toContain(
-          "check-agents --skills-root <skills-root> --agent harness-reviewer"
-        );
-        expect(planSkill).toContain("仅高复杂度探索考虑委派");
-        expect(reviewSkill).toContain("审查执行（独立评审优先）");
-      }
-    }
-  );
-
   it("documents knowledge query as one remote-only invocation", async () => {
     const querySkill = await readFile(
       join(harnessSource, "harness-knowledge-query", "SKILL.md"), "utf8"
@@ -217,100 +175,83 @@ describe("embedded Harness Bundles", () => {
     }
   });
 
-  it.each(PROFILES)("ships every Claude planning agent in the %s bundle", async (profile) => {
-    const bundleRoot = join(resources, "bundles", profile, "claude-code", "agents");
-    for (const agent of ["harness-explorer.md", "harness-evaluator.md", "harness-reviewer.md"]) {
-      expect(await exists(join(bundleRoot, agent)), `${profile}/claude-code missing ${agent}`).toBe(true);
-    }
-  });
-
-  it.each(PROFILES)("matches every %s agent manifest hash", async (profile) => {
-    for (const agent of AGENTS) {
-      const manifest = JSON.parse(await readFile(
-        join(resources, "manifests", profile, `${agent}.json`), "utf8"
-      )) as ManifestV2;
-      expect(manifest.schema_version).toBe(2);
-      expect(manifest.profile).toBe(profile);
-      expect(manifest.adapter).toBe(agent);
-      expect(manifest.files.length).toBeGreaterThan(0);
-      for (const item of manifest.files) {
-        const bytes = await readFile(join(resources, "bundles", profile, agent, item.path));
-        expect(createHash("sha256").update(bytes).digest("hex"), `${agent}:${item.path}`)
-          .toBe(item.sha256);
-      }
+  it.each(ADAPTERS)("matches every %s manifest hash", async (adapter) => {
+    const manifest = JSON.parse(await readFile(
+      join(resources, "manifests", `${adapter}.json`), "utf8"
+    )) as ManifestV2;
+    expect(manifest.schema_version).toBe(2);
+    expect(manifest.profile).toBe("general");
+    expect(manifest.adapter).toBe(adapter);
+    expect(manifest.files.length).toBeGreaterThan(0);
+    for (const item of manifest.files) {
+      const bytes = await readFile(join(bundleRoot(adapter), item.path));
+      expect(createHash("sha256").update(bytes).digest("hex"), `${adapter}:${item.path}`)
+        .toBe(item.sha256);
     }
   });
 
   it("keeps source-only material out of runtime bundles", async () => {
-    for (const profile of PROFILES) {
-      for (const agent of AGENTS) {
-        const bundleRoot = join(resources, "bundles", profile, agent);
-        expect(await exists(join(bundleRoot, "redesign"))).toBe(false);
-        expect(await exists(join(bundleRoot, "scripts", "tests"))).toBe(false);
-        expect(await exists(join(bundleRoot, "shared"))).toBe(false);
-        expect(await exists(join(bundleRoot, "overlays"))).toBe(false);
-        expect((await filePaths(bundleRoot)).some((path) =>
-          path.split("/").includes("tests")
-        )).toBe(false);
-      }
+    for (const adapter of ADAPTERS) {
+      expect(await exists(join(bundleRoot(adapter), "redesign"))).toBe(false);
+      expect(await exists(join(bundleRoot(adapter), "scripts", "tests"))).toBe(false);
+      expect(await exists(join(bundleRoot(adapter), "shared"))).toBe(false);
+      expect(await exists(join(bundleRoot(adapter), "overlays"))).toBe(false);
+      expect((await filePaths(bundleRoot(adapter))).some((path) =>
+        path.split("/").includes("tests")
+      )).toBe(false);
     }
   });
 
   it("keeps legacy bootstrap resources out of the workflow data package staging tree", async () => {
     expect(await exists(join(
-      resources, "bundles", "general", "claude-code", "harness-plan", "SKILL.md"
+      bundleRoot("codex"), "harness-plan", "SKILL.md"
     ))).toBe(true);
     expect(await exists(join(packagedResources, "bootstrap-ir"))).toBe(false);
     expect(await exists(join(packagedResources, "skills"))).toBe(false);
   });
 
   it("bundle actual file set equals manifest declared set — API-012/UT-030", async () => {
-    for (const profile of PROFILES) {
-      for (const agent of AGENTS) {
-        const manifest = JSON.parse(await readFile(
-          join(resources, "manifests", profile, `${agent}.json`), "utf8"
-        )) as ManifestV2;
-        const bundleRoot = join(resources, "bundles", profile, agent);
-        const actual = new Set(await filePaths(bundleRoot));
-        const declared = new Set(manifest.files.map((f) => f.path));
-        const extra = [...actual].filter((p) => !declared.has(p));
-        const missing = [...declared].filter((p) => !actual.has(p));
-        expect(extra, `${profile}/${agent} extra files`).toEqual([]);
-        expect(missing, `${profile}/${agent} missing files`).toEqual([]);
-      }
+    for (const adapter of ADAPTERS) {
+      const manifest = JSON.parse(await readFile(
+        join(resources, "manifests", `${adapter}.json`), "utf8"
+      )) as ManifestV2;
+      const actual = new Set(
+        (await filePaths(bundleRoot(adapter))).filter((p) => p !== ".harness-build.json")
+      );
+      const declared = new Set(manifest.files.map((f) => f.path));
+      const extra = [...actual].filter((p) => !declared.has(p));
+      const missing = [...declared].filter((p) => !actual.has(p));
+      expect(extra, `${adapter} extra files`).toEqual([]);
+      expect(missing, `${adapter} missing files`).toEqual([]);
     }
   });
 
-  it.each(PROFILES)(
-    "every adapter bundle carries skill-referenced support files — UT-033",
-    async (profile) => {
-      // design §3.8: every adapter (incl. codex) must carry the reference.md /
-      // checklist.md / protocols.md a Skill's SKILL.md references. Guards
-      // against the ".agents/skills/harness-plan only has SKILL.md" regression.
-      // Only progressive-disclosure "Read `xxx.md`" references count — a skill
-      // that declares "暂无 reference.md" (rules inline in SKILL.md) is fine.
-      for (const agent of AGENTS) {
-        const bundleRoot = join(resources, "bundles", profile, agent);
-        const entries = await readdir(bundleRoot, { withFileTypes: true });
-        const skills = entries
-          .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
-          .map((e) => e.name);
-        expect(skills.length, `${profile}/${agent} has harness-* skills`).toBeGreaterThan(0);
-        for (const skill of skills) {
-          const skillMd = await readFile(join(bundleRoot, skill, "SKILL.md"), "utf8");
-          const refs = new Set<string>();
-          for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
-            refs.add(m[1]);
-          }
-          for (const ref of refs) {
-            if (ref === "SKILL.md") continue;
-            expect(
-              await exists(join(bundleRoot, skill, ref)),
-              `${profile}/${agent}/${skill} references ${ref} but it is missing`
-            ).toBe(true);
-          }
+  it("every adapter bundle carries skill-referenced support files — UT-033", async () => {
+    // design §3.8: every adapter (incl. codex) must carry the reference.md /
+    // checklist.md / protocols.md a Skill's SKILL.md references. Guards
+    // against the ".agents/skills/harness-plan only has SKILL.md" regression.
+    // Only progressive-disclosure "Read `xxx.md`" references count — a skill
+    // that declares "暂无 reference.md" (rules inline in SKILL.md) is fine.
+    for (const adapter of ADAPTERS) {
+      const entries = await readdir(bundleRoot(adapter), { withFileTypes: true });
+      const skills = entries
+        .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
+        .map((e) => e.name);
+      expect(skills.length, `${adapter} has harness-* skills`).toBeGreaterThan(0);
+      for (const skill of skills) {
+        const skillMd = await readFile(join(bundleRoot(adapter), skill, "SKILL.md"), "utf8");
+        const refs = new Set<string>();
+        for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
+          refs.add(m[1]);
+        }
+        for (const ref of refs) {
+          if (ref === "SKILL.md") continue;
+          expect(
+            await exists(join(bundleRoot(adapter), skill, ref)),
+            `${adapter}/${skill} references ${ref} but it is missing`
+          ).toBe(true);
         }
       }
     }
-  );
+  });
 });

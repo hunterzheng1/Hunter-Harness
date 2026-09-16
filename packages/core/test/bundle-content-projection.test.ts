@@ -7,14 +7,14 @@ import { describe, expect, it } from "vitest";
 
 import { initializeProject } from "../src/project/initialize.js";
 import { collectFreshness, refreshProject } from "../src/project/refresh.js";
-import type { HarnessAgent } from "@hunter-harness/contracts";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
 );
 
 const CONTEXT_INDEX_PATH = ".harness/context-index.json";
-const REVIEW_SKILL_TARGET = ".claude/skills/harness-review/SKILL.md";
+// v1.0 主投影面（codex 适配器目标）：.agents/skills
+const REVIEW_SKILL_TARGET = ".agents/skills/harness-review/SKILL.md";
 
 interface BundleEntry {
   registry_version: string;
@@ -29,15 +29,11 @@ interface ContextIndex {
   skill_bundles: Record<string, BundleEntry>;
 }
 
-async function install(
-  root: string,
-  agents: HarnessAgent[],
-  profile: "general" | "java" = "general"
-): Promise<void> {
+async function install(root: string): Promise<void> {
   await initializeProject({
     projectRoot: root,
     resourcesRoot,
-    config: { agents, profile },
+    config: {},
     dryRun: false
   });
 }
@@ -50,15 +46,11 @@ describe("bundle content projection (retro §5.1/5.25, C1/T3)", () => {
   it("freshness identity exposes installedContentHash and verificationStatus=verified on a clean install", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-content-clean-"));
     try {
-      await install(root, ["claude-code"]);
+      await install(root);
 
-      const report = await collectFreshness({
-        projectRoot: root,
-        resourcesRoot,
-        agents: ["claude-code"]
-      });
+      const report = await collectFreshness({ projectRoot: root, resourcesRoot });
 
-      const entry = report.agents[0];
+      const entry = report.agents.find((candidate) => candidate.agent === "codex");
       expect(entry).toBeDefined();
       if (!entry) return;
       expect(entry.identity.installedContentHash).toBeTruthy();
@@ -73,18 +65,14 @@ describe("bundle content projection (retro §5.1/5.25, C1/T3)", () => {
   it("freshness identity reports verificationStatus=degraded and mismatchDetails when an installed trusted-root script drifts", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-content-drift-"));
     try {
-      await install(root, ["claude-code"]);
+      await install(root);
       // Tamper with a managed skill file: registry_version still matches but
       // the per-file content no longer matches the installed manifest.
       await writeFile(join(root, REVIEW_SKILL_TARGET), "tampered content\n");
 
-      const report = await collectFreshness({
-        projectRoot: root,
-        resourcesRoot,
-        agents: ["claude-code"]
-      });
+      const report = await collectFreshness({ projectRoot: root, resourcesRoot });
 
-      const entry = report.agents[0];
+      const entry = report.agents.find((candidate) => candidate.agent === "codex");
       expect(entry).toBeDefined();
       if (!entry) return;
       // Drift in a managed file is still LOCALLY_MODIFIED, but the new
@@ -108,11 +96,11 @@ describe("bundle content projection (retro §5.1/5.25, C1/T3)", () => {
   it("context-index skill_bundles entry projects installedContentHash/verifiedAt/verificationStatus", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-content-index-"));
     try {
-      await install(root, ["claude-code"]);
+      await install(root);
 
       const index = await readContextIndex(root);
-      const entry = index.skill_bundles["claude-code"];
-      expect(entry, "claude-code bundle entry must exist").toBeDefined();
+      const entry = index.skill_bundles["codex"];
+      expect(entry, "codex bundle entry must exist").toBeDefined();
       if (!entry) return;
       expect(entry.registry_version).toBeTruthy();
       expect(entry.bundle_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -129,21 +117,19 @@ describe("bundle content projection (retro §5.1/5.25, C1/T3)", () => {
   it("context-index reflects verificationStatus=degraded after a file drifts", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-content-index-drift-"));
     try {
-      await install(root, ["claude-code"]);
+      await install(root);
       await writeFile(join(root, REVIEW_SKILL_TARGET), "tampered content\n");
 
       // Re-run refresh so context-index is regenerated with the drift visible.
       await refreshProject({
         projectRoot: root,
         resourcesRoot,
-        profile: "general",
-        agents: ["claude-code"],
         dryRun: false,
         forceManaged: false
       });
 
       const index = await readContextIndex(root);
-      const entry = index.skill_bundles["claude-code"];
+      const entry = index.skill_bundles["codex"];
       expect(entry).toBeDefined();
       if (!entry) return;
       expect(entry.verificationStatus).toBe("degraded");

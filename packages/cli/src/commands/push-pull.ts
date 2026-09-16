@@ -25,8 +25,8 @@ const execFileAsync = promisify(execFile);
 
 async function findArchiveScript(dependencies: CommandDependencies): Promise<string> {
   const candidates = [
-    join(dependencies.resourcesRoot, "harness", "bundles", "general", "codex", "scripts", "harness_archive.py"),
-    join(dependencies.resourcesRoot, "harness", "bundles", "general", "claude-code", "scripts", "harness_archive.py"),
+    join(dependencies.resourcesRoot, "harness", "bundles", "codex", "scripts", "harness_archive.py"),
+    join(dependencies.resourcesRoot, "harness", "bundles", "codebuddy", "scripts", "harness_archive.py"),
     join(dependencies.resourcesRoot, "scripts", "harness_archive.py"),
     join(dependencies.cwd, "harness", "scripts", "harness_archive.py"),
     join(dependencies.cwd, "harness_archive.py")

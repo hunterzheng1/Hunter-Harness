@@ -94,8 +94,7 @@ export const VALIDATION_PHASES: Readonly<Record<string, string>> = {
   "unitTestFull": "execute",
   "apiTest": "execute",
   "browserTest": "execute",
-  "dbCompatibility": "execute",
-  "package": "package"
+  "dbCompatibility": "execute"
 };
 
 /** 验证依赖表（B3-2）：required_gate_dag 的边构建输入。 */
@@ -105,6 +104,5 @@ export const VALIDATION_DEPENDENCIES: Readonly<Record<string, readonly string[]>
   "unitTestFull": ["unitTest"],
   "apiTest": ["unitTest"],
   "browserTest": ["unitTest"],
-  "dbCompatibility": ["unitTest"],
-  "package": ["unitTestFull", "apiTest", "dbCompatibility"]
+  "dbCompatibility": ["unitTest"]
 };

@@ -94,8 +94,10 @@ interface InstallManifest {
 // skill-cli 独立 upload 白名单：建 per-agent draft（低风险），扩 codex/generic（#1 后有真 render + per-agent version）。
 // mcp 仍不支持（installable=false，不参与 upload/install）。
 const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy", "pi"]);
-// skill-cli 独立 install 白名单：install 链路 codex/generic 未验证，维持 claude-code/cursor。
-const INSTALLABLE_AGENTS: ReadonlySet<SkillTargetAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy", "pi"]);
+// 1.0 起 install 固定双写：.agents/skills（codex）+ .codebuddy/skills（codebuddy）。
+// --agent 仅用于显式收窄到其中一个（如 legacy 单变体工件）。
+const INSTALLABLE_AGENTS: ReadonlySet<SkillTargetAgent> = new Set(["codex", "codebuddy"]);
+const DEFAULT_INSTALL_AGENTS: readonly SkillTargetAgent[] = ["codex", "codebuddy"];
 
 interface LegacyArtifactMetadata {
   schema_version?: 1 | 2;
@@ -352,13 +354,9 @@ async function resolveInstallChoices(
   dependencies: ResolvedSkillCliDependencies
 ): Promise<{ agents: SkillTargetAgent[]; scope: "project" | "user"; root: string }> {
   let requested = optionAgents(options.agent);
-  if (requested.length === 0 && dependencies.isTTY) {
-    requested = (await dependencies.prompt(
-      "Install for which agents? (claude-code,codex,cursor,codebuddy): "
-    )).split(",").map((value) => value.trim()).filter(Boolean);
-  }
   if (requested.length === 0) {
-    throw new CliFailure(3, "CONFIG_INVALID", "at least one --agent is required");
+    // 零选择默认：固定双写 .agents/skills + .codebuddy/skills。
+    requested = [...DEFAULT_INSTALL_AGENTS];
   }
   const invalid = requested.find((agent) => !INSTALLABLE_AGENTS.has(agent as SkillTargetAgent));
   if (invalid !== undefined) {
@@ -646,9 +644,8 @@ async function runInstall(
     sourceFiles = npmPackage.sourceFiles;
     sourceUrl = `npm:${packageName}`;
   } else if (installFrom === "server") {
-    if (choices.agents.length !== 1) {
-      throw new CliFailure(3, "CONFIG_INVALID", "multi-agent installation requires --from npm");
-    }
+    // server 按 per-agent artifact 下发；多 agent 双写时取第一个（codex）工件，
+    // skill 文件与 agent 无关，install 阶段由 planSkillInstall 复制到各 surface。
     const { serverUrl, token } = configuration(options, dependencies.env);
     const response = await request(
       dependencies.fetch,
@@ -919,7 +916,7 @@ export async function runSkillCli(
     .option("--token-env <ENV_NAME>")
     .option("--json");
   addNetworkOptions(program.command("install <skill-slug>"))
-    .option("--agent <agent>", "target agent; repeat to install multiple variants", (value, previous: string[]) => [...previous, value], [])
+    .option("--agent <agent>", "narrow install to one surface (codex or codebuddy); default installs both", (value, previous: string[]) => [...previous, value], [])
     .option("--scope <scope>", "installation scope: project or user")
     .option("--project <path>", "project root for project-scoped installation")
     .option("--yes", "approve the displayed installation plan")

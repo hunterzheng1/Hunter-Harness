@@ -32,22 +32,11 @@ import {
   type KnowledgeStatusOptions
 } from "./commands/knowledge-status.js";
 import {
-  runInstructionApply,
-  runInstructionAudit,
-  type InstructionApplyOptions,
-  type InstructionAuditOptions
-} from "./commands/instructions.js";
-import {
-  detectProject,
   runRefresh,
   type RefreshCommandOptions
 } from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
-import { runRulesSync, type RulesSyncCommandOptions } from "./commands/rules-sync.js";
-import {
-  runRulesReview,
-  type RulesReviewCommandOptions
-} from "./commands/rules-review.js";
+import { runUninstall, type UninstallCommandOptions } from "./commands/uninstall.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runScanSensitive } from "./commands/scan-sensitive.js";
 import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins.js";
@@ -293,8 +282,6 @@ function addCommonOptions(command: Command): Command {
     .option("--server-url <url>")
     .option("--token-env <ENV_NAME>")
     .option("--non-interactive")
-    .option("--agents <csv>")
-    .option("--codebuddy-surface <surface>")
     .option("--workflow-family <slug>")
     .option("--workflow-version <version>")
     .option("--recovery-root <path>");
@@ -316,9 +303,13 @@ export async function runCli(
     if (overrides.pacoteExtract !== undefined) {
       resolveOptions.pacoteExtract = overrides.pacoteExtract;
     }
-    dependencies.resourcesRoot = await resolveWorkflowResourcesRoot(resolveOptions, argv);
     const command = argv.find((value) => !value.startsWith("-"));
-    if (command !== "capabilities" && command !== "doctor") {
+    // uninstall 必须能清理旧版安装（包括 family.json 门禁拒绝新 CLI 的场景），
+    // 因此完全跳过工作流数据解析与兼容性门禁。
+    if (command !== "uninstall") {
+      dependencies.resourcesRoot = await resolveWorkflowResourcesRoot(resolveOptions, argv);
+    }
+    if (command !== "capabilities" && command !== "doctor" && command !== "uninstall") {
       assertWorkflowCompatibility(
         await readWorkflowFamilyManifest(dependencies.resourcesRoot),
         {
@@ -347,7 +338,6 @@ export async function runCli(
   const program = addCommonOptions(new Command())
     .name("hunter-harness")
     .description("Local-first, server-governed agent harness")
-    .option("--profile <name>")
     .option("--config <file>")
     .option("--force-managed")
     .showHelpAfterError()
@@ -364,16 +354,10 @@ export async function runCli(
       exitCode = recoveryResult;
       return;
     }
-    const detection = await detectProject(dependencies.cwd);
-    const guardedOptions = detection.status === "absent" &&
-      options.nonInteractive === true
-      ? { ...options, profile: options.profile ?? "general" }
-      : options;
-    exitCode = await runConfigure(guardedOptions, dependencies);
+    exitCode = await runConfigure(options, dependencies);
   });
   addCommonOptions(program.command("init"))
     .description("仅在空白项目中初始化 Hunter Harness")
-    .option("--profile <name>")
     .option("--config <file>")
     .option("--force-managed")
     .action(async (options: ConfigureOptions) => {
@@ -382,9 +366,18 @@ export async function runCli(
         dependencies
       );
     });
+  addCommonOptions(program.command("uninstall"))
+    .description("卸载：删除 hunter-harness 写入的全部受管内容（默认 dry-run 预览，--yes 执行）")
+    .option("--keep-data", "保留 .harness/state 运行数据（事务、归档回执、凭据）")
+    .option("--global", "同时清理用户级目录（状态根、~/.hunter-harness、全局 skills 投影）")
+    .action(async (options: UninstallCommandOptions) => {
+      exitCode = await runUninstall(
+        { ...program.opts<UninstallCommandOptions>(), ...options },
+        dependencies
+      );
+    });
   addCommonOptions(program.command("refresh"))
     .description("本地保守刷新已安装的 Harness 项目")
-    .option("--profile <name>")
     .option("--force-managed")
     .action(async (options: RefreshCommandOptions) => {
       exitCode = await runRefresh(
@@ -419,7 +412,7 @@ export async function runCli(
     });
   addCommonOptions(program.command("harness-push"))
     .description("RemoteSync 未配置时安全失败；优先读 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID，缺失时回退 connect 写入的 credentials.local.yaml")
-    .option("--scope <scopes>", "config,rules,architecture,instructions,branch_files,archive 或 all")
+    .option("--scope <scopes>", "config,architecture,instructions,branch_files,archive 或 all")
     .option("--branch <branch>", "显式来源分支")
     .option("--change <change-key>", "仅配合 --scope archive 使用")
     .option("--allow-sensitive", "确认所有敏感命中并继续（非交互需配合 --yes）")
@@ -440,7 +433,7 @@ export async function runCli(
   addCommonOptions(program.command("harness-pull"))
     .alias("pull")
     .description("RemoteSync 未配置时安全失败；优先读 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID，缺失时回退 connect 写入的 credentials.local.yaml")
-    .option("--scope <scopes>", "config,rules,architecture,instructions 或 branch_files")
+    .option("--scope <scopes>", "config,architecture,instructions 或 branch_files")
     .option("--branch <branch>", "恢复 branch_files 时必需的来源分支")
     .option(
       "--resolve <path=resolution>",
@@ -485,27 +478,6 @@ export async function runCli(
     .action(async (options: KnowledgeStatusOptions) => {
       exitCode = await runKnowledgeStatus(
         { ...program.opts<KnowledgeStatusOptions>(), ...options },
-        dependencies
-      );
-    });
-  const instructions = program.command("instructions")
-    .description("审计、预览并应用中文项目指令与规则提案");
-  addCommonOptions(instructions.command("audit"))
-    .description("上传小型项目证据，由服务端生成不带托管标记的中文提案")
-    .action(async (options: InstructionAuditOptions) => {
-      exitCode = await runInstructionAudit(
-        { ...program.opts<InstructionAuditOptions>(), ...options },
-        dependencies
-      );
-    });
-  instructions.command("apply")
-    .description("按基线哈希事务式应用已审阅提案")
-    .requiredOption("--proposal <path>", "提案 JSON 路径")
-    .option("--yes")
-    .option("--json")
-    .action(async (options: InstructionApplyOptions) => {
-      exitCode = await runInstructionApply(
-        { ...program.opts<InstructionApplyOptions>(), ...options },
         dependencies
       );
     });
@@ -569,32 +541,9 @@ export async function runCli(
         dependencies
       );
     });
-  program.command("rules-sync")
-    .description("兼容入口：远端审计并生成中文规则提案，不直接改写项目文件")
-    .option("--agents <csv>")
-    .option("--codebuddy-surface <surface>")
-    .option("--no-learn", "兼容参数；规则候选始终只作为提案，不自动应用")
-    .option("--json")
-    .action(async (options: RulesSyncCommandOptions) => {
-      exitCode = await runRulesSync(
-        { ...program.opts<RulesSyncCommandOptions>(), ...options },
-        dependencies
-      );
-    });
-  program.command("rules-review")
-    .description("导出待评审公共规则候选，或应用经用户确认的规则决策")
-    .option("--apply <file>", "应用包含候选 revision 和目标 hash 的决策 JSON")
-    .option("--json")
-    .action(async (options: RulesReviewCommandOptions) => {
-      exitCode = await runRulesReview(
-        { ...program.opts<RulesReviewCommandOptions>(), ...options },
-        dependencies
-      );
-    });
   addCommonOptions(program.command("sync"))
     .description("执行一次有界的 Harness 元数据同步并生成可校验报告")
     .option("--project <path>", "项目根目录")
-    .option("--profile <profile>", "interactive | general | java", "interactive")
     .option("--progress <mode>", "jsonl | text | none", "jsonl")
     .option("--check", "完整、纯只读评估所有组件（--dry-run 兼容别名）")
     .option("--apply <mode>", "执行安全修复；当前支持 safe")
@@ -603,7 +552,7 @@ export async function runCli(
     .option("--include-components", "兼容别名：在 JSON 中包含完整组件 receipts")
     .option(
       "--push [scopes]",
-      "体检通过后顺带推送一次；省略值时推 config,rules,architecture,instructions"
+      "体检通过后顺带推送一次；省略值时推 config,architecture,instructions"
     )
     .action(async (options: SyncCommandOptions) => {
       const merged = { ...program.opts<SyncCommandOptions>(), ...options };

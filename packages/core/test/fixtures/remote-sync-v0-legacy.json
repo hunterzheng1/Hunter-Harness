@@ -8,8 +8,8 @@
   "base_version": "pv_legacy",
   "baseline_files": [
     {
-      "path": ".harness/rules/legacy.md",
-      "content_kind": "rule",
+      "path": ".harness/codebase/map/legacy.md",
+      "content_kind": "architecture",
       "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
       "size": 7,
       "content": "legacy\n"
@@ -17,8 +17,8 @@
   ],
   "local_files": [
     {
-      "path": ".harness/rules/legacy.md",
-      "content_kind": "rule",
+      "path": ".harness/codebase/map/legacy.md",
+      "content_kind": "architecture",
       "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
       "size": 7,
       "content": "legacy\n"
@@ -26,8 +26,8 @@
   ],
   "remote_files": [
     {
-      "path": ".harness/rules/legacy.md",
-      "content_kind": "rule",
+      "path": ".harness/codebase/map/legacy.md",
+      "content_kind": "architecture",
       "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
       "size": 7,
       "content": "legacy\n"

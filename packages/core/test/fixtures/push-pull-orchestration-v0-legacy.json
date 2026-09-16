@@ -6,7 +6,7 @@
       "projectId": "prj_legacy_upload",
       "commitSha": "deadbeef12345678",
       "clientId": "cli_legacy",
-      "scope": "rules"
+      "scope": "architecture"
     },
     {
       "command": "sync",

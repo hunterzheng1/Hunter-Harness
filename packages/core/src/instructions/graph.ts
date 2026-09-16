@@ -305,12 +305,9 @@ function ownershipOf(path: string): "project" | "harness-managed" | "generated" 
   ) {
     return "generated";
   }
-  if (
-    path.startsWith(".harness/rules/")
-    || path === "AGENTS.md"
-    || path === "CLAUDE.md"
-    || path === "CODEBUDDY.md"
-  ) {
+  // v1.0：AGENTS.md 是唯一含 Harness 受管段的指令文件；CLAUDE.md/CODEBUDDY.md
+  // 是用户文件，不再视为 harness-managed。
+  if (path === "AGENTS.md") {
     return "harness-managed";
   }
   return "project";
@@ -318,7 +315,7 @@ function ownershipOf(path: string): "project" | "harness-managed" | "generated" 
 
 export async function validateInstructionGraph(
   projectRoot: string,
-  entrypoint: string | readonly string[] = "CLAUDE.md"
+  entrypoint: string | readonly string[] = "AGENTS.md"
 ): Promise<InstructionGraphResult> {
   const root = resolve(projectRoot);
   const entrypoints = [...new Set(

@@ -41,11 +41,9 @@ describe("CLI/workflow capability contract", () => {
       expect(payload.workflowPackageVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(payload.workflowBundleVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 2 });
-      expect(payload.commands["rules-sync"]).toEqual({ available: true, schemaVersion: 1 });
-      expect(payload.commands["rules-review"]).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands.uninstall).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands.archive).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands.knowledge).toEqual({ available: true, schemaVersion: 1 });
-      expect(payload.commands.instructions).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["harness-push"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["harness-pull"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.capabilities).toEqual(expect.arrayContaining([

@@ -9,7 +9,7 @@ import type {
 import { exactKeys, ordinaryRequestInvariant } from "./stable.js";
 
 const scopes = new Set<UserSyncScope>([
-  "all", "config", "rules", "architecture", "instructions", "branch_files", "archive"
+  "all", "config", "architecture", "instructions", "branch_files", "archive"
 ]);
 
 function object(value: unknown): value is Record<string, unknown> {

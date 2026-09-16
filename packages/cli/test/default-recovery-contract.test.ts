@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  loadAgentBundle,
   sha256Bytes,
   runTransaction,
   stateLayout
@@ -55,7 +54,7 @@ describe("guarded default and recovery command contract", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-status-contract-"));
     const init = outputCapture();
     await seededInit(root, "drc-general", async (seedRoot) => {
-      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+      expect(await runCli(["--non-interactive", "--yes"], {
         cwd: seedRoot,
         ...init.dependencies
       }), init.stderr.join("")).toBe(0);
@@ -94,7 +93,7 @@ describe("guarded default and recovery command contract", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-resume-contract-"));
     const init = outputCapture();
     await seededInit(root, "drc-general", async (seedRoot) => {
-      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+      expect(await runCli(["--non-interactive", "--yes"], {
         cwd: seedRoot,
         ...init.dependencies
       }), init.stderr.join("")).toBe(0);
@@ -139,7 +138,7 @@ describe("guarded default and recovery command contract", () => {
     const initialized = outputCapture();
     await seededInit(root, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies
@@ -207,7 +206,7 @@ describe("guarded default and recovery command contract", () => {
     const initialized = outputCapture();
     await seededInit(source, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies
@@ -286,15 +285,15 @@ describe("guarded default and recovery command contract", () => {
       "state",
       "local",
       "installed-harness-bundle.json"
-    ), "utf8"))).toMatchObject({ schema_version: 4 });
+    ), "utf8"))).toMatchObject({ schema_version: 5 });
   });
 
-  it("resumes a profile transition before target installed state is applied", async () => {
+  it("resumes a config refresh transaction before target installed state is applied", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-transition-resume-"));
     const initialized = outputCapture();
     await seededInit(root, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies
@@ -315,41 +314,21 @@ describe("guarded default and recovery command contract", () => {
     );
     const projectPath = join(root, ".harness", "project.yaml");
     const currentProject = await readFile(projectPath, "utf8");
-    const targetProject = currentProject.replace(
-      /(^|\r?\n)(\s*)- general(\r?\n|$)/,
-      "$1$2- java$3"
-    );
+    // v1.0 project.yaml 无 profiles 段可切换；追加无害注释模拟配置变更事务。
+    const targetProject = `${currentProject.trimEnd()}\n# config refresh touch\n`;
     expect(targetProject).not.toBe(currentProject);
     const installed = JSON.parse(await readFile(installedPath, "utf8")) as {
-      adapters: string[];
-      manifests: Array<{ adapter: string }>;
-      profiles: Record<string, string>;
+      manifests: Array<{
+        surface: string;
+        bundle_version: string;
+        bundle_manifest_hash: string;
+      }>;
       [key: string]: unknown;
     };
-    const targetManifests = [];
-    for (const item of installed.manifests) {
-      const bundle = await loadAgentBundle(
-        resourcesRoot,
-        "java",
-        item.adapter as "claude-code" | "codex" | "cursor" | "codebuddy"
-      );
-      targetManifests.push({
-        adapter: item.adapter,
-        profile: "java",
-        bundle_version: bundle.manifest.bundle_version,
-        bundle_manifest_hash: sha256Bytes(canonicalJson(bundle.manifest.files))
-      });
-    }
-    targetManifests.sort((left, right) =>
-      left.adapter.localeCompare(right.adapter)
+    const targetManifests = [...installed.manifests].sort((left, right) =>
+      left.surface.localeCompare(right.surface)
     );
-    const targetInstalled = {
-      ...installed,
-      profiles: Object.fromEntries(
-        installed.adapters.map((adapter) => [adapter, "java"])
-      ),
-      manifests: targetManifests
-    };
+    const targetInstalled = { ...installed, manifests: targetManifests };
     await expect(runTransaction(root, [
       {
         operation: "add",
@@ -367,7 +346,7 @@ describe("guarded default and recovery command contract", () => {
         content: JSON.stringify(targetInstalled, null, 2) + "\n"
       }
     ], {
-      id: "tx_profile_transition",
+      id: "tx_config_refresh",
       kind: "refresh",
       interruptAfterApply: 1,
       projectIdentity: initJournal.project_identity,
@@ -382,7 +361,7 @@ describe("guarded default and recovery command contract", () => {
     const output = outputCapture();
     expect(await runCli([
       "resume",
-      "tx_profile_transition",
+      "tx_config_refresh",
       "--non-interactive",
       "--yes",
       "--json"
@@ -392,14 +371,11 @@ describe("guarded default and recovery command contract", () => {
     }), output.stdout.join("")).toBe(0);
     expect(JSON.parse(output.stdout.join(""))).toMatchObject({
       status: "COMMITTED",
-      recoveryId: "tx_profile_transition"
+      recoveryId: "tx_config_refresh"
     });
     expect(JSON.parse(await readFile(installedPath, "utf8")))
-      .toMatchObject({
-        profiles: Object.fromEntries(
-          installed.adapters.map((adapter) => [adapter, "java"])
-        )
-      });
+      .toMatchObject({ manifests: targetManifests });
+    expect(await readFile(projectPath, "utf8")).toBe(targetProject);
   });
 
   it("blocks early-init resume when staged project identity drifts", async () => {
@@ -408,7 +384,7 @@ describe("guarded default and recovery command contract", () => {
     const initialized = outputCapture();
     await seededInit(source, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies
@@ -489,7 +465,7 @@ describe("guarded default and recovery command contract", () => {
     const initialized = outputCapture();
     await seededInit(source, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies
@@ -513,23 +489,15 @@ describe("guarded default and recovery command contract", () => {
       "local",
       "installed-harness-bundle.json"
     ), "utf8")) as {
-      adapters: string[];
-      profiles: Record<string, string>;
       manifests: Array<{
-        adapter: string;
-        profile: string;
+        surface: string;
         bundle_version: string;
         bundle_manifest_hash: string;
       }>;
       [key: string]: unknown;
     };
-    const firstAdapter = installed.adapters[0] ?? "";
     const inconsistentInstalled = {
       ...installed,
-      profiles: {
-        ...installed.profiles,
-        [firstAdapter]: "java"
-      },
       manifests: installed.manifests.map((manifest, index) => index === 0
         ? {
           ...manifest,
@@ -589,7 +557,7 @@ describe("guarded default and recovery command contract", () => {
     const initialized = outputCapture();
     await seededInit(source, "drc-general", async (seedRoot) => {
       expect(await runCli([
-        "--profile", "general", "--non-interactive", "--yes"
+        "--non-interactive", "--yes"
       ], {
         cwd: seedRoot,
         ...initialized.dependencies

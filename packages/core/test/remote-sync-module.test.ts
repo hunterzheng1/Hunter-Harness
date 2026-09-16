@@ -23,7 +23,7 @@ const source_ref: SourceRef = {
 function rule(path: string, content: string): ContentFile {
   return {
     path,
-    content_kind: "rule",
+    content_kind: "architecture",
     content_hash: sha256Bytes(content),
     size: Buffer.byteLength(content),
     content
@@ -60,39 +60,39 @@ describe("RemoteSyncModule v1", () => {
     port.seed(source_ref, {
       base_version: "pv_1",
       baseline_files: [
-        rule(".harness/rules/delete.md", "delete\n"),
-        rule(".harness/rules/local.md", "base local\n"),
-        rule(".harness/rules/remote.md", "base remote\n"),
-        rule(".harness/rules/conflict.md", "base conflict\n")
+        rule(".harness/codebase/map/delete.md", "delete\n"),
+        rule(".harness/codebase/map/local.md", "base local\n"),
+        rule(".harness/codebase/map/remote.md", "base remote\n"),
+        rule(".harness/codebase/map/conflict.md", "base conflict\n")
       ],
       local_files: [
-        rule(".harness/rules/add.md", "add\n"),
-        rule(".harness/rules/local.md", "local changed\n"),
-        rule(".harness/rules/remote.md", "base remote\n"),
-        rule(".harness/rules/conflict.md", "local conflict\n")
+        rule(".harness/codebase/map/add.md", "add\n"),
+        rule(".harness/codebase/map/local.md", "local changed\n"),
+        rule(".harness/codebase/map/remote.md", "base remote\n"),
+        rule(".harness/codebase/map/conflict.md", "local conflict\n")
       ],
       remote_files: [
-        rule(".harness/rules/delete.md", "delete\n"),
-        rule(".harness/rules/local.md", "base local\n"),
-        rule(".harness/rules/remote.md", "remote changed\n"),
-        rule(".harness/rules/conflict.md", "remote conflict\n")
+        rule(".harness/codebase/map/delete.md", "delete\n"),
+        rule(".harness/codebase/map/local.md", "base local\n"),
+        rule(".harness/codebase/map/remote.md", "remote changed\n"),
+        rule(".harness/codebase/map/conflict.md", "remote conflict\n")
       ]
     });
     const module = new RemoteSyncModule(port);
 
-    const first = await module.previewPush(["rules"], source_ref);
-    const second = await module.previewPush(["rules"], source_ref);
+    const first = await module.previewPush(["architecture"], source_ref);
+    const second = await module.previewPush(["architecture"], source_ref);
 
     expect(second).toEqual(first);
     expect(first.preview_hash).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(first.operations).toEqual([
-      expect.objectContaining({ path: ".harness/rules/add.md", action: "add" }),
-      expect.objectContaining({ path: ".harness/rules/delete.md", action: "delete" }),
-      expect.objectContaining({ path: ".harness/rules/local.md", action: "modify" })
+      expect.objectContaining({ path: ".harness/codebase/map/add.md", action: "add" }),
+      expect.objectContaining({ path: ".harness/codebase/map/delete.md", action: "delete" }),
+      expect.objectContaining({ path: ".harness/codebase/map/local.md", action: "modify" })
     ]);
     expect(first.conflicts).toEqual([
       expect.objectContaining({
-        path: ".harness/rules/conflict.md",
+        path: ".harness/codebase/map/conflict.md",
         reason_code: "SYNC_CONTENT_CONFLICT"
       })
     ]);
@@ -101,7 +101,7 @@ describe("RemoteSyncModule v1", () => {
 
   it("keeps an intentional local deletion on ordinary pull and binds explicit restore", async () => {
     const port = new InMemoryRemoteSyncPort();
-    const deleted = rule(".harness/rules/deleted.md", "remote value\n");
+    const deleted = rule(".harness/codebase/map/deleted.md", "remote value\n");
     port.seed(source_ref, {
       base_version: "pv_1",
       baseline_files: [deleted],
@@ -109,13 +109,13 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [deleted]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPull(["rules"], source_ref);
+    const preview = await module.previewPull(["architecture"], source_ref);
 
     expect(preview.operations).toEqual([
       expect.objectContaining({ path: deleted.path, action: "restore" })
     ]);
     const ordinary = await module.pull(
-      ["rules"],
+      ["architecture"],
       source_ref,
       confirmation(preview.preview_hash, "pull-ordinary")
     );
@@ -125,7 +125,7 @@ describe("RemoteSyncModule v1", () => {
     ]);
     expect(port.localFiles(source_ref)).toEqual([]);
 
-    const restored = await module.pull(["rules"], source_ref, {
+    const restored = await module.pull(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "pull-restore"),
       conflict_decisions: [{
         path: deleted.path,
@@ -142,12 +142,12 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("applies the pull three-way matrix without overwriting local-only changes", async () => {
-    const remoteAdd = rule(".harness/rules/a-remote-add.md", "remote add\n");
-    const remoteDeleteBase = rule(".harness/rules/b-remote-delete.md", "delete base\n");
-    const localOnlyBase = rule(".harness/rules/c-local-only.md", "local base\n");
-    const remoteOnlyBase = rule(".harness/rules/d-remote-only.md", "remote base\n");
-    const sameBase = rule(".harness/rules/e-same.md", "same base\n");
-    const conflictBase = rule(".harness/rules/f-conflict.md", "conflict base\n");
+    const remoteAdd = rule(".harness/codebase/map/a-remote-add.md", "remote add\n");
+    const remoteDeleteBase = rule(".harness/codebase/map/b-remote-delete.md", "delete base\n");
+    const localOnlyBase = rule(".harness/codebase/map/c-local-only.md", "local base\n");
+    const remoteOnlyBase = rule(".harness/codebase/map/d-remote-only.md", "remote base\n");
+    const sameBase = rule(".harness/codebase/map/e-same.md", "same base\n");
+    const conflictBase = rule(".harness/codebase/map/f-conflict.md", "conflict base\n");
     const localOnly = rule(localOnlyBase.path, "local changed\n");
     const remoteOnly = rule(remoteOnlyBase.path, "remote changed\n");
     const localConflict = rule(conflictBase.path, "local conflict\n");
@@ -164,7 +164,7 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [remoteAdd, localOnlyBase, remoteOnly, sameBase, remoteConflict]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPull(["rules"], source_ref);
+    const preview = await module.previewPull(["architecture"], source_ref);
 
     expect(preview.operations).toEqual([
       expect.objectContaining({ path: remoteAdd.path, action: "add" }),
@@ -179,7 +179,7 @@ describe("RemoteSyncModule v1", () => {
         reason_code: "SYNC_CONTENT_CONFLICT"
       })
     ]);
-    const receipt = await module.pull(["rules"], source_ref, {
+    const receipt = await module.pull(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "pull-matrix"),
       conflict_decisions: [{
         path: conflictBase.path,
@@ -200,21 +200,21 @@ describe("RemoteSyncModule v1", () => {
   it("rejects stale confirmation after the locked view changes", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/a.md", "local\n")],
+      local_files: [rule(".harness/codebase/map/a.md", "local\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
-    port.setRemoteFiles(source_ref, [rule(".harness/rules/a.md", "concurrent\n")]);
+    const preview = await module.previewPush(["architecture"], source_ref);
+    port.setRemoteFiles(source_ref, [rule(".harness/codebase/map/a.md", "concurrent\n")]);
 
     await expect(module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "push-stale")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "push-stale")
     )).rejects.toMatchObject({ code: "SYNC_PREVIEW_STALE", retryable: false });
     expect(port.versionCount(source_ref)).toBe(0);
   });
 
   it("does not create an empty version", async () => {
-    const file = rule(".harness/rules/same.md", "same\n");
+    const file = rule(".harness/codebase/map/same.md", "same\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
@@ -223,9 +223,9 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [file]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "no-change")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "no-change")
     );
 
     expect(receipt.no_changes).toBe(true);
@@ -234,19 +234,19 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("deduplicates blobs across immutable branch snapshot versions", async () => {
-    const shared = rule(".harness/rules/shared.md", "shared\n");
+    const shared = rule(".harness/codebase/map/shared.md", "shared\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [shared], remote_files: [] });
     const module = new RemoteSyncModule(port);
 
-    const first = await module.previewPush(["rules"], source_ref);
-    await module.push(["rules"], source_ref, confirmation(first.preview_hash, "push-1"));
+    const first = await module.previewPush(["architecture"], source_ref);
+    await module.push(["architecture"], source_ref, confirmation(first.preview_hash, "push-1"));
     port.setLocalFiles(source_ref, [
       shared,
-      rule(".harness/rules/second.md", "second\n")
+      rule(".harness/codebase/map/second.md", "second\n")
     ]);
-    const second = await module.previewPush(["rules"], source_ref);
-    await module.push(["rules"], source_ref, confirmation(second.preview_hash, "push-2"));
+    const second = await module.previewPush(["architecture"], source_ref);
+    await module.push(["architecture"], source_ref, confirmation(second.preview_hash, "push-2"));
 
     expect(port.versionCount(source_ref)).toBe(2);
     expect(port.blobCount(source_ref)).toBe(2);
@@ -256,27 +256,27 @@ describe("RemoteSyncModule v1", () => {
   it("returns the same receipt for an identical idempotent push and rejects key reuse", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/a.md", "a\n")],
+      local_files: [rule(".harness/codebase/map/a.md", "a\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const input = confirmation(preview.preview_hash, "same-key");
-    const first = await module.push(["rules"], source_ref, input);
-    const repeated = await module.push(["rules"], source_ref, input);
+    const first = await module.push(["architecture"], source_ref, input);
+    const repeated = await module.push(["architecture"], source_ref, input);
     expect(repeated).toEqual(first);
     expect(await new RemoteSyncModule(port).push(
-      ["rules"], source_ref, input
+      ["architecture"], source_ref, input
     )).toEqual(first);
     expect(await new RemoteSyncModule(port).getSyncStatus(source_ref)).toMatchObject({
       last_push: first
     });
     expect(port.versionCount(source_ref)).toBe(1);
 
-    port.setLocalFiles(source_ref, [rule(".harness/rules/a.md", "different\n")]);
-    const different = await module.previewPush(["rules"], source_ref);
+    port.setLocalFiles(source_ref, [rule(".harness/codebase/map/a.md", "different\n")]);
+    const different = await module.previewPush(["architecture"], source_ref);
     await expect(module.push(
-      ["rules"], source_ref, confirmation(different.preview_hash, "same-key")
+      ["architecture"], source_ref, confirmation(different.preview_hash, "same-key")
     )).rejects.toMatchObject({ code: "SYNC_IDEMPOTENCY_CONFLICT" });
   });
 
@@ -285,7 +285,7 @@ describe("RemoteSyncModule v1", () => {
       ...source_ref,
       branch_name: "feature branch"
     };
-    const file = rule(".harness/rules/same.md", "same\n");
+    const file = rule(".harness/codebase/map/same.md", "same\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(sourceWithSpaces, {
       base_version: "pv_1",
@@ -296,10 +296,10 @@ describe("RemoteSyncModule v1", () => {
     const lookup = vi.spyOn(port, "getIdempotentSyncReceipt");
     const store = vi.spyOn(port, "storeIdempotentSyncReceipt");
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], sourceWithSpaces);
+    const preview = await module.previewPush(["architecture"], sourceWithSpaces);
 
     await module.push(
-      ["rules"],
+      ["architecture"],
       sourceWithSpaces,
       confirmation(preview.preview_hash, "caller key with spaces")
     );
@@ -315,17 +315,17 @@ describe("RemoteSyncModule v1", () => {
   it("serializes concurrent retries with the same idempotency key to one receipt", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/once.md", "once\n")],
+      local_files: [rule(".harness/codebase/map/once.md", "once\n")],
       remote_files: []
     });
     const firstClient = new RemoteSyncModule(port);
     const secondClient = new RemoteSyncModule(port);
-    const preview = await firstClient.previewPush(["rules"], source_ref);
+    const preview = await firstClient.previewPush(["architecture"], source_ref);
     const input = confirmation(preview.preview_hash, "concurrent-same-key");
 
     const [first, second] = await Promise.all([
-      firstClient.push(["rules"], source_ref, input),
-      secondClient.push(["rules"], source_ref, input)
+      firstClient.push(["architecture"], source_ref, input),
+      secondClient.push(["architecture"], source_ref, input)
     ]);
     expect(second).toEqual(first);
     expect(port.versionCount(source_ref)).toBe(1);
@@ -494,23 +494,23 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("defends cached sync and archive receipts from caller mutation", async () => {
-    const file = rule(".harness/rules/immutable-receipt.md", "immutable\n");
+    const file = rule(".harness/codebase/map/immutable-receipt.md", "immutable\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [file], remote_files: [] });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const input = confirmation(preview.preview_hash, "immutable-sync-receipt");
-    const first = await module.push(["rules"], source_ref, input);
+    const first = await module.push(["architecture"], source_ref, input);
     const firstApplied = first.applied[0];
     const previewOperation = preview.operations[0];
     if (firstApplied === undefined || previewOperation === undefined) {
       throw new Error("expected applied operation");
     }
-    firstApplied.path = ".harness/rules/polluted.md";
-    firstApplied.source_path = ".harness/rules/polluted-source.md";
+    firstApplied.path = ".harness/codebase/map/polluted.md";
+    firstApplied.source_path = ".harness/codebase/map/polluted-source.md";
     first.skipped.push({ ...previewOperation, path: "polluted-skipped" });
     first.retryable.push({ ...previewOperation, path: "polluted-retryable" });
-    const replay = await module.push(["rules"], source_ref, input);
+    const replay = await module.push(["architecture"], source_ref, input);
     expect(replay).not.toBe(first);
     expect(replay.applied).toEqual(preview.operations);
     expect(replay.skipped).toEqual([]);
@@ -540,8 +540,8 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("rolls back every local file when a pull transaction fails", async () => {
-    const first = rule(".harness/rules/a.md", "old a\n");
-    const second = rule(".harness/rules/b.md", "old b\n");
+    const first = rule(".harness/codebase/map/a.md", "old a\n");
+    const second = rule(".harness/codebase/map/b.md", "old b\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
@@ -554,9 +554,9 @@ describe("RemoteSyncModule v1", () => {
     });
     port.failPullAfterApply(1);
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPull(["rules"], source_ref);
+    const preview = await module.previewPull(["architecture"], source_ref);
     const receipt = await module.pull(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "pull-fail")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "pull-fail")
     );
 
     expect(receipt).toMatchObject({
@@ -573,16 +573,16 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
-      baseline_files: [rule(".harness/rules/old.md", content)],
-      local_files: [rule(".harness/rules/new.md", content)],
-      remote_files: [rule(".harness/rules/old.md", content)]
+      baseline_files: [rule(".harness/codebase/map/old.md", content)],
+      local_files: [rule(".harness/codebase/map/new.md", content)],
+      remote_files: [rule(".harness/codebase/map/old.md", content)]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.operations).toEqual([{
-      path: ".harness/rules/new.md",
-      source_path: ".harness/rules/old.md",
-      content_kind: "rule",
+      path: ".harness/codebase/map/new.md",
+      source_path: ".harness/codebase/map/old.md",
+      content_kind: "architecture",
       action: "rename",
       local_hash: sha256Bytes(content),
       remote_hash: undefined,
@@ -602,21 +602,21 @@ describe("RemoteSyncModule v1", () => {
 
   it("binds a Pull rename local hash to the source file", async () => {
     const content = "renamed remotely\n";
-    const oldFile = rule(".harness/rules/old.md", content);
+    const oldFile = rule(".harness/codebase/map/old.md", content);
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
       baseline_files: [oldFile],
       local_files: [oldFile],
-      remote_files: [rule(".harness/rules/new.md", content)]
+      remote_files: [rule(".harness/codebase/map/new.md", content)]
     });
 
-    const preview = await new RemoteSyncModule(port).previewPull(["rules"], source_ref);
+    const preview = await new RemoteSyncModule(port).previewPull(["architecture"], source_ref);
 
     expect(preview.operations).toEqual([{
-      path: ".harness/rules/new.md",
-      source_path: ".harness/rules/old.md",
-      content_kind: "rule",
+      path: ".harness/codebase/map/new.md",
+      source_path: ".harness/codebase/map/old.md",
+      content_kind: "architecture",
       action: "rename",
       local_hash: oldFile.content_hash,
       remote_hash: oldFile.content_hash,
@@ -662,11 +662,11 @@ describe("RemoteSyncModule v1", () => {
 
     const rulePort = new InMemoryRemoteSyncPort();
     rulePort.seed(source_ref, {
-      local_files: [rule(".harness/rules/secret.md", secret)],
+      local_files: [rule(".harness/codebase/map/secret.md", secret)],
       remote_files: []
     });
     const ruleModule = new RemoteSyncModule(rulePort, { sensitiveScanPolicy: "block" });
-    const preview = await ruleModule.previewPush(["rules"], source_ref);
+    const preview = await ruleModule.previewPush(["architecture"], source_ref);
     expect(preview.security_scan).toMatchObject({
       scan_performed: false,
       blocked: false,
@@ -674,7 +674,7 @@ describe("RemoteSyncModule v1", () => {
       findings: []
     });
     const receipt = await ruleModule.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
     );
     expect(receipt.applied).toEqual(preview.operations);
     expect(rulePort.versionCount(source_ref)).toBe(1);
@@ -683,11 +683,11 @@ describe("RemoteSyncModule v1", () => {
   it("扫描停用后 push 无需 scan_confirmation 授权即可执行", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/review.md", "password=supersecret\n")],
+      local_files: [rule(".harness/codebase/map/review.md", "password=supersecret\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan).toMatchObject({
       scan_performed: false,
       blocked: false,
@@ -697,14 +697,14 @@ describe("RemoteSyncModule v1", () => {
     });
 
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
     );
     expect(receipt.applied).toEqual(preview.operations);
     expect(port.versionCount(source_ref)).toBe(1);
   });
 
   it("冲突决策 accept_remote 保留远端：本地含密钥文件不上传（与扫描无关）", async () => {
-    const path = ".harness/rules/not-uploaded.md";
+    const path = ".harness/codebase/map/not-uploaded.md";
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
@@ -716,9 +716,9 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [rule(path, "safe remote change\n")]
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan.hard_blocked).toBe(false);
-    const receipt = await module.push(["rules"], source_ref, {
+    const receipt = await module.push(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "keep-safe-remote"),
       conflict_decisions: [{
         path,
@@ -737,13 +737,13 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
-        ".harness/rules/secret.md",
+        ".harness/codebase/map/secret.md",
         "Authorization: Bearer secret-token-value-1234567890"
       )],
       remote_files: []
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "warn" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan).toMatchObject({
       scan_performed: false,
       blocked: false,
@@ -752,7 +752,7 @@ describe("RemoteSyncModule v1", () => {
       findings: []
     });
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "warn-policy")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "warn-policy")
     );
     expect(receipt.applied).toEqual(preview.operations);
     expect(port.versionCount(source_ref)).toBe(1);
@@ -762,16 +762,16 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
-        ".harness/rules/secret.md",
+        ".harness/codebase/map/secret.md",
         "Authorization: Bearer secret-token-value-1234567890"
       )],
       remote_files: []
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "off" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan).toMatchObject({ blocked: false, findings: [] });
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-off")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "scan-off")
     );
     expect(receipt.applied).toEqual(preview.operations);
   });
@@ -780,13 +780,13 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
-        ".harness/rules/db.md",
+        ".harness/codebase/map/db.md",
         "微服务模式使用 MySQL：`jdbc:mysql://10.1.2.3:3312/app_db`。\n"
       )],
       remote_files: []
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan.findings).toEqual([]);
     expect(preview.security_scan.hard_blocked).toBe(false);
   });
@@ -795,17 +795,17 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
-        ".harness/rules/db.md",
+        ".harness/codebase/map/db.md",
         "postgres://app_user:hunter2secret@db.internal:5432/app\n"
       )],
       remote_files: []
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     expect(preview.security_scan.findings).toEqual([]);
     expect(preview.security_scan.hard_blocked).toBe(false);
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "db-disabled")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "db-disabled")
     );
     expect(receipt.applied).toEqual(preview.operations);
   });
@@ -814,18 +814,18 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     const module = new RemoteSyncModule(port);
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/b.md", "b\n"), rule(".harness/rules/a.md", "a\n")],
+      local_files: [rule(".harness/codebase/map/b.md", "b\n"), rule(".harness/codebase/map/a.md", "a\n")],
       remote_files: []
     });
-    const first = await module.previewPush(["rules"], source_ref);
+    const first = await module.previewPush(["architecture"], source_ref);
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(first.preview_hash, "page-v1")
+      ["architecture"], source_ref, confirmation(first.preview_hash, "page-v1")
     );
     const feature = { ...source_ref, branch_name: "feature", commit_sha: "fedcba654321" };
-    port.seed(feature, { local_files: [rule(".harness/rules/c.md", "c\n")], remote_files: [] });
-    const featurePreview = await module.previewPush(["rules"], feature);
+    port.seed(feature, { local_files: [rule(".harness/codebase/map/c.md", "c\n")], remote_files: [] });
+    const featurePreview = await module.previewPush(["architecture"], feature);
     await module.push(
-      ["rules"], feature, confirmation(featurePreview.preview_hash, "page-v2")
+      ["architecture"], feature, confirmation(featurePreview.preview_hash, "page-v2")
     );
 
     const branches1 = await module.listBranchSnapshots(
@@ -850,23 +850,23 @@ describe("RemoteSyncModule v1", () => {
       { project_id: source_ref.project_id, artifact_id }, files1.next_cursor, 1
     );
     expect([...files1.items, ...files2.items].map((file) => file.path)).toEqual([
-      ".harness/rules/a.md", ".harness/rules/b.md"
+      ".harness/codebase/map/a.md", ".harness/codebase/map/b.md"
     ]);
     expect(await module.getSnapshotFile(
       { project_id: source_ref.project_id, artifact_id },
-      ".harness/rules/a.md"
-    )).toMatchObject({ path: ".harness/rules/a.md" });
+      ".harness/codebase/map/a.md"
+    )).toMatchObject({ path: ".harness/codebase/map/a.md" });
   });
 
   it("keeps remote failures retryable without mutating a successful local state", async () => {
-    const file = rule(".harness/rules/local.md", "local\n");
+    const file = rule(".harness/codebase/map/local.md", "local\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [file], remote_files: [] });
     port.failNextPush(new RemoteSyncError("REMOTE_UNAVAILABLE", true));
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "push-offline")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "push-offline")
     );
 
     expect(receipt.reason_code).toBe("REMOTE_UNAVAILABLE");
@@ -878,14 +878,14 @@ describe("RemoteSyncModule v1", () => {
   it("rolls back a push snapshot and CAS when atomic receipt storage fails", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/atomic.md", "atomic\n")],
+      local_files: [rule(".harness/codebase/map/atomic.md", "atomic\n")],
       remote_files: []
     });
     port.failPushAfterSnapshot();
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "push-atomic-fail")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "push-atomic-fail")
     );
 
     expect(receipt.reason_code).toBe("REMOTE_PUBLISH_FAILED");
@@ -895,14 +895,14 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("returns a retryable lock failure without mutating local or remote state", async () => {
-    const file = rule(".harness/rules/lock.md", "lock\n");
+    const file = rule(".harness/codebase/map/lock.md", "lock\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [file], remote_files: [] });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     port.failNextLock();
     const receipt = await module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "lock-fail")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "lock-fail")
     );
 
     expect(receipt).toMatchObject({
@@ -917,14 +917,14 @@ describe("RemoteSyncModule v1", () => {
   it("does not downgrade a port compare-and-swap stale error to remote failure", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/cas.md", "cas\n")],
+      local_files: [rule(".harness/codebase/map/cas.md", "cas\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     port.failNextPush(new RemoteSyncError("SYNC_PREVIEW_STALE"));
     await expect(module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "cas-stale")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "cas-stale")
     )).rejects.toMatchObject({ code: "SYNC_PREVIEW_STALE" });
     expect(port.versionCount(source_ref)).toBe(0);
   });
@@ -967,17 +967,17 @@ describe("RemoteSyncModule v1", () => {
   it("retries a transient remote failure with the same idempotency identity", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/retry.md", "retry\n")],
+      local_files: [rule(".harness/codebase/map/retry.md", "retry\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const input = confirmation(preview.preview_hash, "retry-key");
     port.failNextPush(new RemoteSyncError("REMOTE_UNAVAILABLE", true));
 
-    const failed = await module.push(["rules"], source_ref, input);
+    const failed = await module.push(["architecture"], source_ref, input);
     expect(failed.retryable).toEqual(preview.operations);
-    const succeeded = await module.push(["rules"], source_ref, input);
+    const succeeded = await module.push(["architecture"], source_ref, input);
     expect(succeeded.retryable).toEqual([]);
     expect(succeeded.applied).toEqual(preview.operations);
     expect(port.versionCount(source_ref)).toBe(1);
@@ -986,14 +986,14 @@ describe("RemoteSyncModule v1", () => {
   it("serializes two clients and rejects the second confirmation after the first commit", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
-      local_files: [rule(".harness/rules/race.md", "race\n")],
+      local_files: [rule(".harness/codebase/map/race.md", "race\n")],
       remote_files: []
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const outcomes = await Promise.allSettled([
-      module.push(["rules"], source_ref, confirmation(preview.preview_hash, "race-a")),
-      module.push(["rules"], source_ref, confirmation(preview.preview_hash, "race-b"))
+      module.push(["architecture"], source_ref, confirmation(preview.preview_hash, "race-a")),
+      module.push(["architecture"], source_ref, confirmation(preview.preview_hash, "race-b"))
     ]);
 
     expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
@@ -1006,7 +1006,7 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("requires an explicit per-path decision when both sides changed", async () => {
-    const base = rule(".harness/rules/conflict.md", "base\n");
+    const base = rule(".harness/codebase/map/conflict.md", "base\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
@@ -1015,12 +1015,12 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [rule(base.path, "remote\n")]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     await expect(module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "conflict-missing")
+      ["architecture"], source_ref, confirmation(preview.preview_hash, "conflict-missing")
     )).rejects.toMatchObject({ code: "SYNC_CONFLICT_DECISION_REQUIRED" });
 
-    const receipt = await module.push(["rules"], source_ref, {
+    const receipt = await module.push(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "conflict-local"),
       conflict_decisions: [{
         path: base.path,
@@ -1034,7 +1034,7 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("rejects duplicate or unrelated conflict decisions", async () => {
-    const base = rule(".harness/rules/decision.md", "base\n");
+    const base = rule(".harness/codebase/map/decision.md", "base\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       base_version: "pv_1",
@@ -1043,37 +1043,37 @@ describe("RemoteSyncModule v1", () => {
       remote_files: [rule(base.path, "remote\n")]
     });
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], source_ref);
+    const preview = await module.previewPush(["architecture"], source_ref);
     const decision = {
       path: base.path,
       resolution: "keep_local" as const,
       expected_preview_hash: preview.preview_hash
     };
-    await expect(module.push(["rules"], source_ref, {
+    await expect(module.push(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "duplicate-decision"),
       conflict_decisions: [decision, decision]
     })).rejects.toMatchObject({ code: "SYNC_CONFLICT_DECISION_INVALID" });
-    await expect(module.push(["rules"], source_ref, {
+    await expect(module.push(["architecture"], source_ref, {
       ...confirmation(preview.preview_hash, "unrelated-decision"),
-      conflict_decisions: [{ ...decision, path: ".harness/rules/other.md" }]
+      conflict_decisions: [{ ...decision, path: ".harness/codebase/map/other.md" }]
     })).rejects.toMatchObject({ code: "SYNC_CONFLICT_DECISION_INVALID" });
   });
 
   it("keeps historical file details bound to artifact_id rather than latest", async () => {
-    const path = ".harness/rules/history.md";
+    const path = ".harness/codebase/map/history.md";
     const oldFile = rule(path, "old\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [oldFile], remote_files: [] });
     const module = new RemoteSyncModule(port);
-    const oldPreview = await module.previewPush(["rules"], source_ref);
+    const oldPreview = await module.previewPush(["architecture"], source_ref);
     const oldReceipt = await module.push(
-      ["rules"], source_ref, confirmation(oldPreview.preview_hash, "history-old")
+      ["architecture"], source_ref, confirmation(oldPreview.preview_hash, "history-old")
     );
     const newFile = rule(path, "new\n");
     port.setLocalFiles(source_ref, [newFile]);
-    const newPreview = await module.previewPush(["rules"], source_ref);
+    const newPreview = await module.previewPush(["architecture"], source_ref);
     const newReceipt = await module.push(
-      ["rules"], source_ref, confirmation(newPreview.preview_hash, "history-new")
+      ["architecture"], source_ref, confirmation(newPreview.preview_hash, "history-new")
     );
     if (oldReceipt.artifact_id === undefined || newReceipt.artifact_id === undefined) {
       throw new Error("history receipts require artifact ids");
@@ -1090,18 +1090,18 @@ describe("RemoteSyncModule v1", () => {
   });
 
   it("records a deletion tombstone in the new snapshot and keeps the old version readable", async () => {
-    const deleted = rule(".harness/rules/deleted-history.md", "historic\n");
+    const deleted = rule(".harness/codebase/map/deleted-history.md", "historic\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, { local_files: [deleted], remote_files: [] });
     const module = new RemoteSyncModule(port);
-    const firstPreview = await module.previewPush(["rules"], source_ref);
+    const firstPreview = await module.previewPush(["architecture"], source_ref);
     const first = await module.push(
-      ["rules"], source_ref, confirmation(firstPreview.preview_hash, "delete-history-v1")
+      ["architecture"], source_ref, confirmation(firstPreview.preview_hash, "delete-history-v1")
     );
     port.setLocalFiles(source_ref, []);
-    const deletePreview = await module.previewPush(["rules"], source_ref);
+    const deletePreview = await module.previewPush(["architecture"], source_ref);
     const second = await module.push(
-      ["rules"], source_ref, confirmation(deletePreview.preview_hash, "delete-history-v2")
+      ["architecture"], source_ref, confirmation(deletePreview.preview_hash, "delete-history-v2")
     );
     if (first.artifact_id === undefined || second.artifact_id === undefined) {
       throw new Error("deletion history requires artifact ids");
@@ -1144,32 +1144,32 @@ describe("RemoteSyncModule v1", () => {
     await expect(module.getSnapshotFile({
       project_id: source_ref.project_id,
       artifact_id: "art_missing"
-    }, ".harness/rules/a.md")).rejects.toMatchObject({
+    }, ".harness/codebase/map/a.md")).rejects.toMatchObject({
       code: "SYNC_SNAPSHOT_NOT_FOUND"
     });
   });
 
   it("rejects duplicate and case-colliding canonical paths", async () => {
-    const duplicate = rule(".harness/rules/a.md", "one\n");
+    const duplicate = rule(".harness/codebase/map/a.md", "one\n");
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [duplicate, rule(duplicate.path, "two\n")],
       remote_files: []
     });
     await expect(new RemoteSyncModule(port).previewPush(
-      ["rules"], source_ref
+      ["architecture"], source_ref
     )).rejects.toMatchObject({ code: "SYNC_PATH_COLLISION" });
 
     const casePort = new InMemoryRemoteSyncPort();
     casePort.seed(source_ref, {
       local_files: [
-        rule(".harness/rules/A.md", "one\n"),
-        rule(".harness/rules/a.md", "two\n")
+        rule(".harness/codebase/map/A.md", "one\n"),
+        rule(".harness/codebase/map/a.md", "two\n")
       ],
       remote_files: []
     });
     await expect(new RemoteSyncModule(casePort).previewPush(
-      ["rules"], source_ref
+      ["architecture"], source_ref
     )).rejects.toMatchObject({ code: "SYNC_PATH_COLLISION" });
   });
 
@@ -1186,7 +1186,7 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(fixture.source_ref, fixture);
     const module = new RemoteSyncModule(port);
-    const preview = await module.previewPush(["rules"], fixture.source_ref);
+    const preview = await module.previewPush(["architecture"], fixture.source_ref);
     expect(preview.source_ref.branch_name).toBe("unmarked");
     expect(preview.conflicts).toEqual([
       expect.objectContaining({ reason_code: "SYNC_CONTENT_CONFLICT" })
@@ -1211,7 +1211,7 @@ describe("RemoteSyncModule v1", () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(migrated.source_ref, migrated);
     expect((await new RemoteSyncModule(port).previewPush(
-      ["rules"], migrated.source_ref
+      ["architecture"], migrated.source_ref
     )).source_ref).toEqual(migrated.source_ref);
     expect(() => migrateLegacySyncFixture({
       schema_version: 0,

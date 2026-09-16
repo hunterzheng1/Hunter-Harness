@@ -100,7 +100,7 @@ export class HunterHarnessApiClient {
 
   constructor(options: ApiClientOptions) {
     const url = new URL(options.serverUrl);
-    if (!isAllowedServerUrl(url.toString())) {
+    if (!isAllowedServerUrl(url.toString(), true)) {
       throw new Error("server URL must use HTTPS unless it targets localhost");
     }
     if (options.token.trim() === "") {
@@ -409,43 +409,6 @@ export class HunterHarnessApiClient {
       );
     }
     return verified.data;
-  }
-
-  async createInstructionProposal(options: {
-    projectId: string;
-    body: object;
-    requestId: string;
-    idempotencyKey: string;
-  }): Promise<{
-    schema_version: 1;
-    proposal_id: string;
-    project_id: string;
-    language: "zh-CN";
-    mode: "audit-propose";
-    applied: false;
-    generated_at: string;
-    findings: Array<Record<string, unknown>>;
-    files: Array<{
-      path: string;
-      operation: "add" | "modify";
-      base_content_sha256: string | null;
-      content_sha256: string;
-      content: string;
-    }>;
-    rule_candidates: Array<Record<string, unknown>>;
-    basis: string[];
-    request_id: string;
-  }> {
-    return this.request(
-      "POST",
-      "/api/v1/projects/" + encodeURIComponent(options.projectId) +
-        "/instruction-proposals",
-      {
-        requestId: options.requestId,
-        idempotencyKey: options.idempotencyKey,
-        body: options.body
-      }
-    );
   }
 
   async finalizeProposal(

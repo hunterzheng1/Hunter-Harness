@@ -36,13 +36,13 @@ CLI 按以下顺序解析 Python，并在详细报告中记录来源：
 交互式：
 
 ```powershell
-npx hunter-harness sync --project <项目路径> --profile interactive --progress jsonl --json
+npx hunter-harness sync --project <项目路径> --progress jsonl --json
 ```
 
 CI/非交互式：
 
 ```powershell
-npx hunter-harness sync --check --project <项目路径> --profile general --progress jsonl --json
+npx hunter-harness sync --check --project <项目路径> --progress jsonl --json
 ```
 
 `--check` 是严格只读检查；`--dry-run` 是兼容别名。两者都不生成持久报告、receipt 或
@@ -85,9 +85,8 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 | 组件 | 核心证据 | 失败/警告原则 |
 |---|---|---|
 | capability | CLI 版本、必需能力 | 不匹配立即 `BLOCKED` |
-| adapter projection | 事务后的实际文件 hash | 使用 post-transaction 校验；partial refresh 不得把未选 adapter 标成 stale |
+| projection | 事务后的实际文件 hash | 使用 post-transaction 校验 |
 | knowledge | 远端职责声明 | 固定报告 `remote-only`、`fallback=false`、`localIndex=false`；不运行本地 ingest |
-| rules | 审计—提案—应用契约 | `sync` 只给出 `instructions audit` 下一步，不改写文档或自动应用候选 |
 | codebase map | manifest 文档清单、hash、生成时间 | 真实文件校验，不复用旧 display status |
 | instruction graph | 入口、include 边、环、主题可达性 | 缺失引用或循环为 `FAIL` |
 | config origins | canonical/projection 路径与 hash | 漂移 `WARN`，不静默覆盖 |
@@ -103,7 +102,7 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 
 CodeGraph 状态探测优先读取 `codegraph status --json` 的权威 pending 列表；只有该 API
 不可用时才退回受限文件扫描，并把来源标成 `database-scan` 或 `unverified`。`.agents/`、
-`.cursor/`、`.claude/` 等 Adapter 投影和 Markdown 文档不计入源码 pending。daemon log
+`.codebuddy/` 等投影和 Markdown 文档不计入源码 pending。daemon log
 mtime 只写入 `watcherObservedAt`，不能冒充 `indexObservedAt`。服务可达、watcher 已启用
 且权威 `pendingFileCount=0` 时为 `CURRENT`。如果 API 不可用，但本地索引存在且受限扫描
 确认 `pendingFileCount=0`，返回 `ADVISORY / INDEX_PRESENT_UNVERIFIED`：索引仍可用于查询，
@@ -112,17 +111,12 @@ mtime 只写入 `watcherObservedAt`，不能冒充 `indexObservedAt`。服务可
 
 ## 6. Instruction graph
 
-只验证当前已启用 Agent 对应的入口文档及其引用图，而不是固定要求所有 Adapter 文件：
+v1.0 指令文件收敛为 `AGENTS.md` 单入口：只验证它是否存在、Harness 管理段（核心段与
+经验规则段）是否完整；`CLAUDE.md`/`CODEBUDDY.md` 不再由 Harness 生成或验证（用户手写
+的 CLAUDE.md 属于用户文件，`sync` 不触碰）。
 
-- `AGENTS.md` 是共享入口，始终验证。
-- 仅启用 Claude Code 时验证 `CLAUDE.md`。
-- 仅启用 CodeBuddy 时验证 `CODEBUDDY.md`。
-- Codex 和 Cursor 不要求额外生成 `CLAUDE.md` 或 `CODEBUDDY.md`。
-
-- Claude 可单向引用 AGENTS，共享约束保持单一真源。
-- 禁止 AGENTS 反向引用 CLAUDE 形成环。
 - 最多读取 64 个文件、深度 8、总量 512 KiB。
-- 入口可以很薄；主题只需通过引用图可达，不要求复制到每个入口。
+- 入口可以很薄；主题只需通过引用图可达，不要求复制到入口。
 
 ## 7. Config origins
 
@@ -144,22 +138,11 @@ npx hunter-harness doctor --managed-blocks --json
 
 change cleanup 由同步报告提供具体动作。只允许已验证的 `ARCHIVED_LEFTOVER` 进入删除路径；`RECOVERABLE` 只能移入隔离区；`ORPHAN`/`INVALID` 保持原状并提示人工处理。
 
-## 9. 中文指令与规则提案
+## 9. 经验规则自动学习
 
-`sync` 只报告 `INSTRUCTION_AUDIT_REQUIRED`。需要优化时执行：
-
-```powershell
-npx hunter-harness instructions audit --json
-```
-
-服务端结合项目类型、现有文档、Codebase Map、近期变更总结和公开最佳实践生成中文提案。
-提案先保存到 `.harness/state/local/instruction-proposals/`，项目文件保持不变。审阅后显式执行：
-
-```powershell
-npx hunter-harness instructions apply --proposal <proposal.json> --yes --json
-```
-
-应用必须校验基线 hash 并使用事务；文件在审计后变化则返回 `INSTRUCTION_PROPOSAL_STALE`。
+经验规则由归档（archive finalize）自动学习：高置信、通过注入过滤的候选幂等写入
+AGENTS.md 的"经验规则"受管段，随归档自动刷新。无人工评审队列，无 instructions
+audit/apply 提案流；`sync` 只校验该受管段的完整性。
 近期变更中的经验只形成 rule candidates，`instructions apply` 也不得自动写入这些候选。
 
 ## 10. 完成判定

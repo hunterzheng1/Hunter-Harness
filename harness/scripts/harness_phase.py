@@ -43,7 +43,6 @@ VALIDATION_PHASES = {
     "apiTest": "execute",
     "browserTest": "execute",
     "dbCompatibility": "execute",
-    "package": "package",
 }
 FINAL_SEQUENCE_RECEIPTS_REL = (
     Path("evidence") / "final-sequence-receipts.json"

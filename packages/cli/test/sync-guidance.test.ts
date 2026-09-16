@@ -15,9 +15,8 @@ describe("harness-sync interaction guidance", () => {
     expect(skill).toContain("生成 Codebase Map");
     expect(skill).toContain("STACK.md");
     expect(skill).toContain("map-summary.md");
-    expect(skill).toContain("运行指令审计");
-    expect(skill).toContain("生成中文优化提案");
-    expect(skill).toContain("不会直接修改项目文档");
+    expect(skill).toContain("检查 CodeGraph 后台同步");
+    expect(skill).toContain("不会修改源码");
     expect(skill).toContain("保持现状");
   });
 

@@ -4,13 +4,21 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  getAdapter,
-  HARNESS_AGENT_ORDER,
-  managedTargetsFor
+  CANONICAL_SURFACE,
+  CODEBUDDY_SKILLS_ROOT,
+  CODEBUDDY_SURFACE,
+  contextIndexEntryFor,
+  INSTRUCTION_FILE,
+  PRIMARY_SKILLS_ROOT,
+  projectBundleToSurface,
+  pruneBoundaries,
+  skillsRootFor
 } from "../src/project/agent-adapters.js";
 import {
-  loadAgentBundle,
-  type LoadedAgentBundle
+  FIXED_PROFILE,
+  loadBundle,
+  PROJECTION_SURFACES,
+  type ProjectionSurface
 } from "../src/project/profile-bundle.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
@@ -19,17 +27,14 @@ function shaHex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function syntheticBundle(
-  agent: "claude-code" | "codex" | "cursor" | "codebuddy" | "pi",
-  entries: Array<{ path: string; bytes: Uint8Array }>
-): LoadedAgentBundle {
+function syntheticBundle(entries: Array<{ path: string; bytes: Uint8Array }>) {
   const files = new Map<string, Uint8Array>();
   for (const entry of entries) files.set(entry.path, entry.bytes);
   return {
     manifest: {
-      schema_version: 2,
-      profile: "general",
-      adapter: agent,
+      schema_version: 2 as const,
+      profile: FIXED_PROFILE,
+      adapter: CANONICAL_SURFACE,
       bundle_version: "0.0.0-test",
       generator: "harness_deploy.py",
       files: entries.map((entry) => ({
@@ -41,154 +46,101 @@ function syntheticBundle(
   };
 }
 
-describe("agent adapters", () => {
-  it("every adapter reports no executable hooks", () => {
-    for (const name of HARNESS_AGENT_ORDER) {
-      expect(getAdapter(name).supportsExecutableHooks).toBe(false);
+describe("v1.0 fixed projection surface constants", () => {
+  it("fixes the projection to codex (.agents) + codebuddy (.codebuddy) with AGENTS.md", () => {
+    expect(PROJECTION_SURFACES).toEqual(["codex", "codebuddy"]);
+    expect(CANONICAL_SURFACE).toBe("codex");
+    expect(CODEBUDDY_SURFACE).toBe("codebuddy");
+    expect(INSTRUCTION_FILE).toBe("AGENTS.md");
+    expect(skillsRootFor("codex")).toBe(".agents/skills");
+    expect(skillsRootFor("codebuddy")).toBe(".codebuddy/skills");
+    expect(PRIMARY_SKILLS_ROOT).toBe(".agents/skills");
+    expect(CODEBUDDY_SKILLS_ROOT).toBe(".codebuddy/skills");
+    expect(FIXED_PROFILE).toBe("general");
+  });
+
+  it("derives context-index entries per surface without static rules", () => {
+    expect(contextIndexEntryFor("codex")).toEqual({
+      instructions: "AGENTS.md",
+      skills_root: ".agents/skills",
+      rules: []
+    });
+    expect(contextIndexEntryFor("codebuddy")).toEqual({
+      instructions: "AGENTS.md",
+      skills_root: ".codebuddy/skills",
+      rules: []
+    });
+  });
+
+  it("prunes only the two managed skills roots", () => {
+    expect(pruneBoundaries()).toEqual([".agents/skills", ".codebuddy/skills"]);
+  });
+});
+
+describe("projectBundleToSurface", () => {
+  it("routes every non-agents path to <surface skills root>/<source path>", async () => {
+    const bundle = await loadBundle(resourcesRoot, "codex");
+    const projected = projectBundleToSurface(bundle, "codex");
+    expect(projected.length).toBeGreaterThan(0);
+    for (const item of projected) {
+      expect(item.target_path).toBe(`.agents/skills/${item.source_path}`);
     }
   });
 
-  it("claude-code projects agents/ to .claude/agents and rest to .claude/skills", () => {
-    const bundle = syntheticBundle("claude-code", [
-      { path: "agents/demo.md", bytes: new TextEncoder().encode("a") },
-      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
-    ]);
-    const projected = getAdapter("claude-code").projectBundle(bundle, {
-      profile: "general", codebuddySurface: "both"
-    });
-    expect(projected.map((p) => p.target_path)).toEqual([
-      ".claude/agents/demo.md",
-      ".claude/skills/harness-demo/SKILL.md"
-    ]);
+  it("never projects agents/ definitions", async () => {
+    const bundle = await loadBundle(resourcesRoot, "codebuddy");
+    const projected = projectBundleToSurface(bundle, "codebuddy");
+    expect(projected.some((p) => p.source_path.startsWith("agents/"))).toBe(false);
+    expect(projected.some((p) => p.target_path.includes("/agents/"))).toBe(false);
   });
 
-  it("codex projects everything to .agents/skills and has no rules", () => {
-    const adapter = getAdapter("codex");
-    expect(adapter.rulesRoot).toBeNull();
-    expect(adapter.agentsRoot).toBeNull();
-    const bundle = syntheticBundle("codex", [
-      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
+  it("rejects a malicious source path that would escape the project", () => {
+    const bundle = syntheticBundle([
+      { path: "skills/../../escape.md", bytes: new TextEncoder().encode("x") }
     ]);
-    const projected = adapter.projectBundle(bundle, {
-      profile: "general", codebuddySurface: "both"
-    });
-    expect(projected.map((p) => p.target_path)).toEqual([
-      ".agents/skills/harness-demo/SKILL.md"
-    ]);
-    expect(adapter.contextIndex({ profile: "general", codebuddySurface: "both" }).rules)
-      .toEqual([]);
-    expect(adapter.worktreeFor("runtime-plan")).toEqual({
-      root: ".codex/worktrees",
-      path: ".codex/worktrees/runtime-plan",
-      branchPrefix: "codex/",
-      branch: "codex/runtime-plan"
-    });
+    expect(() => projectBundleToSurface(bundle, "codex")).toThrow();
   });
 
-  it("pi projects everything to .pi/skills and has no rules or agents", () => {
-    const adapter = getAdapter("pi");
-    expect(adapter.rulesRoot).toBeNull();
-    expect(adapter.agentsRoot).toBeNull();
-    expect(adapter.commandsRoot).toBeNull();
-    const bundle = syntheticBundle("pi", [
-      { path: "agents/demo.md", bytes: new TextEncoder().encode("a") },
-      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
+  it("rejects an absolute or drive-bearing source path", () => {
+    const bundle = syntheticBundle([
+      { path: "/etc/passwd", bytes: new TextEncoder().encode("x") }
     ]);
-    const projected = adapter.projectBundle(bundle, {
-      profile: "general", codebuddySurface: "both"
-    });
-    expect(projected.map((p) => p.target_path)).toEqual([
-      ".pi/skills/harness-demo/SKILL.md"
+    expect(() => projectBundleToSurface(bundle, "codex")).toThrow();
+  });
+
+  it("rejects duplicate projected targets that collide case-insensitively", () => {
+    const bundle = syntheticBundle([
+      { path: "skills/Foo/SKILL.md", bytes: new TextEncoder().encode("a") },
+      { path: "skills/foo/SKILL.md", bytes: new TextEncoder().encode("b") }
     ]);
-    expect(adapter.contextIndex({ profile: "general", codebuddySurface: "both" }))
-      .toEqual({ instructions: "AGENTS.md", skills_root: ".pi/skills", rules: [] });
-    expect(adapter.worktreeFor("runtime-plan")).toEqual({
-      root: ".pi/worktrees",
-      path: ".pi/worktrees/runtime-plan",
-      branchPrefix: "pi/",
-      branch: "pi/runtime-plan"
+    expect(() => projectBundleToSurface(bundle, "codex")).toThrow(/collision/i);
+  });
+
+  it("rejects unknown surfaces at the type boundary", () => {
+    const bundle = syntheticBundle([]);
+    expect(() => projectBundleToSurface(bundle, "pi" as ProjectionSurface)).toThrow();
+    expect(() => skillsRootFor("pi" as ProjectionSurface)).toThrow();
+    expect(() => contextIndexEntryFor("pi" as ProjectionSurface)).toThrow();
+  });
+});
+
+describe("loadBundle (flattened v1.0 layout)", () => {
+  it("loads codex and codebuddy bundles with surface-matching manifests", async () => {
+    for (const surface of PROJECTION_SURFACES) {
+      const bundle = await loadBundle(resourcesRoot, surface);
+      expect(bundle.manifest.adapter).toBe(surface);
+      expect(bundle.manifest.profile).toBe(FIXED_PROFILE);
+      expect(bundle.manifest.schema_version).toBe(2);
+      expect(bundle.files.size).toBe(bundle.manifest.files.length);
+    }
+  });
+
+  it("rejects a missing resources root with ADAPTER_BUNDLE_MISSING (exit 7)", async () => {
+    const missingRoot = fileURLToPath(new URL("../test/__no_such_resources__", import.meta.url));
+    await expect(loadBundle(missingRoot, "codex")).rejects.toMatchObject({
+      name: "AdapterBundleError",
+      code: "ADAPTER_BUNDLE_MISSING",
+      exitCode: 7
     });
-    expect(adapter.pruneBoundaries({ profile: "general", codebuddySurface: "both" }))
-      .toEqual([".pi/skills", ".pi"]);
-  });
-
-  it("worktree decisions stay adapter-specific", () => {
-    expect(getAdapter("claude-code").worktreeFor("demo")).toEqual({
-      root: ".claude/worktrees",
-      path: ".claude/worktrees/demo",
-      branchPrefix: "claude/",
-      branch: "claude/demo"
-    });
-    expect(() => getAdapter("codex").worktreeFor("../escape"))
-      .toThrow("invalid Harness change id");
-  });
-
-  it("cursor emits .mdc rules and .cursor/skills targets", () => {
-    const adapter = getAdapter("cursor");
-    const bundle = syntheticBundle("cursor", [
-      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
-    ]);
-    const managed = managedTargetsFor(adapter, bundle, {
-      profile: "java", codebuddySurface: "both"
-    });
-    expect(managed.some((t) => t.target_path === ".cursor/rules/harness-general.mdc")).toBe(true);
-    expect(managed.some((t) => t.target_path === ".cursor/rules/harness-profile-java.mdc")).toBe(true);
-    const mdc = managed.find((t) => t.target_path.endsWith("harness-general.mdc"));
-    const text = new TextDecoder().decode(mdc?.bytes);
-    expect(text.startsWith("---\n")).toBe(true);
-    expect(text).toContain("alwaysApply: true");
-  });
-
-  it.each([
-    ["both", [
-      ".codebuddy/.rules/harness-general.mdc",
-      ".codebuddy/.rules/harness-profile-java.mdc",
-      ".codebuddy/rules/harness-general.md",
-      ".codebuddy/rules/harness-profile-java.md"
-    ]],
-    ["ide", [
-      ".codebuddy/.rules/harness-general.mdc",
-      ".codebuddy/.rules/harness-profile-java.mdc"
-    ]],
-    ["cli", [
-      ".codebuddy/rules/harness-general.md",
-      ".codebuddy/rules/harness-profile-java.md"
-    ]]
-  ] as const)("codebuddy %s surface emits the matching managed rules", (surface, rules) => {
-    const adapter = getAdapter("codebuddy");
-    const bundle = syntheticBundle("codebuddy", [
-      { path: "agents/demo.md", bytes: new TextEncoder().encode("a") },
-      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
-    ]);
-    const managed = managedTargetsFor(adapter, bundle, {
-      profile: "java", codebuddySurface: surface
-    });
-    expect(managed.map((t) => t.target_path).filter((path) => path.includes("rules/")))
-      .toEqual(rules);
-    expect(managed.map((t) => t.target_path)).toEqual(expect.arrayContaining([
-      ".codebuddy/agents/demo.md", ".codebuddy/skills/harness-demo/SKILL.md"
-    ]));
-    expect(adapter.contextIndex({ profile: "java", codebuddySurface: surface }).rules)
-      .toEqual(rules);
-  });
-
-  it("pruneBoundaries stay inside own root", () => {
-    expect(getAdapter("codex").pruneBoundaries({
-      profile: "general", codebuddySurface: "both"
-    })).toEqual(expect.arrayContaining([".agents/skills", ".agents"]));
-    expect(getAdapter("claude-code").pruneBoundaries({
-      profile: "general", codebuddySurface: "both"
-    })).toEqual(expect.arrayContaining([".claude/skills", ".claude/agents", ".claude"]));
-  });
-
-  it("loads real claude-code and codex bundles from new layout", async () => {
-    const claude = await loadAgentBundle(resourcesRoot, "general", "claude-code");
-    expect(claude.manifest.schema_version).toBe(2);
-    expect(claude.manifest.adapter).toBe("claude-code");
-    expect([...claude.files.keys()].some((p) => p.startsWith("agents/"))).toBe(true);
-
-    const codex = await loadAgentBundle(resourcesRoot, "general", "codex");
-    expect(codex.manifest.adapter).toBe("codex");
-    expect([...codex.files.keys()].some((p) => p.startsWith("agents/"))).toBe(false);
   });
 });

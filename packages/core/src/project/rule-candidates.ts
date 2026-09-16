@@ -1,280 +1,411 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
-const ARCHIVE_ROOT = ".harness/archive";
-const CANDIDATE_PATH = ".harness/state/local/rule-candidates.json";
-const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
-const EVIDENCE_NAMES = [
-  /^review-findings.*\.json$/i,
-  /^test-(?:report|results?|failures?).*\.json$/i,
-  /^summary-data\.json$/i
-];
+import { upsertManagedBlockById } from "../managed/managed-block.js";
+import {
+  AGENTS_LEARNED_RULES_BLOCK_ID,
+  renderLearnedRulesBlock
+} from "./managed-content.js";
 
-export interface RuleCandidateEvidence {
+// v1.0：规则学习去人工评审化。归档证据中提取的高置信候选由 refreshLearnedRules
+// 幂等刷新进 AGENTS.md 的 harness-learned-rules 受管段；不再有候选清单文件、
+// 没有 rules-review 队列（设计见 docs/decisions 与 plan：归档后自动学习）。
+
+export interface RuleCandidateEvidenceRef {
   archive: string;
   path: string;
-  kind: "review" | "test" | "validation";
-  record_id: string | null;
+  evidence_id: string;
 }
 
 export interface RuleCandidate {
-  id: string;
-  status: "candidate";
-  title: string;
-  proposed_rule: string;
-  confidence: "medium" | "high";
-  severity: string;
+  rule_key: string;
+  text: string;
+  confidence: "high" | "medium";
+  evidence: RuleCandidateEvidenceRef[];
   occurrences: number;
-  evidence: RuleCandidateEvidence[];
+  latest_seen_at: string;
 }
 
-export interface RuleCandidateManifest {
-  schema_version: 1;
-  source_hashes: Record<string, string>;
-  candidates: RuleCandidate[];
-}
-
-export interface RuleCandidateSyncResult {
-  path: string;
-  scanned: number;
-  candidates: number;
-  changed: boolean;
+export interface RuleCandidateScanResult {
+  scanned_archives: number;
   rejected_untrusted: number;
+  files: Array<{
+    archive: string;
+    path: string;
+    kind: "review-findings" | "test-report" | "summary";
+    payload: unknown;
+  }>;
 }
 
-interface CandidateObservation {
-  title: string;
-  proposedRule: string;
-  severity: string;
-  evidence: RuleCandidateEvidence;
+const DEFAULT_EVIDENCE_FILES = [
+  "review-findings.json",
+  "review-findings-input.json",
+  "test-report.json",
+  "summary-data.json"
+] as const;
+
+// 粗粒度注入过滤：候选来自历史归档文本，不能让它把指令形态的内容注入 AGENTS.md。
+const BLOCKED_PATTERNS: RegExp[] = [
+  /ignore\s+(all|any|previous|prior)\s+instructions?/i,
+  /system\s+prompt/i,
+  /开发者模式|越狱/,
+  /```/,
+  /<script/i,
+  /\bcurl\b.*\|\s*(?:sh|bash)/i,
+  /\b(?:rm\s+-rf|del\s+\/f)\b/i
+];
+
+function normalizeRuleText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
-function sha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+function slugifyRuleKey(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return slug.length > 0 ? slug : "rule";
 }
 
-function portable(path: string): string {
-  return path.replaceAll("\\", "/");
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+function hasBlockedPattern(text: string): boolean {
+  return BLOCKED_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function safeText(value: unknown, limit = 500): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = normalizeText(value).slice(0, limit);
-  if (normalized.length < 8) return null;
-  if (/(?:ignore|disregard)\s+(?:all\s+)?previous|system\s+prompt|developer\s+message/i.test(normalized)) {
+async function readJsonFile(path: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch {
     return null;
   }
-  if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,}|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\//i.test(normalized)) {
+}
+
+async function collectEvidenceFiles(dir: string, depth: number, out: string[]): Promise<void> {
+  if (depth > 4) {
+    return;
+  }
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await collectEvidenceFiles(full, depth + 1, out);
+      continue;
+    }
+    if ((DEFAULT_EVIDENCE_FILES as readonly string[]).includes(entry.name)) {
+      out.push(full);
+    }
+  }
+}
+
+function evidenceKind(fileName: string): "review-findings" | "test-report" | "summary" {
+  if (fileName.startsWith("review-findings")) {
+    return "review-findings";
+  }
+  if (fileName === "test-report.json") {
+    return "test-report";
+  }
+  return "summary";
+}
+
+export interface ExtractRuleCandidatesOptions {
+  archiveDir?: string;
+}
+
+export async function scanRuleCandidateEvidence(
+  projectRoot: string,
+  options?: ExtractRuleCandidatesOptions
+): Promise<RuleCandidateScanResult> {
+  const archiveDir = options?.archiveDir ?? join(projectRoot, ".harness", "archive");
+  const files: string[] = [];
+  await collectEvidenceFiles(archiveDir, 0, files);
+  const result: RuleCandidateScanResult = {
+    scanned_archives: 0,
+    rejected_untrusted: 0,
+    files: []
+  };
+  const archives = new Set<string>();
+  for (const file of files.sort()) {
+    const payload = await readJsonFile(file);
+    if (payload === null) {
+      result.rejected_untrusted += 1;
+      continue;
+    }
+    const relative = file.slice(archiveDir.length).replace(/\\/g, "/").replace(/^\//, "");
+    const archive = relative.split("/")[0] ?? "";
+    archives.add(archive);
+    result.files.push({
+      archive,
+      path: relative,
+      kind: evidenceKind(file.split(/[\\/]/).pop() ?? ""),
+      payload
+    });
+  }
+  result.scanned_archives = archives.size;
+  return result;
+}
+
+function asRuleText(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = normalizeRuleText(value);
+  if (normalized.length < 12 || normalized.length > 220) {
+    return null;
+  }
+  if (hasBlockedPattern(normalized)) {
     return null;
   }
   return normalized;
 }
 
-function stringField(record: Record<string, unknown>, names: readonly string[]): string | null {
-  for (const name of names) {
-    const value = safeText(record[name]);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-function severityOf(record: Record<string, unknown>): string {
-  const value = record.severity ?? record.level ?? record.priority ?? "unknown";
-  return typeof value === "string" ? value.toLowerCase() : "unknown";
-}
-
-// 规则候选必须是「条件 → 约束/动作」结构。2026-08-30 sales-insight-agent 实测：
-// 生成器把 review 阶段 decision 事件的结果摘要（“委派只读评审完成，OK 带
-// notes…”）直接当成了规则候选——事件记录不是行为约束，必须在进入候选池
-// 之前过滤，否则后续任何自动采纳分层都会加速垃圾候选的流入。
-const RULE_STRUCTURE =
-  /(?:必须|应当|应该|需要|禁止|不得|不准|一律|只能|避免|确保|务必|建议|先[^。；\n]{0,16}再|当[^。；\n]{0,24}时|\bmust\b|\bshould\b|\bnever\b|\balways\b|\bavoid\b|\bensure\b|\bdo not\b|\bdon't\b)/i;
-
-function isRuleLike(text: string): boolean {
-  return RULE_STRUCTURE.test(text);
-}
-
-function highSeverity(severity: string): boolean {
-  return /^(?:red|critical|high|error|blocker|p0|p1)$/.test(severity);
-}
-
-function evidenceKind(path: string): RuleCandidateEvidence["kind"] {
-  const name = basename(path).toLowerCase();
-  if (name.startsWith("review-")) return "review";
-  if (name.startsWith("test-")) return "test";
-  return "validation";
-}
-
-function observationFrom(
-  record: Record<string, unknown>,
-  path: string,
-  archive: string
-): CandidateObservation | null {
-  const severity = severityOf(record);
-  const suggestion = stringField(record, [
-    "proposed_rule", "proposedRule", "suggestion", "recommendation", "remediation"
-  ]);
-  const issue = stringField(record, ["issue", "message", "error", "failure"]);
-  const title = stringField(record, ["title", "name", "id", "code"]) ?? issue;
-  let proposedRule = suggestion;
-  if (proposedRule === null && issue !== null && highSeverity(severity)) {
-    proposedRule = `必须增加可重复验证，防止以下问题再次出现：${issue}`;
-  }
-  if (proposedRule === null || title === null) return null;
-  if (!isRuleLike(proposedRule)) return null;
-  const recordId = record.id ?? record.code ?? record.name ?? null;
-  return {
-    title,
-    proposedRule,
-    severity,
-    evidence: {
-      archive,
-      path,
-      kind: evidenceKind(path),
-      record_id: typeof recordId === "string" ? recordId.slice(0, 120) : null
+function pushCandidate(
+  map: Map<string, RuleCandidate>,
+  text: string,
+  confidence: "high" | "medium",
+  ref: RuleCandidateEvidenceRef
+): void {
+  const key = slugifyRuleKey(text);
+  const existing = map.get(key);
+  if (existing !== undefined) {
+    existing.occurrences += 1;
+    existing.evidence.push(ref);
+    if (confidence === "high") {
+      existing.confidence = "high";
     }
+    return;
+  }
+  map.set(key, {
+    rule_key: key,
+    text,
+    confidence,
+    evidence: [ref],
+    occurrences: 1,
+    latest_seen_at: ref.archive
+  });
+}
+
+function extractFromReviewFindings(
+  file: RuleCandidateScanResult["files"][number],
+  map: Map<string, RuleCandidate>
+): void {
+  if (!isPlainObject(file.payload) || !Array.isArray(file.payload.findings)) {
+    return;
+  }
+  for (const finding of file.payload.findings) {
+    if (!isPlainObject(finding)) {
+      continue;
+    }
+    const suggestion = asRuleText(finding.suggestion ?? finding.recommendation);
+    if (suggestion === null) {
+      continue;
+    }
+    const severity = typeof finding.severity === "string" ? finding.severity.toUpperCase() : "";
+    pushCandidate(map, suggestion, severity === "RED" ? "high" : "medium", {
+      archive: file.archive,
+      path: file.path,
+      evidence_id: typeof finding.id === "string" ? finding.id : file.path
+    });
+  }
+}
+
+function extractFromTestReport(
+  file: RuleCandidateScanResult["files"][number],
+  map: Map<string, RuleCandidate>
+): void {
+  if (!isPlainObject(file.payload)) {
+    return;
+  }
+  const failures = file.payload.failures;
+  if (!Array.isArray(failures)) {
+    return;
+  }
+  for (const failure of failures) {
+    if (!isPlainObject(failure)) {
+      continue;
+    }
+    const lesson = asRuleText(failure.lesson ?? failure.prevention);
+    if (lesson === null) {
+      continue;
+    }
+    pushCandidate(map, lesson, "medium", {
+      archive: file.archive,
+      path: file.path,
+      evidence_id: typeof failure.id === "string" ? failure.id : file.path
+    });
+  }
+}
+
+function extractFromSummary(
+  file: RuleCandidateScanResult["files"][number],
+  map: Map<string, RuleCandidate>
+): void {
+  if (!isPlainObject(file.payload)) {
+    return;
+  }
+  const pipeline = file.payload.reportPipeline;
+  if (!isPlainObject(pipeline)) {
+    return;
+  }
+  const issues = pipeline.validationIssues;
+  if (!Array.isArray(issues)) {
+    return;
+  }
+  for (const issue of issues) {
+    if (!isPlainObject(issue)) {
+      continue;
+    }
+    if (issue.type !== "structured_output_validation_failed") {
+      continue;
+    }
+    const details = isPlainObject(issue.details) ? issue.details : {};
+    const errors = Array.isArray(details.errors) ? details.errors.length : 0;
+    const warnings = Array.isArray(details.warnings) ? details.warnings.length : 0;
+    const text = asRuleText(
+      `结构化输出校验失败 ${errors + warnings} 次：交付前必须按 schema 校验报告字段。`
+    );
+    if (text === null) {
+      continue;
+    }
+    pushCandidate(map, text, "high", {
+      archive: file.archive,
+      path: file.path,
+      evidence_id: typeof issue.stage === "string" ? issue.stage : file.path
+    });
+  }
+}
+
+export function extractRuleCandidates(scan: RuleCandidateScanResult): {
+  candidates: RuleCandidate[];
+  rejected_untrusted: number;
+} {
+  const map = new Map<string, RuleCandidate>();
+  let rejected = scan.rejected_untrusted;
+  for (const file of scan.files) {
+    const before = map.size;
+    if (file.kind === "review-findings") {
+      extractFromReviewFindings(file, map);
+    } else if (file.kind === "test-report") {
+      extractFromTestReport(file, map);
+    } else {
+      extractFromSummary(file, map);
+    }
+    if (map.size === before && !isPlainObject(file.payload)) {
+      rejected += 1;
+    }
+  }
+  for (const candidate of map.values()) {
+    if (candidate.occurrences >= 2 && candidate.confidence === "medium") {
+      candidate.confidence = "high";
+    }
+  }
+  return {
+    candidates: [...map.values()].sort((left, right) => left.rule_key.localeCompare(right.rule_key)),
+    rejected_untrusted: rejected
   };
 }
 
-function collectObservations(
-  value: unknown,
-  path: string,
-  archive: string,
-  output: CandidateObservation[],
-  rejected: { count: number }
-): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectObservations(item, path, archive, output, rejected);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const candidate = observationFrom(record, path, archive);
-  if (candidate !== null) output.push(candidate);
-  else if (Object.keys(record).some((key) =>
-    ["suggestion", "recommendation", "proposed_rule", "proposedRule"].includes(key)
-  )) rejected.count += 1;
-  for (const nested of Object.values(record)) {
-    if (nested !== null && typeof nested === "object") {
-      collectObservations(nested, path, archive, output, rejected);
-    }
-  }
+// 受管段容量护栏：AGENTS.md 是每轮对话都注入的指令文件，学习段必须有限。
+export const MAX_LEARNED_RULES = 20;
+
+// v0 评审流遗留的本机状态文件（v1.0 起不再写入，refresh 时顺手清掉）。
+const LEGACY_RULE_STATE_FILES = [
+  "rule-candidates.json",
+  "rule-review-queue.json"
+] as const;
+
+export interface LearnedRulesRefreshResult {
+  changed: boolean;
+  dry_run: boolean;
+  agents_md_present: boolean;
+  conflict: boolean;
+  learned_rules: string[];
+  candidates_total: number;
+  candidates_high: number;
+  scanned_archives: number;
+  rejected_untrusted: number;
+  removed_legacy_state: string[];
 }
 
-async function evidenceFiles(root: string): Promise<string[]> {
-  const archiveRoot = join(root, ...ARCHIVE_ROOT.split("/"));
-  const output: string[] = [];
-  async function walk(directory: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
-      throw error;
+export interface RefreshLearnedRulesOptions extends ExtractRuleCandidatesOptions {
+  dryRun?: boolean;
+}
+
+/**
+ * 归档后自动规则学习：扫描 .harness/archive 证据，提取通过注入过滤的高置信
+ * 候选，幂等刷新 AGENTS.md 的 harness-learned-rules 受管段（与用户手写内容
+ * 隔离；候选集合不变时不产生任何写入）。
+ *
+ * 排序策略：先按出现次数降序、再按 rule_key 字典序，保证同一归档集合渲染出
+ * 字节级稳定的块内容（幂等性的前提）；超过 MAX_LEARNED_RULES 截断。
+ */
+export async function refreshLearnedRules(
+  projectRoot: string,
+  options?: RefreshLearnedRulesOptions
+): Promise<LearnedRulesRefreshResult> {
+  const dryRun = options?.dryRun === true;
+  const scan = await scanRuleCandidateEvidence(projectRoot, options);
+  const extracted = extractRuleCandidates(scan);
+  const highConfidence = extracted.candidates.filter((candidate) => candidate.confidence === "high");
+  const ranked = [...highConfidence].sort((left, right) =>
+    right.occurrences - left.occurrences || left.rule_key.localeCompare(right.rule_key)
+  );
+  const rules = ranked.slice(0, MAX_LEARNED_RULES).map((candidate) => candidate.text);
+
+  const result: LearnedRulesRefreshResult = {
+    changed: false,
+    dry_run: dryRun,
+    agents_md_present: true,
+    conflict: false,
+    learned_rules: rules,
+    candidates_total: extracted.candidates.length,
+    candidates_high: highConfidence.length,
+    scanned_archives: scan.scanned_archives,
+    rejected_untrusted: extracted.rejected_untrusted,
+    removed_legacy_state: []
+  };
+
+  const agentsPath = join(projectRoot, "AGENTS.md");
+  let original: string;
+  try {
+    original = await readFile(agentsPath, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      // 未初始化（或被用户删除）的项目不学规则：refresh/uninstall 等路径会遇到。
+      result.agents_md_present = false;
+      return result;
     }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && EVIDENCE_NAMES.some((pattern) => pattern.test(entry.name))) {
-        if ((await stat(path)).size <= MAX_EVIDENCE_BYTES) output.push(path);
+    throw error;
+  }
+
+  const next = upsertManagedBlockById(
+    original,
+    AGENTS_LEARNED_RULES_BLOCK_ID,
+    renderLearnedRulesBlock(rules)
+  );
+  result.changed = next !== original;
+
+  if (!dryRun) {
+    if (result.changed) {
+      await writeFile(agentsPath, next, "utf8");
+    }
+    const legacyDir = join(projectRoot, ".harness", "state", "local");
+    for (const file of LEGACY_RULE_STATE_FILES) {
+      try {
+        await rm(join(legacyDir, file), { force: true });
+        result.removed_legacy_state.push(`.harness/state/local/${file}`);
+      } catch {
+        // 清理遗留状态是 best-effort：失败不影响学习主流程。
       }
     }
   }
-  await walk(archiveRoot);
-  return output.sort();
-}
-
-function candidateKey(rule: string): string {
-  return normalizeText(rule).toLocaleLowerCase();
-}
-
-function buildCandidates(observations: CandidateObservation[]): RuleCandidate[] {
-  const grouped = new Map<string, CandidateObservation[]>();
-  for (const observation of observations) {
-    const key = candidateKey(observation.proposedRule);
-    const values = grouped.get(key) ?? [];
-    values.push(observation);
-    grouped.set(key, values);
-  }
-  const candidates: RuleCandidate[] = [];
-  for (const [key, values] of grouped) {
-    const archives = new Set(values.map((value) => value.evidence.archive));
-    const highest = values.find((value) => highSeverity(value.severity));
-    if (archives.size < 2 && highest === undefined) continue;
-    const representative = highest ?? values.at(0);
-    if (representative === undefined) continue;
-    const evidence = [...new Map(values.map((value) => [
-      `${value.evidence.path}\0${value.evidence.record_id ?? ""}`,
-      value.evidence
-    ])).values()].sort((a, b) => a.path.localeCompare(b.path));
-    candidates.push({
-      id: `rule_${sha256(key).slice(0, 16)}`,
-      status: "candidate",
-      title: representative.title,
-      proposed_rule: representative.proposedRule,
-      confidence: archives.size >= 2 && highest !== undefined ? "high" : "medium",
-      severity: representative.severity,
-      occurrences: evidence.length,
-      evidence
-    });
-  }
-  return candidates.sort((a, b) => a.id.localeCompare(b.id));
-}
-
-async function atomicWrite(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, content, "utf8");
-  await rename(temporary, path);
-}
-
-export async function synchronizeRuleCandidates(
-  projectRoot: string,
-  options: { dryRun?: boolean } = {}
-): Promise<RuleCandidateSyncResult> {
-  const root = resolve(projectRoot);
-  const files = await evidenceFiles(root);
-  const sourceHashes: Record<string, string> = {};
-  const observations: CandidateObservation[] = [];
-  const rejected = { count: 0 };
-  for (const path of files) {
-    const relativePath = portable(relative(root, path));
-    const content = await readFile(path, "utf8");
-    sourceHashes[relativePath] = sha256(content);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      continue;
-    }
-    const archive = relativePath.split("/")[2] ?? "unknown";
-    collectObservations(parsed, relativePath, archive, observations, rejected);
-  }
-  const manifest: RuleCandidateManifest = {
-    schema_version: 1,
-    source_hashes: sourceHashes,
-    candidates: buildCandidates(observations)
-  };
-  const content = JSON.stringify(manifest, null, 2) + "\n";
-  const destination = join(root, ...CANDIDATE_PATH.split("/"));
-  let current: string | null = null;
-  try {
-    current = await readFile(destination, "utf8");
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-  }
-  const changed = current !== content;
-  if (changed && options.dryRun !== true) await atomicWrite(destination, content);
-  return {
-    path: CANDIDATE_PATH,
-    scanned: files.length,
-    candidates: manifest.candidates.length,
-    changed,
-    rejected_untrusted: rejected.count
-  };
+  return result;
 }

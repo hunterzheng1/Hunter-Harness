@@ -5,8 +5,9 @@ import {
   cleanupOldTransactions,
   diagnoseRecovery,
   inspectRecovery,
-  loadAgentBundle,
+  loadBundle,
   pendingTransactions,
+  PROJECTION_SURFACES,
   readRecoveryTargetBundleState,
   readDurableRecoveryIds,
   recoverTransaction,
@@ -16,13 +17,12 @@ import {
   rollbackCommittedUpdate,
   rollbackLatestCommittedUpdate,
   sha256Bytes,
+  type ProjectionSurface,
   type RecoveryInspection
 } from "@hunter-harness/core";
 import {
   canonicalJson,
-  harnessAgentSchema,
   recoveryResultSchema,
-  sortHarnessAgents,
   type RecoveryAction,
   type RecoveryResult
 } from "@hunter-harness/contracts";
@@ -210,10 +210,16 @@ function parseRecoveryAction(value: string | undefined): RecoveryAction | null {
 }
 
 interface InstalledManifestIdentity {
-  adapter: string;
-  profile: string;
+  surface: ProjectionSurface;
   bundle_version: string;
   bundle_manifest_hash: string;
+}
+
+function parseProjectionSurface(value: unknown): ProjectionSurface | null {
+  return typeof value === "string" &&
+    (PROJECTION_SURFACES as readonly string[]).includes(value)
+    ? (value as ProjectionSurface)
+    : null;
 }
 
 async function currentResumeIdentity(
@@ -237,6 +243,8 @@ async function currentResumeIdentity(
         : {})
     }
   );
+  // v1.0：投影面固定，唯一需要与恢复计划比对的可变维度是项目身份
+  // （planned project 与 journal 的一致性由 core 侧读取时校验）。
   let projectIdentity: string;
   if (detection.status === "valid") {
     projectIdentity = detection.config.project.local_project_key;
@@ -244,20 +252,6 @@ async function currentResumeIdentity(
         inspection.projectIdentity !== projectIdentity) {
       throw Object.assign(new Error(
         "current project identity does not match the recovery plan"
-      ), { code: "RECOVERY_PRECONDITION_FAILED" });
-    }
-    if (plannedState !== null &&
-        plannedState.projectAdapters === null &&
-        (canonicalJson(
-          [...detection.config.adapters.enabled].sort()
-        ) !== canonicalJson([...plannedState.adapters].sort()) ||
-        canonicalJson(
-          [...new Set(detection.config.project.profiles)].sort()
-        ) !== canonicalJson(
-          [...new Set(Object.values(plannedState.profiles))].sort()
-        ))) {
-      throw Object.assign(new Error(
-        "current project configuration does not match the recovery plan"
       ), { code: "RECOVERY_PRECONDITION_FAILED" });
     }
   } else if (inspection.kind === "init" &&
@@ -272,15 +266,14 @@ async function currentResumeIdentity(
   }
 
   let manifestCandidates: unknown[];
-  let expectedAdapterValues: unknown[];
+  let expectedSurfaceValues: unknown[];
   if (plannedState !== null) {
     manifestCandidates = plannedState.manifests.map((manifest) => ({
-      adapter: manifest.adapter,
-      profile: manifest.profile,
+      surface: manifest.surface,
       bundle_version: manifest.bundleVersion,
       bundle_manifest_hash: manifest.bundleManifestHash
     }));
-    expectedAdapterValues = plannedState.adapters;
+    expectedSurfaceValues = plannedState.surfaces;
   } else {
     let raw: unknown;
     try {
@@ -298,11 +291,11 @@ async function currentResumeIdentity(
     }
     const record = raw as {
       schema_version?: unknown;
-      adapters?: unknown;
+      surfaces?: unknown;
       manifests?: unknown;
     };
-    if (record.schema_version !== 4 ||
-        !Array.isArray(record.adapters) ||
+    if (record.schema_version !== 5 ||
+        !Array.isArray(record.surfaces) ||
         !Array.isArray(record.manifests) ||
         record.manifests.length === 0) {
       throw Object.assign(new Error(
@@ -310,16 +303,15 @@ async function currentResumeIdentity(
       ), { code: "RECOVERY_PRECONDITION_FAILED" });
     }
     manifestCandidates = record.manifests;
-    expectedAdapterValues = record.adapters;
+    expectedSurfaceValues = record.surfaces;
   }
 
   const manifests: InstalledManifestIdentity[] = [];
   const recordedManifests: InstalledManifestIdentity[] = [];
   for (const candidate of manifestCandidates) {
     const item = candidate as Partial<InstalledManifestIdentity>;
-    const agent = harnessAgentSchema.safeParse(item.adapter);
-    if (!agent.success ||
-        (item.profile !== "general" && item.profile !== "java") ||
+    const surface = parseProjectionSurface(item.surface);
+    if (surface === null ||
         typeof item.bundle_version !== "string" ||
         typeof item.bundle_manifest_hash !== "string") {
       throw Object.assign(new Error(
@@ -327,54 +319,49 @@ async function currentResumeIdentity(
       ), { code: "RECOVERY_PRECONDITION_FAILED" });
     }
     recordedManifests.push({
-      adapter: agent.data,
-      profile: item.profile,
+      surface,
       bundle_version: item.bundle_version,
       bundle_manifest_hash: item.bundle_manifest_hash
     });
-    const bundle = await loadAgentBundle(
-      dependencies.resourcesRoot,
-      item.profile,
-      agent.data
-    );
+    const bundle = await loadBundle(dependencies.resourcesRoot, surface);
     manifests.push({
-      adapter: agent.data,
-      profile: item.profile,
+      surface,
       bundle_version: bundle.manifest.bundle_version,
       bundle_manifest_hash: sha256Bytes(canonicalJson(bundle.manifest.files))
     });
   }
-  manifests.sort((left, right) => left.adapter.localeCompare(right.adapter));
+  manifests.sort((left, right) => left.surface.localeCompare(right.surface));
   recordedManifests.sort(
-    (left, right) => left.adapter.localeCompare(right.adapter)
+    (left, right) => left.surface.localeCompare(right.surface)
   );
   if (canonicalJson(manifests) !== canonicalJson(recordedManifests)) {
     throw Object.assign(new Error(
       "installed Bundle metadata does not match the local Bundle resources"
     ), { code: "RECOVERY_PRECONDITION_FAILED" });
   }
-  const expectedAgents = sortHarnessAgents(
-    expectedAdapterValues.flatMap((value) => {
-      const parsed = harnessAgentSchema.safeParse(value);
-      return parsed.success ? [parsed.data] : [];
-    })
-  );
-  if (expectedAgents.length !== expectedAdapterValues.length) {
+  const expectedSurfaces = expectedSurfaceValues.flatMap((value) => {
+    const parsed = parseProjectionSurface(value);
+    return parsed === null ? [] : [parsed];
+  });
+  if (expectedSurfaces.length !== expectedSurfaceValues.length) {
     throw Object.assign(new Error(
-      "installed Bundle adapters are invalid"
+      "installed Bundle surfaces are invalid"
     ), { code: "RECOVERY_PRECONDITION_FAILED" });
   }
-  if (canonicalJson(manifests.map((item) => item.adapter).sort()) !==
-      canonicalJson([...expectedAgents].sort())) {
+  if (canonicalJson(manifests.map((item) => item.surface).sort()) !==
+      canonicalJson([...expectedSurfaces].sort())) {
     throw Object.assign(new Error(
-      "installed Bundle adapters do not match the current project"
+      "installed Bundle surfaces do not match the current project"
     ), { code: "RECOVERY_PRECONDITION_FAILED" });
   }
+  // 身份派生必须与 initialize/refresh 的事务身份逐字节一致：
+  // init 取 codex 主投影面；refresh 取 surface 排序后的版本聚合与清单哈希。
+  const primary = manifests.find((item) => item.surface === "codex");
   const targetBundleVersion = inspection.kind === "init"
-    ? manifests[0]?.bundle_version
+    ? primary?.bundle_version
     : manifests.map((item) => item.bundle_version).sort().join("+");
   const ownershipManifestHash = inspection.kind === "init"
-    ? manifests[0]?.bundle_manifest_hash
+    ? primary?.bundle_manifest_hash
     : sha256Bytes(canonicalJson(manifests));
   if (targetBundleVersion === undefined ||
       ownershipManifestHash === undefined) {

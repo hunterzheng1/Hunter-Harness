@@ -69,7 +69,7 @@ describe("legacy managed blocks outside refresh ownership", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-conflict-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
+      config: {}, dryRun: false
     });
     // 破坏 AGENTS.md 标记（重复 start）。
     await writeFile(
@@ -77,10 +77,10 @@ describe("legacy managed blocks outside refresh ownership", () => {
       "# Doc\n" + START + START + "\nblock\n" + END + "\n"
     );
     // 删掉一个 Bundle 目标，refresh 应补回（即使 AGENTS 冲突）。
-    await rm(join(root, ".claude", "agents", "harness-reviewer.md"), { force: true });
+    await rm(join(root, ".agents", "skills", "harness-review", "SKILL.md"), { force: true });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.some((c) => c.target_path === "AGENTS.md")).toBe(false);
@@ -90,14 +90,14 @@ describe("legacy managed blocks outside refresh ownership", () => {
       "# Doc\n" + START + START + "\nblock\n" + END + "\n"
     );
     // 另一个安全目标仍被补回。
-    expect(result.applied.some((i) => i.target_path === ".claude/agents/harness-reviewer.md")).toBe(true);
+    expect(result.applied.some((i) => i.target_path === ".agents/skills/harness-review/SKILL.md")).toBe(true);
   });
 
   it("--force-managed leaves root instruction documents byte-identical", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-force-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
+      config: {}, dryRun: false
     });
     const before = "# Top user\n\n";
     const after = "\n## Bottom user\n";
@@ -105,7 +105,7 @@ describe("legacy managed blocks outside refresh ownership", () => {
     await writeFile(join(root, "AGENTS.md"), validWithUser);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: true
+      projectRoot: root, resourcesRoot, dryRun: false, forceManaged: true
     });
     const refreshed = await readFile(join(root, "AGENTS.md"), "utf8");
     expect(refreshed).toBe(validWithUser);

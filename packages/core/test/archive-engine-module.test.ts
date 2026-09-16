@@ -34,7 +34,7 @@ function phaseSet(): PlannedPhaseSet {
     has_remote: true,
     uses_worktree: false,
     available_phases: [
-      "plan", "execute", "review", "package", "apidoc", "submit", "merge", "archive"
+      "plan", "execute", "review", "submit", "merge", "archive"
     ],
     requested_optional_phases: [],
     requested_omissions: [],

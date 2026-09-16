@@ -65,8 +65,7 @@
     "unitTestFull": "execute",
     "apiTest": "execute",
     "browserTest": "execute",
-    "dbCompatibility": "execute",
-    "package": "package"
+    "dbCompatibility": "execute"
   },
   "validationDependencies": {
     "compile": [],
@@ -74,7 +73,6 @@
     "unitTestFull": ["unitTest"],
     "apiTest": ["unitTest"],
     "browserTest": ["unitTest"],
-    "dbCompatibility": ["unitTest"],
-    "package": ["unitTestFull", "apiTest", "dbCompatibility"]
+    "dbCompatibility": ["unitTest"]
   }
 }

@@ -6,14 +6,13 @@ import type { Sha256 } from "../archive-engine/types.js";
  * 稳定序列化/哈希的唯一权威实现。
  *
  * 历史上 archive-engine / archive-package-builder / codebase/map-v2 /
- * instruction-governance / archive-outbox/local-authority 各自维护了一份语义
+ * archive-outbox/local-authority 各自维护了一份语义
  * 微差的 stable.ts（过滤 undefined 与否、非有限数是否抛错、JSON 拼接方式不同），
  * 同一对象在不同子系统里会得到不同哈希——这是持久化哈希漂移的隐患。此处收敛：
  *
  * - `canonicalStableJson`：canonical JSON 模式（过滤 undefined 键、键按码点排序、
  *   JSON.stringify 输出），archive-engine / archive-package-builder / map-v2 用。
- * - `rawStableJson`：字符串拼接模式（**不过滤** undefined 值），
- *   instruction-governance 用（其历史输出即如此，直接改 canonical 会漂移既有哈希）。
+ * - `rawStableJson`：字符串拼接模式（**不过滤** undefined 值）。
  *
  * 各子系统的 stable.ts 现在只是本模块的兼容转发层，行为与历史实现逐字节一致。
  */

@@ -4,15 +4,13 @@ import { join } from "node:path";
 import {
   cleanupOldTransactions,
   clearLocalCredentials,
+  collectFreshness,
   listTransactions,
-  readInstalledAgentConfiguration,
   readLocalCredentials,
   rollbackLatestCommittedUpdate
 } from "@hunter-harness/core";
-import type { HarnessAgent } from "@hunter-harness/contracts";
 
 import { readLastServerUrl } from "../config/last-server.js";
-import { agentLabel, formatAgentLine } from "../ui/labels.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import { runConnect } from "./connect.js";
 import { runArchiveUpload } from "./archive-upload.js";
@@ -136,14 +134,29 @@ async function platformStatusLine(cwd: string): Promise<string> {
   return "平台：未绑定（可选，用于推送 / 知识库 / 运行监控）";
 }
 
-async function toolsStatusLines(cwd: string): Promise<string[]> {
-  const installed = await readInstalledAgentConfiguration(cwd);
-  const agents = installed.agents.length > 0 ? installed.agents : [];
-  if (agents.length === 0) return ["工具：尚未安装"];
-  return [
-    "工具：",
-    ...agents.map((agent) => `  · ${formatAgentLine(agent, installed.profiles[agent])}`)
-  ];
+/** v1.0：固定投影面，工具状态收敛为一行 freshness 摘要。 */
+async function toolsStatusLines(dependencies: CommandDependencies): Promise<string[]> {
+  try {
+    const freshness = await collectFreshness({
+      projectRoot: dependencies.cwd,
+      resourcesRoot: dependencies.resourcesRoot
+    });
+    let worst = "已是最新";
+    if (freshness.agents.some((agent) => agent.status === "VERSION_BEHIND")) {
+      worst = "有新版本可刷新";
+    }
+    if (freshness.agents.some((agent) => agent.status === "LOCALLY_MODIFIED")) {
+      worst = "本地有修改";
+    }
+    if (freshness.agents.some((agent) =>
+      agent.status === "MISSING" || agent.status === "UNVERIFIABLE"
+    )) {
+      worst = "投影缺失或不可校验，建议刷新";
+    }
+    return [`工具投影：.agents/skills + AGENTS.md（含 .codebuddy/skills 双写）—— ${worst}`];
+  } catch {
+    return ["工具投影：.agents/skills + AGENTS.md（含 .codebuddy/skills 双写）"];
+  }
 }
 
 export async function runPlatformConnectionMenu(
@@ -219,75 +232,57 @@ export async function runPlatformConnectionMenu(
   }, dependencies);
 }
 
-async function runRemoveAgentsFlow(
-  dependencies: CommandDependencies,
-  options: ConfigureOptions
+async function runPendingArchivesRetry(
+  dependencies: CommandDependencies
 ): Promise<number> {
-  const installed = await readInstalledAgentConfiguration(dependencies.cwd);
-  const current = installed.agents.length > 0 ? installed.agents : ["claude-code" as const];
-  if (current.length <= 1) {
-    dependencies.stderr("当前只安装了一个工具，无法再移除（至少保留一个）。\n");
-    return 2;
-  }
-  const lines = current.map((agent, index) =>
-    `  ${index + 1}. ${formatAgentLine(agent, installed.profiles[agent])}`
-  ).join("\n");
-  const answer = (await dependencies.prompt(
-    `请选择要移除的工具（可多选，逗号分隔）：\n${lines}\n请输入编号，或 0 取消：`
-  )).trim();
-  if (answer === "" || answer === "0") return 0;
-  const indexes = answer.split(/[,\s]+/).map((part) => Number(part.trim()));
-  if (indexes.some((value) => !Number.isInteger(value) || value < 1 || value > current.length)) {
-    dependencies.stderr("编号无效。\n");
-    return 2;
-  }
-  const toRemove = indexes.map((index) => current[index - 1]).filter(
-    (agent): agent is HarnessAgent => agent !== undefined
-  );
-  const remaining = current.filter((agent) => !toRemove.includes(agent));
-  if (remaining.length === 0) {
-    dependencies.stderr("不能移除全部工具。\n");
-    return 2;
-  }
-  const confirm = (await dependencies.prompt(
-    `将移除：${toRemove.map((agent) => agentLabel(agent)).join("、")}\n` +
-    `保留：${remaining.map((agent) => agentLabel(agent)).join("、")}\n` +
-    "未改动的受管文件若有本地修改会保留并提示冲突。确认？[y/N]："
-  )).trim();
-  if (!/^(?:y|yes)$/i.test(confirm)) {
-    dependencies.stdout("已取消。\n");
+  const pendingArchives = await listPendingArchives(dependencies.cwd);
+  if (pendingArchives.length === 0) {
+    dependencies.stdout("当前没有待上传归档。\n");
     return 0;
   }
-  return runRefresh({
-    agents: remaining.join(","),
-    removeAgents: toRemove.join(","),
-    confirmed: true,
-    ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
-    ...(options.json === undefined ? {} : { json: options.json }),
-    ...(options.forceManaged === undefined ? {} : { forceManaged: options.forceManaged }),
-    ...(options.recoveryRoot === undefined ? {} : { recoveryRoot: options.recoveryRoot })
-  }, dependencies);
-}
-
-async function runManageToolsMenu(
-  options: ConfigureOptions,
-  dependencies: CommandDependencies,
-  currentProfile: "general" | "java",
-  currentSurface: "both" | "ide" | "cli"
-): Promise<number> {
-  const answer = (await dependencies.prompt([
-    "管理工具",
-    "  1. 新增或刷新指定工具（可改「通用」或「Java」配置）",
-    "  2. 移除一个或多个工具",
-    "  0. 返回",
-    "请选择："
-  ].join("\n"))).trim();
-  if (answer === "0" || answer === "") return 0;
-  if (answer === "2") return runRemoveAgentsFlow(dependencies, options);
-  if (answer !== "1") return 2;
-  // Lazy import avoids a circular load with configure.ts.
-  const { runConfigureAgentsFlow } = await import("./configure.js");
-  return runConfigureAgentsFlow(options, dependencies, currentProfile, currentSurface);
+  let exitCode = 0;
+  for (const archive of pendingArchives) {
+    dependencies.stdout(`正在重试归档：${archive.changeKey}\n`);
+    const result = await runArchiveUpload({
+      file: archive.packagePath,
+      changeKey: archive.changeKey,
+      nonInteractive: true,
+      yes: true,
+      onReceipt: async (receipt) => {
+        if (receipt.archive_status === "durable" && receipt.knowledge_status === "ready") {
+          await Promise.all([
+            unlink(archive.packagePath).catch(() => undefined),
+            unlink(archive.receiptPath).catch(() => undefined)
+          ]);
+          return;
+        }
+        let existing: Record<string, unknown> = {};
+        try {
+          existing = JSON.parse(await readFile(archive.receiptPath, "utf8")) as Record<string, unknown>;
+        } catch {
+          // Recreate a bounded retry receipt when the previous one is damaged.
+        }
+        const failed = receipt.knowledge_status === "failed";
+        await writeFile(archive.receiptPath, JSON.stringify({
+          ...existing,
+          schemaVersion: 1,
+          changeKey: archive.changeKey,
+          packagePath: archive.packagePath,
+          packageSha256: receipt.package_sha256,
+          uploadStatus: failed ? "failed" : "pending",
+          archiveStatus: receipt.archive_status,
+          knowledgeStatus: receipt.knowledge_status,
+          archiveId: receipt.archive_id,
+          reasonCode: failed
+            ? "ARCHIVE_KNOWLEDGE_INDEX_FAILED"
+            : "ARCHIVE_KNOWLEDGE_INDEXING",
+          updatedAt: new Date().toISOString()
+        }, null, 2) + "\n", "utf8");
+      }
+    }, dependencies);
+    if (result !== 0) exitCode = result;
+  }
+  return exitCode;
 }
 
 async function runTransactionMenu(
@@ -326,23 +321,24 @@ async function runTransactionMenu(
 
 /**
  * Interactive home for an already-initialized project.
- * Returns an exit code (including after configure/refresh), never null.
+ * v1.0：投影面固定，菜单只剩刷新 / 平台 / 归档 / 事务。
+ * Returns an exit code (including after refresh), never null.
  */
 export async function runInitializedProjectMenu(
   options: ConfigureOptions,
-  dependencies: CommandDependencies,
-  currentProfile: "general" | "java",
-  currentSurface: "both" | "ide" | "cli"
+  dependencies: CommandDependencies
 ): Promise<number> {
+  const refreshOptions = {
+    confirmed: true,
+    ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+    ...(options.json === undefined ? {} : { json: options.json }),
+    ...(options.forceManaged === undefined ? {} : { forceManaged: options.forceManaged }),
+    ...(options.recoveryRoot === undefined ? {} : { recoveryRoot: options.recoveryRoot })
+  };
   if (options.nonInteractive === true) {
-    const { runConfigureAgentsFlow } = await import("./configure.js");
-    return runConfigureAgentsFlow(options, dependencies, currentProfile, currentSurface);
+    return runRefresh(refreshOptions, dependencies);
   }
 
-  const installed = await readInstalledAgentConfiguration(dependencies.cwd);
-  const currentAgents = installed.agents.length > 0
-    ? installed.agents
-    : (["claude-code"] as HarnessAgent[]);
   const projectName = dependencies.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? dependencies.cwd;
   const cliVersion = await readCliVersion();
   const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
@@ -357,17 +353,16 @@ export async function runInitializedProjectMenu(
     formatWorkflowVersionLine(cliVersion, workflowManifest),
     await platformStatusLine(dependencies.cwd),
     `待上传归档：${pendingArchives.length} 个`,
-    ...await toolsStatusLines(dependencies.cwd)
+    ...await toolsStatusLines(dependencies)
   ];
   dependencies.stdout(banner(statusLines, terminalColumns) + "\n\n");
 
   const answer = (await dependencies.prompt([
     "请选择操作：",
-    "  1. 一键刷新已安装工具（不重选工具与配置）",
-    "  2. 管理工具（新增 / 换配置 / 移除）",
-    "  3. 平台连接（绑定或修改地址与密钥）",
-    `  4. 重试待上传归档（${pendingArchives.length} 个）`,
-    "  5. 事务与恢复",
+    "  1. 一键刷新到最新版本",
+    "  2. 平台连接（绑定或修改地址与密钥）",
+    `  3. 重试待上传归档（${pendingArchives.length} 个）`,
+    "  4. 事务与恢复",
     "  0. 退出",
     "请选择 [1]："
   ].join("\n"))).trim();
@@ -375,76 +370,15 @@ export async function runInitializedProjectMenu(
   const choice = answer === "" ? "1" : answer;
   if (choice === "0") return 0;
   if (choice === "1") {
-    dependencies.stdout(
-      `正在按现有配置刷新：${currentAgents.map((agent) =>
-        formatAgentLine(agent, installed.profiles[agent] ?? currentProfile)
-      ).join("、")}…\n`
-    );
-    return runRefresh({
-      agents: currentAgents.join(","),
-      confirmed: true,
-      ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
-      ...(options.json === undefined ? {} : { json: options.json }),
-      ...(options.forceManaged === undefined ? {} : { forceManaged: options.forceManaged }),
-      ...(options.recoveryRoot === undefined ? {} : { recoveryRoot: options.recoveryRoot })
-    }, dependencies);
+    return runRefresh(refreshOptions, dependencies);
   }
   if (choice === "2") {
-    return runManageToolsMenu(options, dependencies, currentProfile, currentSurface);
-  }
-  if (choice === "3") {
     return runPlatformConnectionMenu(options, dependencies);
   }
-  if (choice === "4") {
-    if (pendingArchives.length === 0) {
-      dependencies.stdout("当前没有待上传归档。\n");
-      return 0;
-    }
-    let exitCode = 0;
-    for (const archive of pendingArchives) {
-      dependencies.stdout(`正在重试归档：${archive.changeKey}\n`);
-      const result = await runArchiveUpload({
-        file: archive.packagePath,
-        changeKey: archive.changeKey,
-        nonInteractive: true,
-        yes: true,
-        onReceipt: async (receipt) => {
-          if (receipt.archive_status === "durable" && receipt.knowledge_status === "ready") {
-            await Promise.all([
-              unlink(archive.packagePath).catch(() => undefined),
-              unlink(archive.receiptPath).catch(() => undefined)
-            ]);
-            return;
-          }
-          let existing: Record<string, unknown> = {};
-          try {
-            existing = JSON.parse(await readFile(archive.receiptPath, "utf8")) as Record<string, unknown>;
-          } catch {
-            // Recreate a bounded retry receipt when the previous one is damaged.
-          }
-          const failed = receipt.knowledge_status === "failed";
-          await writeFile(archive.receiptPath, JSON.stringify({
-            ...existing,
-            schemaVersion: 1,
-            changeKey: archive.changeKey,
-            packagePath: archive.packagePath,
-            packageSha256: receipt.package_sha256,
-            uploadStatus: failed ? "failed" : "pending",
-            archiveStatus: receipt.archive_status,
-            knowledgeStatus: receipt.knowledge_status,
-            archiveId: receipt.archive_id,
-            reasonCode: failed
-              ? "ARCHIVE_KNOWLEDGE_INDEX_FAILED"
-              : "ARCHIVE_KNOWLEDGE_INDEXING",
-            updatedAt: new Date().toISOString()
-          }, null, 2) + "\n", "utf8");
-        }
-      }, dependencies);
-      if (result !== 0) exitCode = result;
-    }
-    return exitCode;
+  if (choice === "3") {
+    return runPendingArchivesRetry(dependencies);
   }
-  if (choice === "5") {
+  if (choice === "4") {
     return runTransactionMenu(dependencies);
   }
   dependencies.stderr("无效选项。\n");

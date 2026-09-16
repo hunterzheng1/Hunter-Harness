@@ -93,12 +93,12 @@ def collect_file_hashes(root: Path) -> dict[str, str]:
     return out
 
 
-def build_once(skills_root: Path, overlay: str | None, out_dir: Path) -> dict[str, Any]:
+def build_once(skills_root: Path, out_dir: Path, surface: str = "codex") -> dict[str, Any]:
     sys.path.insert(0, str(SCRIPTS_DIR))
     import harness_deploy as hd  # noqa: E402
 
     try:
-        result = hd.cmd_build(skills_root, out_dir, overlay)
+        result = hd.cmd_build(skills_root, out_dir, surface)
         return {"ok": True, "result": result}
     except Exception as exc:  # noqa: BLE001 - surface build failures
         return {"ok": False, "error": str(exc)}
@@ -252,34 +252,26 @@ def run_acceptance(skills_root: Path, out_path: Path | None) -> dict[str, Any]:
     # 1. test suites (actually run)
     result["tests"]["harness"] = run_unittest(skills_root / "scripts" / "tests", "test_harness_*.py")
 
-    # 2-3. builds + skill counts + determinism + forbidden patterns
+    # 2-3. build + skill counts + determinism + forbidden patterns（v1.0 单一规范树：
+    # codex/codebuddy 内容相同，验收只构建 codex surface 双份比对确定性）。
     tmp = Path(tempfile.mkdtemp(prefix="harness-acceptance-"))
     try:
         generic_a = tmp / "generic-a"
         generic_b = tmp / "generic-b"
-        java_a = tmp / "java-a"
-        java_b = tmp / "java-b"
-        b_g1 = build_once(skills_root, None, generic_a)
-        b_g2 = build_once(skills_root, None, generic_b)
-        b_j1 = build_once(skills_root, "java", java_a)
-        b_j2 = build_once(skills_root, "java", java_b)
+        b_g1 = build_once(skills_root, generic_a)
+        b_g2 = build_once(skills_root, generic_b)
 
         generic_count = count_skills(generic_a) if generic_a.is_dir() else 0
-        java_count = count_skills(java_a) if java_a.is_dir() else 0
-        result["skillCounts"] = {"core": generic_count, "java": java_count}
+        result["skillCounts"] = {"core": generic_count}
 
         det = generic_a.is_dir() and generic_b.is_dir() and collect_file_hashes(generic_a) == collect_file_hashes(generic_b)
-        java_det = java_a.is_dir() and java_b.is_dir() and collect_file_hashes(java_a) == collect_file_hashes(java_b)
         result["buildDeterminism"] = {
-            "genericByteIdentical": bool(det),
-            "javaByteIdentical": bool(java_det),
-            "buildOk": bool(b_g1["ok"] and b_j1["ok"]),
+            "byteIdentical": bool(det),
+            "buildOk": bool(b_g1["ok"] and b_g2["ok"]),
         }
 
         if generic_a.is_dir():
-            result["forbiddenPatterns"]["generic"] = scan_forbidden(generic_a)
-        if java_a.is_dir():
-            result["forbiddenPatterns"]["java"] = scan_forbidden(java_a)
+            result["forbiddenPatterns"]["bundle"] = scan_forbidden(generic_a)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -314,11 +306,9 @@ def run_acceptance(skills_root: Path, out_path: Path | None) -> dict[str, Any]:
     # overall
     auto_ok = (
         result["tests"]["harness"]["ok"]
-        and result["buildDeterminism"]["genericByteIdentical"]
-        and result["buildDeterminism"]["javaByteIdentical"]
+        and result["buildDeterminism"]["byteIdentical"]
         and result["buildDeterminism"]["buildOk"]
-        and result["forbiddenPatterns"].get("generic", {}).get("clean", False)
-        and result["forbiddenPatterns"].get("java", {}).get("clean", False)
+        and result["forbiddenPatterns"].get("bundle", {}).get("clean", False)
         and result["unitTestFull"]["ok"]
         and result["gitDiffCheck"]["ok"]
         and not result["archiveMutated"]

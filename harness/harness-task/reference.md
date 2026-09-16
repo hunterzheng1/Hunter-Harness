@@ -115,7 +115,7 @@ finish 在执行前先生成验证计划（`_plan_verifications`），摘要项�
 | ASSET_OUTBOX_ENQUEUE_FAILED | finish 的 outcome 资产入队 asset-outbox 失败（任务保持 open，WI-E3） | `harness_asset_outbox.py status` 查队列（容量/死信），处理后重跑 finish（幂等键去重不重复入队） |
 | TASK_FINISHED_NO_ARCHIVE | `--no-commit` 成功但未提交未归档 | 手工提交后如需归档见 nextAction 命令 |
 | POLICY_LOAD_FAILED | workflow-policy.json 加载失败 | 检查 `.harness/config/workflow-policy.json` |
-| PROJECT_ROOT_INVALID | 项目未初始化（无 .harness/） | `npx hunter-harness init --profile general` |
+| PROJECT_ROOT_INVALID | 项目未初始化（无 .harness/） | `npx hunter-harness init` |
 
 错误信封统一带 `code` + `message` + `field_path` + `problems[]` +
 `recoveryAction`（精确重跑命令）。

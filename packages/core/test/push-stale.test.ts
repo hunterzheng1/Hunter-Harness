@@ -1,6 +1,6 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -44,7 +44,7 @@ describe("pushProject stale baseline UX", () => {
       await initializeProject({
         projectRoot: initSeedRoot,
         resourcesRoot,
-        config: { agents: ["claude-code"], profile: "general" },
+        config: {},
         dryRun: false
       });
     }
@@ -170,11 +170,12 @@ describe("pushProject stale baseline UX", () => {
   it("resolves a stale conflict in the same push before proposal confirmation", async () => {
     const root = await initRoot();
     const projectId = "prj_interactive_rebase";
-    const path = ".claude/rules/interactive-rebase.md";
+    const path = ".harness/codebase/map/interactive-rebase.md";
     const base = "base\n";
     const local = "local wins\n";
     const remote = "remote version\n";
     await bindProject(root, projectId, "pv_00000000");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), local);
     const baseline = await readBaseline(root);
     baseline.files[path] = {
@@ -262,11 +263,12 @@ describe("pushProject stale baseline UX", () => {
   it("returns noChanges when remote rebase already contains the local managed change", async () => {
     const root = await initRoot();
     const projectId = "prj_rebase_noop";
-    const path = ".harness/rules/rebase-noop.md";
+    const path = ".harness/codebase/map/rebase-noop.md";
     const base = "base\n";
     const remote = "already published\n";
     await bindProject(root, projectId, "pv_00000000");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000000");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), remote);
     const baseline = await readBaseline(root);
     baseline.files[path] = {
@@ -355,7 +357,7 @@ describe("pushProject stale baseline UX", () => {
   it("refreshes an advanced remote baseline even when the initial local diff is empty", async () => {
     const root = await initRoot();
     const projectId = "prj_initial_noop_rebase";
-    const path = ".harness/rules/remote-added.md";
+    const path = ".harness/codebase/map/remote-added.md";
     const remote = "# Remote rule\n";
     await bindProject(root, projectId, "pv_00000000");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000000");
@@ -437,10 +439,11 @@ describe("pushProject stale baseline UX", () => {
   it("returns noChanges when files converge before the push lock recheck", async () => {
     const root = await initRoot();
     const projectId = "prj_lock_noop";
-    const path = ".harness/rules/lock-noop.md";
+    const path = ".harness/codebase/map/lock-noop.md";
     const base = "base\n";
     await bindProject(root, projectId, "pv_00000001");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), "temporary local edit\n");
     const baseline = await readBaseline(root);
     baseline.files[path] = {
@@ -481,11 +484,12 @@ describe("pushProject stale baseline UX", () => {
   it("rereads a baseline advanced by another push before the lock is claimed", async () => {
     const root = await initRoot();
     const projectId = "prj_lock_baseline_advanced";
-    const path = ".harness/rules/concurrent-push.md";
+    const path = ".harness/codebase/map/concurrent-push.md";
     const base = "base\n";
     const current = "concurrent result\n";
     await bindProject(root, projectId, "pv_00000001");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), current);
     const initialBaseline = await readBaseline(root);
     initialBaseline.files[path] = {
@@ -539,9 +543,10 @@ describe("pushProject stale baseline UX", () => {
   it("requires confirmation again when the final locked proposal changes", async () => {
     const root = await initRoot();
     const projectId = "prj_lock_reconfirm";
-    const path = ".harness/rules/reconfirm.md";
+    const path = ".harness/codebase/map/reconfirm.md";
     await bindProject(root, projectId, "pv_00000001");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), "proposal A\n");
     const calls: string[] = [];
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -581,9 +586,10 @@ describe("pushProject stale baseline UX", () => {
     // 是历史兼容面，永不调用。
     const root = await initRoot();
     const projectId = "prj_lock_rescan";
-    const path = ".harness/rules/rescan.md";
+    const path = ".harness/codebase/map/rescan.md";
     await bindProject(root, projectId, "pv_00000001");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await mkdir(dirname(join(root, path)), { recursive: true });
     await writeFile(join(root, path), "Authorization: Bearer secret-A-12345678901234567890\n");
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -697,8 +703,9 @@ describe("pushProject stale baseline UX", () => {
     const root = await initRoot();
     const projectId = "prj_stale_behind";
     await bindProject(root, projectId, null);
+    await mkdir(join(root, ".harness", "codebase", "map"), { recursive: true });
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "codebase", "map", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
     const fetch = vi.fn(async (input: string | URL | Request) => {

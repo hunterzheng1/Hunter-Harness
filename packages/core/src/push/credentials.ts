@@ -32,7 +32,8 @@ export class InvalidCredentialsError extends Error {
 export function assertSecureServerUrl(url: string): string {
   try {
     const parsed = new URL(url.trim());
-    if (!isAllowedServerUrl(parsed.toString())) {
+    // HTTP 仅允许 loopback（localhost/127.0.0.1/[::1]），远端必须 HTTPS。
+    if (!isAllowedServerUrl(parsed.toString(), true)) {
       throw new InvalidCredentialsError(
         "server_url must use HTTPS unless it targets localhost"
       );
