@@ -5,10 +5,13 @@ import { dirname, join, resolve, sep } from "node:path";
 /**
  * v1.0 卸载引擎：一键移除 hunter-harness 在项目（及可选的用户级目录）写入的
  * 全部受管内容。只删受管文件——
- * 1. 安装状态（`.harness/state/local/installed-harness-bundle.json`，v5）逐文件
- *    校验 sha256，被本地改过的文件跳过并告警；
- * 2. 历史版本（0.x）投影按 `harness-` 前缀清扫已知适配器根（.claude/.cursor/.pi/
- *    .codebuddy/.agents 的 skills/rules）；
+ * 1. 安装状态（`.harness/state/local/installed-harness-bundle.json`）逐文件校验
+ *    sha256，被本地改过的文件跳过并告警；v5 与 0.x（schema 1-4）都可解析——0.x
+ *    的 files 记录与 v5 同构，且按 bundle 全量清单生成，故同样覆盖 contracts/ 等
+ *    无前缀附属内容；
+ * 2. 状态不可解析时退化为前缀清扫：按 `harness-` 前缀清理已知适配器根
+ *    （.claude/.cursor/.pi/.codebuddy/.agents 的 skills/rules），并对全部 skills
+ *    根提示无法验证所有权的 bundle 附属残留；
  * 3. AGENTS.md / CLAUDE.md / CODEBUDDY.md 只摘 `hunter-harness` 受管段落，文件
  *    摘空才删除；
  * 4. `.mcp.json` 只摘除与安装时写入形状完全一致的 `mcpServers.codegraph` 条目；
@@ -50,31 +53,51 @@ export interface UninstallReport {
   counts: { deleted: number; stripped: number; skipped: number };
 }
 
-interface InstalledStateV5 {
-  schema_version: number;
-  surfaces: string[];
-  files: Array<{ owner: string; source_path: string; target_path: string; sha256: string }>;
-  managed_blocks: Array<{
-    owner: string;
-    target_path: string;
-    block_id: string | null;
-    content_sha256: string;
-  }>;
+/** 状态记录的文件条目；0.x（schema 2）没有 owner，故各字段按需收窄。 */
+interface InstalledFileEntry {
+  owner?: unknown;
+  source_path?: unknown;
+  target_path?: unknown;
+  sha256?: unknown;
 }
 
-/** 项目内已知适配器根（v1.0 两个投影面 + 0.x 历史根），只做 harness- 前缀清扫。 */
-const PROJECT_SWEEP_ROOTS = [
+interface InstalledStateV5 {
+  schema_version: number;
+  surfaces?: string[];
+  files: InstalledFileEntry[];
+  managed_blocks: unknown[];
+}
+
+/** 当前状态 schema；1-4 为 0.x 旧版，files 与 v5 同构，可直接用于精确删除。 */
+const CURRENT_STATE_SCHEMA_VERSION = 5;
+const MIN_LEGACY_STATE_SCHEMA_VERSION = 1;
+
+/** 解析后的可用状态。 */
+interface InstalledState {
+  schemaVersion: number;
+  /** true 表示 0.x 旧版状态（schema 1-4）。 */
+  legacy: boolean;
+  files: InstalledFileEntry[];
+}
+
+/** 项目内 skills 根（v1.0 两个投影面 + 0.x 历史面），也是 bundle 附属内容的投影根。 */
+const SKILLS_ROOTS = [
   ".agents/skills",
   ".codebuddy/skills",
   ".claude/skills",
   ".cursor/skills",
-  ".pi/skills",
+  ".pi/skills"
+];
+
+/** 项目内已知适配器根（skills 根 + rules 根），只做 harness- 前缀清扫。 */
+const PROJECT_SWEEP_ROOTS = [
+  ...SKILLS_ROOTS,
   ".claude/rules",
   ".codebuddy/rules",
   ".cursor/rules"
 ];
 
-/** v1.0 bundle 中不带 harness- 前缀的附属内容（状态缺失时不强行删除，只提示）。 */
+/** bundle 中不带 harness- 前缀的附属内容（状态可用时按状态精确删除，缺失时只提示）。 */
 const BUNDLE_EXTRA_ENTRIES = new Set([
   "contracts",
   "protocols",
@@ -158,7 +181,12 @@ async function pruneEmptyAncestors(ctx: Ctx, startDir: string) {
   }
 }
 
-async function readInstalledState(absRoot: string): Promise<InstalledStateV5 | null> {
+/**
+ * 解析安装状态。接受 v5（严格）与 0.x 旧版（schema 1-4，宽松：files 记录与 v5
+ * 同构——0.x 由 bundle 全量清单生成，含 contracts/ 等无前缀附属内容——可直接
+ * 精确删除）；解析失败或 schema 未知返回 null，由前缀清扫兜底。
+ */
+async function readInstalledState(absRoot: string): Promise<InstalledState | null> {
   let raw: string;
   try {
     raw = await readFile(
@@ -169,23 +197,36 @@ async function readInstalledState(absRoot: string): Promise<InstalledStateV5 | n
     return null;
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<InstalledStateV5>;
-    if (parsed.schema_version !== 5 ||
-        !Array.isArray(parsed.files) ||
-        !Array.isArray(parsed.managed_blocks)) {
+    const parsed = JSON.parse(raw) as Partial<InstalledStateV5> & { schema_version?: unknown };
+    if (typeof parsed.schema_version !== "number" || !Number.isInteger(parsed.schema_version)) {
       return null;
     }
-    return parsed as InstalledStateV5;
+    if (!Array.isArray(parsed.files)) return null;
+    if (parsed.schema_version === CURRENT_STATE_SCHEMA_VERSION) {
+      if (!Array.isArray(parsed.managed_blocks)) return null;
+      return { schemaVersion: parsed.schema_version, legacy: false, files: parsed.files };
+    }
+    if (
+      parsed.schema_version >= MIN_LEGACY_STATE_SCHEMA_VERSION &&
+      parsed.schema_version < CURRENT_STATE_SCHEMA_VERSION
+    ) {
+      return { schemaVersion: parsed.schema_version, legacy: true, files: parsed.files };
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 /** 状态驱动的精确删除：只删与记录 sha256 一致（未被本地改动）的受管文件。 */
-async function deleteStateTrackedFiles(ctx: Ctx, state: InstalledStateV5) {
-  const entries = [...state.files].sort((a, b) => a.target_path < b.target_path ? -1 : 1);
+async function deleteStateTrackedFiles(ctx: Ctx, state: InstalledState) {
+  const entries = state.files
+    .filter(
+      (entry): entry is InstalledFileEntry & { target_path: string; sha256: string } =>
+        typeof entry?.target_path === "string" && typeof entry?.sha256 === "string"
+    )
+    .sort((a, b) => (a.target_path < b.target_path ? -1 : 1));
   for (const entry of entries) {
-    if (typeof entry?.target_path !== "string" || typeof entry?.sha256 !== "string") continue;
     const abs = resolveInsideRoot(ctx.absRoot, entry.target_path);
     if (abs === null) {
       ctx.warnings.push(`状态记录的路径越界，已跳过：${entry.target_path}`);
@@ -205,7 +246,8 @@ async function deleteStateTrackedFiles(ctx: Ctx, state: InstalledStateV5) {
       ctx.warnings.push(`本地修改过的受管文件未删除：${displayPath(ctx, abs)}`);
       continue;
     }
-    await deleteFile(ctx, abs, `受管文件（owner=${entry.owner}）`);
+    const owner = typeof entry.owner === "string" ? entry.owner : "0.x";
+    await deleteFile(ctx, abs, `受管文件（owner=${owner}）`);
   }
 }
 
@@ -242,6 +284,37 @@ async function sweepHarnessPrefixedEntries(ctx: Ctx, rootAbs: string, label: str
       await deleteDir(ctx, abs, `${label} harness 投影目录`);
     } else {
       await deleteFile(ctx, abs, `${label} harness 投影文件`);
+    }
+  }
+}
+
+/**
+ * 提示 bundle 附属残留（contracts/protocols/scripts 等无 harness- 前缀、也不在
+ * 状态记录里的内容）。这类内容无法在不看安装状态的前提下验证所有权，故只提示
+ * 不删除；扫描覆盖全部 skills 根，避免某个历史面（如 .pi）静默残留。
+ */
+async function warnBundleExtraResidue(
+  ctx: Ctx,
+  baseAbs: string,
+  roots: readonly string[],
+  label: string
+) {
+  for (const skillsRoot of roots) {
+    const rootAbs = join(baseAbs, ...skillsRoot.split("/"));
+    const info = await statOrNull(rootAbs);
+    if (info === null || !info.isDirectory()) continue;
+    let entries: string[];
+    try {
+      entries = await readdir(rootAbs);
+    } catch {
+      continue;
+    }
+    const leftovers = entries.filter((name) => BUNDLE_EXTRA_ENTRIES.has(name));
+    if (leftovers.length > 0) {
+      ctx.warnings.push(
+        `${label}${skillsRoot} 下存在疑似 bundle 附属内容（无安装状态可验证，未自动删除）：` +
+        leftovers.join(", ")
+      );
     }
   }
 }
@@ -343,9 +416,15 @@ export async function uninstallHarness(options: UninstallOptions): Promise<Unins
     skipped: 0
   };
 
-  // 1. 状态驱动的精确删除（v5 安装）。
+  // 1. 状态驱动的精确删除（v5 或 0.x 旧版状态，两者 files 记录同构）。
   const state = await readInstalledState(absRoot);
   if (state !== null) {
+    if (state.legacy) {
+      ctx.warnings.push(
+        `安装状态为 0.x 旧版格式（schema_version=${state.schemaVersion}），` +
+        "已按状态记录精确删除全部受管文件（含 bundle 附属内容）"
+      );
+    }
     await deleteStateTrackedFiles(ctx, state);
   } else {
     const legacyState = await statOrNull(
@@ -353,7 +432,7 @@ export async function uninstallHarness(options: UninstallOptions): Promise<Unins
     );
     if (legacyState !== null) {
       ctx.warnings.push(
-        "安装状态为 0.x 旧版格式，改用前缀清扫（非 harness- 前缀的 bundle 附属文件可能残留）"
+        "安装状态为 0.x 旧版格式但无法解析，改用前缀清扫（非 harness- 前缀的 bundle 附属文件可能残留）"
       );
     }
   }
@@ -363,20 +442,9 @@ export async function uninstallHarness(options: UninstallOptions): Promise<Unins
     await sweepHarnessPrefixedEntries(ctx, join(absRoot, ...root.split("/")), root);
   }
 
-  // 3. 状态缺失时提示 v1.0 bundle 附属残留（不强行删除无法验证所有权的文件）。
+  // 3. 状态不可用时提示 bundle 附属残留（状态可用时这些条目已在第 1 步精确删除）。
   if (state === null) {
-    for (const skillsRoot of [".agents/skills", ".codebuddy/skills"]) {
-      const rootAbs = join(absRoot, ...skillsRoot.split("/"));
-      const info = await statOrNull(rootAbs);
-      if (info === null || !info.isDirectory()) continue;
-      const leftovers = (await readdir(rootAbs)).filter((name) => BUNDLE_EXTRA_ENTRIES.has(name));
-      if (leftovers.length > 0) {
-        ctx.warnings.push(
-          `${skillsRoot} 下存在疑似 bundle 附属内容（无安装状态可验证，未自动删除）：` +
-          leftovers.join(", ")
-        );
-      }
-    }
+    await warnBundleExtraResidue(ctx, absRoot, SKILLS_ROOTS, "");
   }
 
   // 4. 指令文件受管段摘除（AGENTS.md 单文件 + 0.x 的 CLAUDE.md/CODEBUDDY.md）。
@@ -405,9 +473,11 @@ export async function uninstallHarness(options: UninstallOptions): Promise<Unins
       if (info !== null && info.isDirectory()) {
         await deleteDir(ctx, cliState, "用户级 hunter-harness CLI 状态");
       }
-      for (const root of [".agents/skills", ".codebuddy/skills", ".claude/skills", ".cursor/skills", ".pi/skills"]) {
+      for (const root of SKILLS_ROOTS) {
         await sweepHarnessPrefixedEntries(ctx, join(userHome, ...root.split("/")), `用户级 ${root}`);
       }
+      // 用户级根没有对应安装状态可验证，附属内容永远只提示不删除。
+      await warnBundleExtraResidue(ctx, userHome, SKILLS_ROOTS, "用户级 ");
     }
   }
 

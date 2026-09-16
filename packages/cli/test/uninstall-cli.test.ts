@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,9 +25,10 @@ afterEach(async () => {
   ));
 });
 
+/** 目录与文件均判定（readFile 对目录抛 EISDIR，不能当存在性检查用）。 */
 async function exists(path: string): Promise<boolean> {
   try {
-    await readFile(path);
+    await stat(path);
     return true;
   } catch {
     return false;
@@ -37,7 +38,8 @@ async function exists(path: string): Promise<boolean> {
 /** 最小 v1.0 安装现场：v5 状态 + 受管 skill + 带受管块的 AGENTS.md。 */
 async function seedInstalledProject(root: string): Promise<void> {
   const { createHash } = await import("node:crypto");
-  const hash = "sha256:" + createHash("sha256").update(MANAGED_BODY).digest("hex");
+  // 状态文件的 sha256 为裸 hex（与 core 精确删除的比对一致），带前缀会被判为本地改动。
+  const hash = createHash("sha256").update(MANAGED_BODY).digest("hex");
   await mkdir(join(root, ".agents", "skills", "harness-review"), { recursive: true });
   await mkdir(join(root, ".harness", "state", "local"), { recursive: true });
   await writeFile(join(root, ".agents", "skills", "harness-review", "SKILL.md"), MANAGED_BODY);

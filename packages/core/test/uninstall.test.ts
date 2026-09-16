@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -23,9 +23,10 @@ afterEach(async () => {
   ));
 });
 
+/** 目录与文件均判定（readFile 对目录抛 EISDIR，不能当存在性检查用）。 */
 async function exists(path: string): Promise<boolean> {
   try {
-    await readFile(path);
+    await stat(path);
     return true;
   } catch {
     return false;
@@ -216,5 +217,65 @@ describe("uninstall engine (v1.0)", () => {
     } finally {
       await rm(outside, { force: true });
     }
+  });
+
+  it("parses a 0.x (v4) state and precisely deletes tracked files including bundle extras", async () => {
+    const root = await makeRoot();
+    // 0.x 现场：多面投影，附属内容不在 skills 名册里但由状态记录（schema 2 无 owner）。
+    const tracked: Array<{ target: string; body: string; owner?: string }> = [
+      { target: ".pi/skills/harness-review/SKILL.md", body: "pi skill\n", owner: "pi" },
+      { target: ".pi/skills/contracts/x.md", body: "contracts\n", owner: "pi" },
+      { target: ".pi/skills/.harness-build.json", body: "{\"agent\":\"pi\"}\n" },
+      { target: ".codebuddy/skills/scripts/a.py", body: "print(1)\n", owner: "codebuddy" }
+    ];
+    for (const { target, body } of tracked) {
+      const abs = join(root, ...target.split("/"));
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, body);
+    }
+    // 未记录进状态的历史投影：由前缀清扫兜底删除。
+    await mkdir(join(root, ".pi", "skills", "harness-run"), { recursive: true });
+    await writeFile(join(root, ".pi", "skills", "harness-run", "SKILL.md"), "untracked\n");
+    await mkdir(join(root, ".harness", "state", "local"), { recursive: true });
+    await writeFile(join(root, INSTALLED_STATE_PATH), JSON.stringify({
+      schema_version: 4,
+      adapters: ["pi", "codebuddy"],
+      profiles: { pi: "general", codebuddy: "general" },
+      installed_at: "2025-01-01T00:00:00.000Z",
+      manifests: [],
+      files: tracked.map(({ target, body, owner }) => ({
+        ...(owner === undefined ? {} : { owner }),
+        source_path: target.split("/").slice(1).join("/"),
+        target_path: target,
+        sha256: createHash("sha256").update(body, "utf8").digest("hex")
+      })),
+      managed_blocks: []
+    }, null, 2) + "\n");
+
+    const report = await uninstallHarness({ projectRoot: root, dryRun: false });
+
+    expect(await exists(join(root, ".pi"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy"))).toBe(false);
+    expect(report.warnings.some((w) => w.includes("0.x") && w.includes("精确删除"))).toBe(true);
+    // 状态已精确删除附属内容，不再需要"附属残留"提示。
+    expect(report.warnings.some((w) => w.includes("疑似 bundle 附属内容"))).toBe(false);
+  });
+
+  it("warns about bundle extras in every legacy skills root, not just .codebuddy", async () => {
+    const root = await makeRoot();
+    await mkdir(join(root, ".harness", "state", "local"), { recursive: true });
+    // 无 files 记录的 0.x 状态：不可解析，退化为前缀清扫。
+    await writeFile(join(root, INSTALLED_STATE_PATH), JSON.stringify({ schema_version: 3 }));
+    await mkdir(join(root, ".pi", "skills", "harness-old"), { recursive: true });
+    await writeFile(join(root, ".pi", "skills", "harness-old", "SKILL.md"), "old\n");
+    await mkdir(join(root, ".pi", "skills", "contracts"), { recursive: true });
+    await writeFile(join(root, ".pi", "skills", "contracts", "x.md"), "contracts\n");
+
+    const report = await uninstallHarness({ projectRoot: root, dryRun: false });
+
+    expect(await exists(join(root, ".pi", "skills", "harness-old"))).toBe(false);
+    expect(await exists(join(root, ".pi", "skills", "contracts", "x.md"))).toBe(true);
+    expect(report.warnings.some((w) => w.includes(".pi/skills") && w.includes("contracts"))).toBe(true);
+    expect(report.warnings.some((w) => w.includes("0.x"))).toBe(true);
   });
 });
