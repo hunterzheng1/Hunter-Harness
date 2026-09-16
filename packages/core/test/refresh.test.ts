@@ -370,11 +370,24 @@ describe("Conservative Refresh (fixed dual surface)", () => {
     await installFirst(root);
     await mkdir(join(root, ".claude", "skills", "harness-review"), { recursive: true });
     await writeFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "old\n");
+    // 0.x 其余投影面：agents/commands/.rules 与 bundle 附属内容。
+    await mkdir(join(root, ".codebuddy", "agents"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", "agents", "harness-explorer.md"), "agent\n");
+    await mkdir(join(root, ".codebuddy", ".rules"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", ".rules", "harness-general.mdc"), "rules\n");
+    await mkdir(join(root, ".claude", "skills", "contracts"), { recursive: true });
+    await writeFile(join(root, ".claude", "skills", "contracts", "x.md"), "contracts\n");
 
     const result = await refresh(root);
+    const warnings = result.legacy_warnings.join("\n");
 
-    expect(result.legacy_warnings.join("\n")).toContain(".claude/skills");
+    expect(warnings).toContain(".claude/skills");
+    expect(warnings).toContain("contracts");
+    expect(warnings).toContain(".codebuddy/agents");
+    expect(warnings).toContain(".codebuddy/.rules");
     expect(await readFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "utf8")).toBe("old\n");
+    expect(await readFile(join(root, ".codebuddy", "agents", "harness-explorer.md"), "utf8")).toBe("agent\n");
+    expect(await readFile(join(root, ".codebuddy", ".rules", "harness-general.mdc"), "utf8")).toBe("rules\n");
   });
 
   it("keeps installed_at and state bytes unchanged for an idempotent refresh", async () => {

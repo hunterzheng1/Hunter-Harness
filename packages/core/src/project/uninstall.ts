@@ -10,8 +10,9 @@ import { dirname, join, resolve, sep } from "node:path";
  *    的 files 记录与 v5 同构，且按 bundle 全量清单生成，故同样覆盖 contracts/ 等
  *    无前缀附属内容；
  * 2. 状态不可解析时退化为前缀清扫：按 `harness-` 前缀清理已知适配器根
- *    （.claude/.cursor/.pi/.codebuddy/.agents 的 skills/rules），并对全部 skills
- *    根提示无法验证所有权的 bundle 附属残留；
+ *    （.claude/.cursor/.pi/.codebuddy/.agents 的 skills/rules/agents/commands，
+ *    含 0.x codebuddy 的 .rules 双写变体），并对全部 skills 根提示无法验证
+ *    所有权的 bundle 附属残留；
  * 3. AGENTS.md / CLAUDE.md / CODEBUDDY.md 只摘 `hunter-harness` 受管段落，文件
  *    摘空才删除；
  * 4. `.mcp.json` 只摘除与安装时写入形状完全一致的 `mcpServers.codegraph` 条目；
@@ -89,12 +90,21 @@ const SKILLS_ROOTS = [
   ".pi/skills"
 ];
 
-/** 项目内已知适配器根（skills 根 + rules 根），只做 harness- 前缀清扫。 */
+/**
+ * 项目内已知适配器根（skills/rules/agents/commands），只做 harness- 前缀清扫。
+ * 覆盖 0.x 全部投影面：0.x 在各 adapter 的 agents/commands 根写入 harness-*
+ * 文件，codebuddy 的 rules 还有 `.rules`（点前缀）双写变体。
+ */
 const PROJECT_SWEEP_ROOTS = [
   ...SKILLS_ROOTS,
   ".claude/rules",
   ".codebuddy/rules",
-  ".cursor/rules"
+  ".cursor/rules",
+  ".codebuddy/.rules",
+  ".claude/agents",
+  ".codebuddy/agents",
+  ".codebuddy/commands",
+  ".cursor/commands"
 ];
 
 /** bundle 中不带 harness- 前缀的附属内容（状态可用时按状态精确删除，缺失时只提示）。 */

@@ -180,6 +180,11 @@ describe("fixed dual-surface projection", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-legacy-"));
     await mkdir(join(root, ".claude", "skills", "harness-review"), { recursive: true });
     await writeFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "old\n");
+    // 0.x 的 agents/commands 投影面（含 .codebuddy/.rules 点前缀变体）。
+    await mkdir(join(root, ".codebuddy", "agents"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", "agents", "harness-explorer.md"), "agent\n");
+    await mkdir(join(root, ".codebuddy", ".rules"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", ".rules", "harness-general.mdc"), "rules\n");
 
     const result = await initializeProject({
       projectRoot: root,
@@ -188,9 +193,13 @@ describe("fixed dual-surface projection", () => {
       dryRun: false
     });
 
+    const warnings = result.legacyWarnings.join("\n");
     expect(result.legacyWarnings.length).toBeGreaterThan(0);
-    expect(result.legacyWarnings.join("\n")).toContain(".claude/skills");
+    expect(warnings).toContain(".claude/skills");
+    expect(warnings).toContain(".codebuddy/agents");
+    expect(warnings).toContain(".codebuddy/.rules");
     expect(await readFile(join(root, ".claude", "skills", "harness-review", "SKILL.md"), "utf8")).toBe("old\n");
+    expect(await readFile(join(root, ".codebuddy", "agents", "harness-explorer.md"), "utf8")).toBe("agent\n");
   });
 
   it("installs the real bundle to both surfaces with context v2 and state v5", async () => {

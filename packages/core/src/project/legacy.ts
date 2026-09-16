@@ -7,8 +7,10 @@ export const INSTALLED_BUNDLE_STATE_PATH = ".harness/state/local/installed-harne
 /**
  * v1.0 legacy residue detection.
  *
- * Pre-1.0 installs projected skills into per-agent roots (.claude/.cursor/.pi)
- * and wrote CLAUDE.md / CODEBUDDY.md / .harness/rules static content. v1.0 only
+ * Pre-1.0 installs projected skills into per-agent roots (.claude/.cursor/.pi),
+ * wrote rules/agents/commands projections (.claude/agents, .codebuddy/agents,
+ * .codebuddy/commands, .cursor/commands, .codebuddy/.rules 等), and wrote
+ * CLAUDE.md / CODEBUDDY.md / .harness/rules static content. v1.0 only
  * manages `.agents/skills` + `.codebuddy/skills` + AGENTS.md, so anything left
  * from the old matrix is residue that should be cleaned with
  * `npx hunter-harness uninstall`.
@@ -25,12 +27,29 @@ export interface LegacyResidue {
 }
 
 const LEGACY_SKILLS_ROOTS = [".claude/skills", ".cursor/skills", ".pi/skills"];
-const LEGACY_RULES_ROOTS = [".claude/rules", ".codebuddy/rules"];
+const LEGACY_RULES_ROOTS = [
+  ".claude/rules",
+  ".cursor/rules",
+  ".codebuddy/rules",
+  ".codebuddy/.rules"
+];
+const LEGACY_AGENTS_ROOTS = [".claude/agents", ".codebuddy/agents"];
+const LEGACY_COMMANDS_ROOTS = [".cursor/commands", ".codebuddy/commands"];
 const LEGACY_INSTRUCTION_FILES = ["CLAUDE.md", "CODEBUDDY.md"];
 const LEGACY_RULES_DIR = ".harness/rules";
 const HARNESS_PREFIX = "harness-";
 const MANAGED_BLOCK_MARKER = "hunter-harness:start";
 const CURRENT_STATE_SCHEMA_VERSION = 5;
+
+/** bundle 中不带 harness- 前缀的附属内容（出现在旧版 skills 根下即为残留）。 */
+const BUNDLE_EXTRA_ENTRIES = new Set([
+  "contracts",
+  "protocols",
+  "scripts",
+  ".harness-build.json",
+  "CONTEXT.md",
+  "README.md"
+]);
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -41,15 +60,21 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function listHarnessEntries(path: string): Promise<string[]> {
+async function listEntries(path: string, match: (name: string) => boolean): Promise<string[]> {
   try {
     const entries = await readdir(path, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.name.startsWith(HARNESS_PREFIX))
-      .map((entry) => entry.name);
+    return entries.filter((entry) => match(entry.name)).map((entry) => entry.name);
   } catch {
     return [];
   }
+}
+
+function listHarnessEntries(path: string): Promise<string[]> {
+  return listEntries(path, (name) => name.startsWith(HARNESS_PREFIX));
+}
+
+function listBundleExtraEntries(path: string): Promise<string[]> {
+  return listEntries(path, (name) => BUNDLE_EXTRA_ENTRIES.has(name));
 }
 
 async function dirHasFiles(path: string): Promise<boolean> {
@@ -100,11 +125,14 @@ export async function detectLegacyProjectionResidue(projectRoot: string): Promis
   }
 
   for (const skillsRoot of LEGACY_SKILLS_ROOTS) {
-    const entries = await listHarnessEntries(join(root, skillsRoot));
-    if (entries.length > 0) {
+    const abs = join(root, skillsRoot);
+    const harnessEntries = await listHarnessEntries(abs);
+    const extras = await listBundleExtraEntries(abs);
+    const found = [...harnessEntries, ...extras];
+    if (found.length > 0) {
       residue.push({
         path: skillsRoot,
-        detail: `旧版 agent 投影残留：${entries.join("、")}`
+        detail: `旧版 agent 投影残留：${found.join("、")}`
       });
     }
   }
@@ -115,6 +143,26 @@ export async function detectLegacyProjectionResidue(projectRoot: string): Promis
       residue.push({
         path: rulesRoot,
         detail: `旧版静态 rules 投影残留：${entries.join("、")}`
+      });
+    }
+  }
+
+  for (const agentsRoot of LEGACY_AGENTS_ROOTS) {
+    const entries = await listHarnessEntries(join(root, agentsRoot));
+    if (entries.length > 0) {
+      residue.push({
+        path: agentsRoot,
+        detail: `旧版 subagent 投影残留：${entries.join("、")}`
+      });
+    }
+  }
+
+  for (const commandsRoot of LEGACY_COMMANDS_ROOTS) {
+    const entries = await listHarnessEntries(join(root, commandsRoot));
+    if (entries.length > 0) {
+      residue.push({
+        path: commandsRoot,
+        detail: `旧版 commands 投影残留：${entries.join("、")}`
       });
     }
   }

@@ -278,4 +278,31 @@ describe("uninstall engine (v1.0)", () => {
     expect(report.warnings.some((w) => w.includes(".pi/skills") && w.includes("contracts"))).toBe(true);
     expect(report.warnings.some((w) => w.includes("0.x"))).toBe(true);
   });
+
+  it("sweeps 0.x agents/commands/.rules residue roots and keeps foreign entries", async () => {
+    const root = await makeRoot();
+    // 无安装状态（0.x 卸载后的现场）：前缀清扫是这些投影面的唯一兜底。
+    await mkdir(join(root, ".codebuddy", "agents"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", "agents", "harness-explorer.md"), "agent\n");
+    await writeFile(join(root, ".codebuddy", "agents", "my-agent.md"), "mine\n");
+    await mkdir(join(root, ".codebuddy", ".rules"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", ".rules", "harness-general.mdc"), "rules\n");
+    await mkdir(join(root, ".codebuddy", "commands"), { recursive: true });
+    await writeFile(join(root, ".codebuddy", "commands", "harness-run.md"), "cmd\n");
+    await mkdir(join(root, ".claude", "agents"), { recursive: true });
+    await writeFile(join(root, ".claude", "agents", "harness-reviewer.md"), "agent\n");
+    await mkdir(join(root, ".cursor", "commands"), { recursive: true });
+    await writeFile(join(root, ".cursor", "commands", "harness-plan.md"), "cmd\n");
+
+    const report = await uninstallHarness({ projectRoot: root, dryRun: false });
+
+    expect(await exists(join(root, ".codebuddy", ".rules"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy", "commands"))).toBe(false);
+    expect(await exists(join(root, ".claude"))).toBe(false);
+    expect(await exists(join(root, ".cursor"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy", "agents", "harness-explorer.md"))).toBe(false);
+    // 非 harness- 前缀条目保留，所在目录不被剪除。
+    expect(await readFile(join(root, ".codebuddy", "agents", "my-agent.md"), "utf8")).toBe("mine\n");
+    expect(report.counts.deleted).toBeGreaterThan(0);
+  });
 });
