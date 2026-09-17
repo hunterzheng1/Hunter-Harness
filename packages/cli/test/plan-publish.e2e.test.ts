@@ -340,3 +340,158 @@ describe("HP-18：plan publish 编排收口（P3）", () => {
     expect(result.recovery_action).toContain("review-record");
   });
 });
+
+describe("11-M4：plan publish --patch 补丁式修订", () => {
+  let root: string;
+  let inputPath: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), "harness-plan-patch-"));
+    await fs.mkdir(join(root, ".harness", "changes", CHANGE_KEY), { recursive: true });
+    inputPath = join(root, "plan-evidence-input.json");
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const deps = (outputs: string[]) => ({
+    cwd: root,
+    stdout: (chunk: string) => { outputs.push(chunk); return true; },
+    stderr: () => true,
+    gitExec: stubGitExec
+  });
+
+  it("patch 合并：JSON 字面量深度合并后走完整发布链，未触及字段从磁盘 input 保留", async () => {
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
+    const patch = {
+      intent: {
+        goal: "补丁式修订：只改目标",
+        acceptance_examples: ["补丁生效", "补丁可回放"]
+      },
+      approval: { content: { goal: "补丁式修订：只改目标" } }
+    };
+
+    const out: string[] = [];
+    const exit = await runPlanPublish(
+      { input: inputPath, patch: JSON.stringify(patch) }, deps(out));
+
+    if (exit !== 0) console.error("PATCH-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    const result = JSON.parse(out.join("")) as {
+      code: string;
+      steps: { patch: { code: string; merged_fields: string[] } };
+    };
+    expect(result.code).toBe("PLAN_PUBLISHED");
+    expect(result.steps.patch.code).toBe("PLAN_PATCH_MERGED");
+    expect(result.steps.patch.merged_fields).toEqual(["intent", "approval"]);
+
+    // 合并结果写回 input：深合并且数组整体替换（RFC 7386），未触及字段保留
+    const merged = JSON.parse(await fs.readFile(inputPath, "utf8")) as {
+      intent: Record<string, unknown>;
+      approval: { content: Record<string, unknown> };
+      structured_input: { tasks: unknown[] };
+    };
+    expect(merged.intent.goal).toBe("补丁式修订：只改目标");
+    expect(merged.intent.acceptance_examples).toEqual(["补丁生效", "补丁可回放"]);
+    expect(merged.intent.in_scope).toEqual(["plan_publish"]);
+    expect(merged.approval.content.goal).toBe("补丁式修订：只改目标");
+    expect(merged.approval.content.user_visible_outcome).toBe("一条命令完成发布");
+    expect(merged.structured_input.tasks).toHaveLength(1);
+  });
+
+  it("patch 合并：.json 文件形式同样生效", async () => {
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
+    const patchPath = join(root, "patch.json");
+    await fs.writeFile(
+      patchPath, JSON.stringify({ context: { branch_name: "feature/patch" } }));
+
+    const out: string[] = [];
+    const exit = await runPlanPublish({ input: inputPath, patch: patchPath }, deps(out));
+
+    if (exit !== 0) console.error("PATCH-FILE-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    const merged = JSON.parse(await fs.readFile(inputPath, "utf8")) as {
+      context: Record<string, unknown>;
+    };
+    expect(merged.context.branch_name).toBe("feature/patch");
+    expect(merged.context.attempt).toBe(1);
+  });
+
+  it("input 不存在 + --patch → PLAN_PATCH_TARGET_NOT_FOUND", async () => {
+    const out: string[] = [];
+    const exit = await runPlanPublish(
+      { input: inputPath, patch: "{}" }, deps(out));
+
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_PATCH_TARGET_NOT_FOUND");
+  });
+
+  it("--patch 非 JSON 对象 → PLAN_PATCH_INVALID", async () => {
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
+
+    const out: string[] = [];
+    const exit = await runPlanPublish(
+      { input: inputPath, patch: "[1,2,3]" }, deps(out));
+
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_PATCH_INVALID");
+  });
+
+  it("patch null 删除键：收据被删除后由 B2-2 磁盘保全接管续签，发布仍成功", async () => {
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput({ assurance: true })));
+    const firstOut: string[] = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(firstOut))).toBe(1);
+
+    const packPath = join(root, "plan-evidence.json");
+    const draftPath = join(root, "draft.json");
+    await fs.writeFile(draftPath, JSON.stringify({ reviewer_identity: "inline:main-session" }));
+    const recordOut: string[] = [];
+    expect(await runPlanReviewRecord(
+      { input: packPath, receipt: draftPath }, deps(recordOut))).toBe(0);
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(inputPath, JSON.stringify(
+      { ...naturalInput({ assurance: true }), adversarial_review: pack.adversarial_review }));
+
+    const out: string[] = [];
+    const exit = await runPlanPublish(
+      { input: inputPath, patch: JSON.stringify({ adversarial_review: null }) }, deps(out));
+
+    if (exit !== 0) console.error("PATCH-NULL-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    const result = JSON.parse(out.join("")) as {
+      code: string;
+      steps: { patch: { code: string }; review_rescue: { renewed: boolean } };
+    };
+    expect(result.code).toBe("PLAN_PUBLISHED");
+    expect(result.steps.patch.code).toBe("PLAN_PATCH_MERGED");
+    expect(result.steps.review_rescue.renewed).toBe(true);
+    const merged = JSON.parse(await fs.readFile(inputPath, "utf8")) as Record<string, unknown>;
+    expect("adversarial_review" in merged).toBe(false);
+  });
+
+  it("patch 引入结构违规 → PLAN_EVIDENCE_INPUT_INVALID 且原文件不被触碰", async () => {
+    const original = JSON.stringify(naturalInput(), null, 2) + "\n";
+    await fs.writeFile(inputPath, original);
+    // acceptance_examples 只剩 1 条：违反既有字段级结构校验（2~5 条）
+    const patch = { intent: { acceptance_examples: ["只剩一条"] } };
+
+    const out: string[] = [];
+    const exit = await runPlanPublish(
+      { input: inputPath, patch: JSON.stringify(patch) }, deps(out));
+
+    expect(exit).toBe(1);
+    const envelope = JSON.parse(out.join("")) as {
+      code: string;
+      field_path?: string;
+      problems?: unknown[];
+      patch_merged_fields?: string[];
+    };
+    expect(envelope.code).toBe("PLAN_EVIDENCE_INPUT_INVALID");
+    expect(envelope.field_path).toBe("intent.acceptance_examples");
+    expect(envelope.patch_merged_fields).toEqual(["intent"]);
+    expect(Array.isArray(envelope.problems)).toBe(true);
+    // fail closed 且不写回：磁盘 input 与 patch 前逐字节一致
+    expect(await fs.readFile(inputPath, "utf8")).toBe(original);
+  });
+});

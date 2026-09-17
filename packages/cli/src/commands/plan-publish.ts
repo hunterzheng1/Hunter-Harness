@@ -2,7 +2,11 @@ import { readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { emitPlanError, planErrorEnvelope, planStageForCode } from "./plan-error.js";
-import { runPlanEvidencePack } from "./plan-evidence-pack.js";
+import {
+  collectInputProblems,
+  runPlanEvidencePack,
+  type EvidencePackInputFile
+} from "./plan-evidence-pack.js";
 import { runPlanFinalize } from "./plan-finalize.js";
 import { runPlanReviewRecord } from "./plan-review-record.js";
 import { deriveBaseline, lastKnownAttempt } from "../plan-evidence/publication-bookkeeping.js";
@@ -19,6 +23,11 @@ export interface PlanPublishOptions {
   renewReview?: boolean;
   /** 测试/重放 seam：固定 finalize 的评审输入哈希时间锚（生产省略） */
   completedAt?: string;
+  /**
+   * 11-M4 补丁式修订：JSON 字面量或 .json 文件路径（字段覆盖集），
+   * 与 --input 深度合并（RFC 7386）后写回 input 并走完整发布链
+   */
+  patch?: string;
 }
 
 /**
@@ -74,6 +83,22 @@ function captureStdout(dependencies: CommandDependencies): {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** RFC 7386 JSON Merge Patch：对象递归合并，数组/标量整体替换，null 删除键。 */
+function mergePatch(target: unknown, patch: unknown): unknown {
+  if (!isRecord(patch)) {
+    return patch;
+  }
+  const base: Record<string, unknown> = isRecord(target) ? { ...target } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete base[key];
+    } else {
+      base[key] = mergePatch(base[key], value);
+    }
+  }
+  return base;
+}
+
 export async function runPlanPublish(
   options: PlanPublishOptions,
   dependencies: CommandDependencies
@@ -88,7 +113,74 @@ export async function runPlanPublish(
   }
   const inputPath = options.input;
   try {
-    const naturalInput = JSON.parse(await readFile(inputPath, "utf8")) as Record<string, unknown>;
+    let naturalInput: Record<string, unknown>;
+    try {
+      naturalInput = JSON.parse(await readFile(inputPath, "utf8")) as Record<string, unknown>;
+    } catch (error) {
+      // 11-M4：补丁式修订合并自磁盘现有 input，目标缺失时报专属错误而非泛化失败
+      if (options.patch !== undefined &&
+          (error as NodeJS.ErrnoException).code === "ENOENT") {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_PATCH_TARGET_NOT_FOUND",
+          stage: "boundary",
+          field_path: "input",
+          message: `--patch 的目标输入不存在：${inputPath}；` +
+            "补丁式修订以磁盘现有 evidence-input 为基，首发布请直接提供完整输入"
+        }));
+      }
+      throw error;
+    }
+    // 11-M4：补丁式修订——patch（JSON 字面量或 .json 文件）与磁盘 input 深度合并
+    // （RFC 7386：对象递归、数组/标量整体替换、null 删除键）；patch 未触及字段从
+    // 磁盘 input 保留，不是从模板重建。立项规格：先内存合并，patch 应用前输出合并
+    // 预览摘要；合并结果必须通过既有字段级结构校验（与 evidence-pack HP-13 同源），
+    // 不通过则 fail closed 且不写回原文件。
+    let patchFields: string[] | undefined;
+    if (options.patch !== undefined) {
+      let patchDocument: unknown;
+      try {
+        const rawPatch = options.patch.trim();
+        patchDocument = JSON.parse(
+          rawPatch.startsWith("{") || rawPatch.startsWith("[")
+            ? rawPatch
+            : await readFile(rawPatch, "utf8"));
+      } catch {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_PATCH_INVALID",
+          stage: "boundary",
+          field_path: "patch",
+          message: "--patch 不是可解析的 JSON（支持 JSON 字面量或 .json 文件路径）"
+        }));
+      }
+      if (!isRecord(patchDocument)) {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_PATCH_INVALID",
+          stage: "boundary",
+          field_path: "patch",
+          message: "--patch 必须是 JSON 对象（字段覆盖集），不接受数组或标量"
+        }));
+      }
+      naturalInput = mergePatch(naturalInput, patchDocument) as Record<string, unknown>;
+      patchFields = Object.keys(patchDocument);
+      const mergedProblems = collectInputProblems(
+        naturalInput as unknown as EvidencePackInputFile);
+      dependencies.stderr(
+        `plan publish --patch 预览：合并字段 [${patchFields.join(", ")}]` +
+        (mergedProblems.length > 0
+          ? `；结构校验发现 ${mergedProblems.length} 个问题，未写回原文件\n`
+          : "；结构校验通过，写回 input\n"));
+      const firstMergedProblem = mergedProblems[0];
+      if (firstMergedProblem !== undefined) {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_EVIDENCE_INPUT_INVALID",
+          stage: "boundary",
+          field_path: firstMergedProblem.field_path,
+          message: "补丁合并后的输入不符合契约；未写回原文件，逐条修正 problems 后重跑",
+          extra: { problems: mergedProblems, patch_merged_fields: patchFields }
+        }));
+      }
+      await writeFile(inputPath, JSON.stringify(naturalInput, null, 2) + "\n");
+    }
     const changeKey = typeof naturalInput.change_key === "string" ? naturalInput.change_key : undefined;
     if (changeKey === undefined || changeKey === "") {
       return emitPlanError(dependencies.stdout, planErrorEnvelope({
@@ -110,6 +202,9 @@ export async function runPlanPublish(
     }
     const packPath = options.output ?? join(dirname(inputPath), "plan-evidence.json");
     const steps: Record<string, unknown> = {};
+    if (patchFields !== undefined) {
+      steps.patch = { code: "PLAN_PATCH_MERGED", merged_fields: patchFields };
+    }
 
     // B2-2：收据保全——input 未透传 adversarial_review 但重建前磁盘 pack 有时，
     // 旧收据在 evidence-pack 重建后必然失效（input_hash 绑定 pack 内容）。先捕获，

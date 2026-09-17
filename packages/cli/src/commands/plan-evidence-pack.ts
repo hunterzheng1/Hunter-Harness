@@ -220,7 +220,7 @@ const EVIDENCE_PACK_TEMPLATE = {
  * 语义边界：审批必须是真实用户确认后的记录——approver_id/decided_at 由
  * 阶段 4 blocking confirmation 的实际结果传入，本命令不伪造审批。
  */
-interface EvidencePackInputFile {
+export interface EvidencePackInputFile {
   change_key: string;
   // 可省略：命令按 affected_paths + git status 推断并与手填取并集（安全地板）
   risk_signals?: readonly string[];
@@ -332,7 +332,7 @@ const REVIEW_MODES = ["inline", "delegated"] as const;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const IDENTITY_PATTERN = /^[a-z][a-z0-9_.:-]{0,159}$/u;
 
-interface InputProblem {
+export interface InputProblem {
   readonly field_path: string;
   readonly missing_keys?: readonly string[];
   readonly unexpected_keys?: readonly string[];
@@ -404,7 +404,7 @@ function stableHashHex(value: unknown): string {
  * 无定位信息的稳定码，调用方唯一的出路是反编译 bundle 逐个校验器比对。本层把
  * 键集与枚举这两类高频错误挡在前面，让第一次失败就说清改哪里。
  */
-function collectInputProblems(input: EvidencePackInputFile): readonly InputProblem[] {
+export function collectInputProblems(input: EvidencePackInputFile): readonly InputProblem[] {
   const problems: InputProblem[] = [];
 
   // intent 层：键集 + 条数上下限（冻结模块只抛 PLANNING_INTENT_INVALID，无定位信息）

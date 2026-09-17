@@ -261,6 +261,22 @@
 - 旧四件套目录的端到端回滚夹具（当前仅覆盖渲染层与单层校验，未做全链回归）。
 - Run/Review/Archive/Platform 消费者对并入节的读取路径在真实归档样本上的对照验证。
 
+### 11-M4：plan publish 补丁式修订（--patch）
+
+状态：已实施（2026-09-17）。来源：[流程调研报告](../../research/2026-09-17-harness-flow-review.md) §4.1 [P3] 建议「evidence-input 支持补丁式修订（`plan publish --patch`）」。
+
+- Module / Adapter：`packages/cli/src/commands/plan-publish.ts` + `packages/cli/src/bin.ts`（命令注册）。
+- 输入 Interface 及版本：`<change>/meta/plan-evidence-input.json` 当前 Schema（只读基线）+ 用户提供的 JSON patch 文件（对象 deep-merge 语义，数组仅允许整体替换，不允许部分下标写入）。
+- 输出 Interface 及版本：合并结果写回 plan-evidence-input 后走既有 publish 流程（evidence-pack → 基线/attempt 记账 → finalize）；patch 应用前输出合并预览摘要，合并结果必须通过既有字段级结构校验，否则 fail closed 且不写回。
+- 允许修改的路径：`packages/cli/src/commands/plan-publish.ts`、`packages/cli/src/bin.ts`、对应 CLI 聚焦/e2e 测试。
+- 禁止修改的共享区域：`plan-evidence-pack.ts` 模板与校验逻辑、阶段 11 六 target 发布契约、finalizer、Python 侧 `harness_plan_finalize.py`。
+- 是否访问网络 / 调用模型 / 写文件：否 / 否 / 写文件（合并结果写回 evidence-input，属 publish 既有写入面）。
+- 兼容与回滚方式：纯新增 `--patch <file>` 选项；不带 patch 的 publish 行为零变化；合并失败不触碰原文件（先内存合并+校验通过后才写回）。
+- 聚焦测试：合法 patch 深合并后校验通过并写回；非法 patch（引入未知字段/类型错误）拒绝且原文件不变；数组整体替换语义；与 `--print-template` 不变量测试兼容。
+- 依赖的 fixture：现有 plan-publish e2e fixture。
+- 汇合门禁：CLI 相关测试全绿、typecheck 通过。
+- 实施注记（2026-09-17）：`--patch` 接受 JSON 字面量或 `.json` 文件路径；RFC 7386 合并（对象递归、数组整体替换、null 删键）；合并预览摘要经 stderr 在写回前输出；内存合并后先过 `collectInputProblems`（与 evidence-pack HP-13 同源校验器，`plan-evidence-pack.ts` 仅追加 export 关键字复用、校验逻辑零变更）再写回，违规以 `PLAN_EVIDENCE_INPUT_INVALID` fail-closed 且不触碰原文件；`--patch` 非法 → `PLAN_PATCH_INVALID`，input 不存在 → `PLAN_PATCH_TARGET_NOT_FOUND`；成功信封 `steps.patch=PLAN_PATCH_MERGED`，e2e 13/13 全绿。
+
 ## 停止条件和回退
 
 如果发现 Run、Review、Archive 或 Platform 直接依赖 `implementation-detail.md` 的特定自由文本结构，先记录消费者契约并提供兼容适配。不要在同一提交中删除文件并修改所有下游消费者。

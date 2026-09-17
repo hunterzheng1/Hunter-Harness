@@ -530,6 +530,7 @@ export async function runCli(
     .option("--output <file>", "证据包输出路径（缺省与输入同目录的 plan-evidence.json）")
     .option("--change-dir <path>", "change 目录（默认 <cwd>/.harness/changes/<change_key>）")
     .option("--renew-review", "评审收据因重建过期且 findings 未变时自动续签（review-record --renew）")
+    .option("--patch <json|file>", "补丁式修订：JSON 字面量或 .json 文件（字段覆盖集），与 --input 深度合并（RFC 7386）后走完整发布链")
     .action(async (options: PlanPublishOptions) => {
       exitCode = await runPlanPublish(options, dependencies);
     });
