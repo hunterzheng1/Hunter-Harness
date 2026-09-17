@@ -20,9 +20,8 @@ description: harness-execute 的编译失败策略表、TDD循环详细步骤和
 ## 前置条件
 
 - 设计文档存在：`plans/<change-name>-design.md`（v2）或 `spec/<change-name>-design.md`（legacy，含完整 frontmatter），按 `shared/read-protocol.md` 的顺序取第一个
-- `.harness/changes/<change-name>/plans/<change-name>-plan.md` 存在（含完整 frontmatter）
-- `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` 存在
-- `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（新版必需，legacy 缺失时 🟡WARN）
+- `.harness/changes/<change-name>/plans/<change-name>-plan.md` 存在（含完整 frontmatter 与 `# Test Scenarios` 节）
+- `.harness/changes/<change-name>/plans/<change-name>-design.md` 含 `# Implementation Detail` 节（legacy 为独立 `plans/<change-name>-implementation-detail.md`，缺失时 🟡WARN）
 - 用户已审批通过计划
 - 如果在 worktree 中，已切换到 worktree 目录
 
@@ -88,10 +87,9 @@ requested=true + path missing
 
 1. **确定变更名**：用 Glob 搜索 `.harness/changes/*/plans/*-plan.md`（**排除 `.harness/archive/*/`**），读取找到的 plan.md 的 YAML frontmatter，提取 `change-name`。默认最多一个未归档变更；如有多个，优先取最近修改的，或询问用户选择。
 2. **读取并执行 worktree 决策**：读取 `.harness/changes/<change-name>/meta/worktree.json`。如果 `requested=false`，在主目录执行；如果 `requested=true` 且 worktree 存在，必须 cd 到该 worktree；如果 `requested=true` 且 worktree 不存在，必须创建 worktree，创建失败则停止或询问用户是否改为主目录执行。禁止静默降级。
-3. **读取计划文件（主任务源）**：`.harness/changes/<change-name>/plans/<change-name>-plan.md` → 获取任务列表和依赖关系
-4. **读取详细计划（补充参考）**：`.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（新版必需，legacy 缺失时 🟡WARN）→ 获取自适应执行参考
+3. **读取计划文件（主任务源）**：`.harness/changes/<change-name>/plans/<change-name>-plan.md` → 获取任务列表和依赖关系；同文件 `# Test Scenarios` 节 → 测试真相源（legacy 为独立 `plans/<change-name>-test-scenarios.md`）
+4. **读取详细计划（补充参考）**：`plans/<change-name>-design.md` 的 `# Implementation Detail` 节（legacy 为独立 `plans/<change-name>-implementation-detail.md`，缺失时 🟡WARN）→ 获取自适应执行参考
 5. **读取设计文档**：`.harness/changes/<change-name>/plans/<change-name>-design.md`（v2 发布产物）→ 不存在时回退 `spec/<change-name>-design.md`（legacy）→ 获取核心设计决策和不变项
-6. **读取测试场景表**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` → 获取测试真相源
 7. **读取验证账本**：通过 state layout resolver 定位 `evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状态**：`.harness/changes/<change-name>/evidence/run-task-status.md`（如存在）→ 恢复上次运行状态
 9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并用 `harness_fixback.py` 将相关 RED/YELLOW 条目合并为一个批次；每条问题保留 RED/GREEN 证据，批次关闭后只触发一次 affected verification 与一次 review。证据契约见下方[fixback 证据契约](#fixback-证据契约)——**动手前先读**，它决定了 RED 必须在修复之前采集
@@ -113,10 +111,8 @@ requested=true + path missing
 
 ```
 检查逻辑：
-1. 读取 .harness/changes/<change-name>/plans/<change-name>-design.md（不存在则回退 spec/<change-name>-design.md）
-2. 读取 .harness/changes/<change-name>/plans/<change-name>-plan.md
-3. 读取 .harness/changes/<change-name>/plans/<change-name>-implementation-detail.md（legacy 缺失时 🟡WARN）
-4. 读取 .harness/changes/<change-name>/plans/<change-name>-test-scenarios.md
+1. 读取 .harness/changes/<change-name>/plans/<change-name>-design.md（不存在则回退 spec/<change-name>-design.md），含 `# Implementation Detail` 节（legacy 为独立 implementation-detail.md，缺失时 🟡WARN）
+2. 读取 .harness/changes/<change-name>/plans/<change-name>-plan.md，含 `# Test Scenarios` 节（legacy 为独立 test-scenarios.md）
 ```
 
 **禁止 /harness-execute 默认读取 `docs/superpowers/plans/*.md`** 作为任务来源。旧 `docs/superpowers/` 草稿最多作为人工线索，不作为执行输入。
@@ -598,7 +594,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
    未验证: 0
    harness-execute 结果: 🟡WARN，必须进入 harness-execute 后才能 submit
    ```
-6. **禁止用测试用例数冒充场景数**：计数对象是 `test-scenarios.md` 的场景编号（UT-001/N、API-001/N、COM-001/N、INT-001/N），不是测试框架的测试方法数（如 vitest "178 tests"、junit "Tests run: 178"）。场景总数 = test-scenarios.md 的场景数。
+6. **禁止用测试用例数冒充场景数**：计数对象是场景表（plan.md 的 `# Test Scenarios` 节；legacy 为独立 test-scenarios.md）的场景编号（UT-001/N、API-001/N、COM-001/N、INT-001/N），不是测试框架的测试方法数（如 vitest "178 tests"、junit "Tests run: 178"）。场景总数 = 场景表的场景数。
 7. **四类计数须自洽**：run-owned 的 🟡/❌ 计入未验证；`ownerPhase=test` 单列为 ⏳“按计划移交”，不得冒充 ✅，也不得反向污染 run 的结果。
 8. **输出须为场景表映射**：按 `UT-001~037: ✅X/🟡Y/❌Z`、`API-001~032: ...`、`COM-001~007: ...`、`INT-001~008: ...` 形式逐条或范围标注，不得只给一个聚合测试数。
 

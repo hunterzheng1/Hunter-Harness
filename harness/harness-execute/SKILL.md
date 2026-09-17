@@ -42,7 +42,7 @@ disallowed-tools:
 ## 前置条件
 
 - 设计文档（`plans/*-design.md` 优先，回退 `spec/*-design.md`）与 `plans/*-plan.md`（含 frontmatter）存在且已审批
-- `plans/*-test-scenarios.md` 存在（测试真相源）
+- `plans/*-plan.md` 含 `# Test Scenarios` 节（测试真相源；legacy 为独立 `plans/*-test-scenarios.md`）
 - 读 `meta/worktree.json`：`requested=true` 时 worktree 须存在或 execute 负责创建；worktree 已创建则在 worktree 中执行测试，不得静默回到主目录
 
 <!-- @include shared/worktree-gate.md -->

@@ -779,11 +779,19 @@ _PLAN_KWARGS = {
 }
 
 
-def _direct_candidates(payload=None, *, change_key: str = "parity-change") -> list[dict]:
+def _direct_candidates(
+    payload=None, *, change_key: str = "parity-change", scenarios_md: bool = True
+) -> list[dict]:
+    archive = _archive_dir_with_plan_evidence_input(
+        _parity_plan_evidence_input() if payload is None else payload
+    )
+    if scenarios_md:
+        # 旧四件套归档：场景渲染件独立存在，source_refs 指向它。
+        plans = archive / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / f"{change_key}-test-scenarios.md").write_text("", encoding="utf-8")
     return hkc.build_plan_candidates(
-        _archive_dir_with_plan_evidence_input(
-            _parity_plan_evidence_input() if payload is None else payload
-        ),
+        archive,
         change_key=change_key,
         **_PLAN_KWARGS,
     )
@@ -901,6 +909,14 @@ class PlanEvidenceInputExtractionTest(unittest.TestCase):
         self.assertEqual(
             scenarios[0]["source_refs"], ["plans/parity-change-test-scenarios.md"]
         )
+
+    def test_scenarios_source_refs_fall_back_to_plan_md_for_two_piece(self) -> None:
+        # 阶段 11 两件套归档：test-scenarios.md 不再单独落盘，场景节并入
+        # plan.md——source_refs 必须指向包内真实存在的渲染件。
+        candidates = _direct_candidates(scenarios_md=False)
+        scenarios = [c for c in candidates if c["entry_type"] == "test-evidence"]
+        self.assertEqual(len(scenarios), 2)
+        self.assertEqual(scenarios[0]["source_refs"], ["plans/parity-change-plan.md"])
 
     def test_empty_payload_yields_no_candidates(self) -> None:
         self.assertEqual(_direct_candidates({}), [])

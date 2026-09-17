@@ -17,10 +17,8 @@ tools: [Read, Glob, Grep]
 ## 你的职责
 
 读取以下计划包并挑刺：
-- `.harness/changes/<change-name>/spec/<change-name>-design.md`（设计文档）
-- `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
-- `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（自适应执行参考；新版必需，legacy 可缺）
-- `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md`（测试场景表）
+- `.harness/changes/<change-name>/plans/<change-name>-design.md`（v2 设计文档，含 `# Implementation Detail` 节；legacy 回退 `spec/<change-name>-design.md` + 独立 implementation-detail.md）
+- `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表，含 `# Test Scenarios` 节；legacy 场景表为独立 test-scenarios.md）
 - 阶段 3 代码探索结论（`.harness/changes/<change-name>/logs/execution-log.md` 中记录，或 `.harness/codebase/map/`）
 
 返回 `VERDICT: APPROVED` 或 `VERDICT: REVISE` + 结构化问题清单。

@@ -646,8 +646,8 @@ def _verify_plan_v2(change_dir: Path) -> dict[str, Any] | None:
     required = {
         f"plans/{change_dir.name}-design.md",
         f"plans/{change_dir.name}-plan.md",
-        f"plans/{change_dir.name}-implementation-detail.md",
-        f"plans/{change_dir.name}-test-scenarios.md",
+        # 11-M3 两件套：implementation-detail/test-scenarios 已并入 design/plan 正文，
+        # 不再单独落盘。子集校验天然向后兼容——旧 v2 目录的四件套是超集，仍通过。
         # v2 发布的是派生视图 meta/plan-profile.json，不是 Python classify 写的
         # meta/gate-policy.json——后者是 run/test 门禁的权威输入，不能被发布覆盖。
         "meta/plan-profile.json",

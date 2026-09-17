@@ -216,6 +216,51 @@
 - v2 Markdown/JSON renderer、真实存储/发布 Adapter 和旧 finalizer 六文件兼容投影。
 - 阶段 12 必须只消费 v2 requirement、scope、ownership、task/scenario refs 做确定语义检查，不得退回文本相似度猜测。
 
+### 11-M3：四件套→两件套渲染层收敛
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+冻结的 v2 两件套增量：
+
+- 发布渲染层从 4 份 Markdown + 4 份 JSON 收敛为 2 份合并 Markdown + 4 份 JSON（6 payload）：
+  `design.md` 并入 implementation-detail（文件尾 `---` 后的 `# Implementation Detail` 节），
+  `plan.md` 并入 test-scenarios（`# Test Scenarios` 节）。JSON 真相源
+  （`gate-policy` / `worktree` / `implementation-checkpoints` / `scenario-manifest`）完全不动。
+- 合并文档 frontmatter 增加 `included_artifact_type` / `included_content_hash`，记录被并入产物的身份；
+  两节各自带「引用附录（任务）/（场景）」，被并入内容不再有独立 frontmatter。
+- 六 target 精确集合跨层一致：渲染器 `paths()`、`durable-publication` PATHS 与 payload count、
+  FS-contract `expectedPaths` / `exact_target_count` / allowlist、finalization-transaction
+  `ownership_paths`、CLI `PlanPublicationPathAuthority`。策略枚举
+  `exact_eight_plan_targets` → `exact_six_plan_targets`。
+- FS 契约 journal fixture 依新 6 目标重算 `target_set_hash` 与 `expected_readback_hash`；
+  `recovery_id` 由未变的 operation_id + token 派生，无需重算。
+
+兼容边界：
+
+- Python `harness_plan_finalize.py` 的 v2 required 集收敛为子集（design/plan/plan-profile/worktree），
+  旧四件套目录是 6 目标集的超集，子集校验天然向后兼容；legacy 六件套分支（`meta/plan-finalization.json`
+  存续时）保持不变。
+- TS FS-contract journal 读取器对旧 8 目标 v1 journal 严格校验 `ownership_paths === expectedPaths`
+  而 fail closed——属已记录的边界，旧四件套目录回滚须重跑 finalize。
+- `harness_knowledge_candidates.py` 场景候选 `source_refs` 改为按归档实际内容动态选择
+  （两件套 → `plans/<change>-plan.md`，旧四件套 → `plans/<change>-test-scenarios.md`），
+  满足 core 包包含性校验要求 source_refs 指向包内真实存在的渲染件。
+
+文档同步：14 个 harness 文档（plan/execute/review/knowledge-ingest/agents/README/shared/CONTEXT）
+的四件套读取指令更新为并入节引用 + legacy 回退说明；产品完整性与计数规则同步为节口径。
+
+完成证据：
+
+- Core fast 全量：`59` 个文件、`890/890` 通过。
+- Integration 全量（含 CLI e2e）：`63` 个文件、`516/516` 通过。
+- Python 聚焦（plan-finalize + knowledge-candidates + context）：`142/142` 通过。
+- 限定的三处改动文件 ESLint 无新增诊断。
+
+11-M3 关闭后仍未接入的 Adapter：
+
+- 旧四件套目录的端到端回滚夹具（当前仅覆盖渲染层与单层校验，未做全链回归）。
+- Run/Review/Archive/Platform 消费者对并入节的读取路径在真实归档样本上的对照验证。
+
 ## 停止条件和回退
 
 如果发现 Run、Review、Archive 或 Platform 直接依赖 `implementation-detail.md` 的特定自由文本结构，先记录消费者契约并提供兼容适配。不要在同一提交中删除文件并修改所有下游消费者。

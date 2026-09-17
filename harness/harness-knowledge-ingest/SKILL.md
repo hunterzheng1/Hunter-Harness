@@ -13,7 +13,7 @@ disallowed-tools:
 
 知识 ingest 由 Hunter Platform 负责：归档完成时，客户端生成一个确定性 ZIP
 （含 `candidates/knowledge.json` 候选清单——由本包 `harness_knowledge_candidates.py`
-从 design/plan/test-scenarios 与归档 summary 派生）；服务端收到后保存原包、
+从 design/plan（含 Test Scenarios 节）与归档 summary 派生）；服务端收到后保存原包、
 安全解包、发布核心文件，按候选抽取知识条目并重建项目语义索引。
 
 客户端不得生成 `.harness/knowledge`、SQLite 索引、视图、报告或本地裁决。

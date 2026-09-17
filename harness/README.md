@@ -94,12 +94,11 @@
 │   │   └── manifest.json
 │   ├── logs/
 │   │   └── execution-log.md         # 执行日志（所有 skill 的时间线+指令+结果）
-│   ├── spec/                        # 设计文档（harness-plan 产出）
+│   ├── spec/                        # 设计文档（legacy 手写；v2 发布产物在 plans/）
 │   │   └── <change-name>-design.md  # 技术方案设计，含 frontmatter（change-name/created/status/source）
-│   ├── plans/                       # 计划文件（harness-plan 产出）
-│   │   ├── <change-name>-plan.md              # 任务拆分简表，run 默认读取（含 frontmatter）
-│   │   ├── <change-name>-implementation-detail.md  # 自适应详细执行参考（harness-plan 原生产出）
-│   │   └── <change-name>-test-scenarios.md    # 测试场景表（4维度覆盖）
+│   ├── plans/                       # 计划文件（harness-plan 产出，v2 两件套派生）
+│   │   ├── <change-name>-design.md          # v2 设计真相源，含 `# Implementation Detail` 节（详细执行参考并入）
+│   │   └── <change-name>-plan.md            # 任务拆分简表，含 `# Test Scenarios` 节（4维度场景并入）
 │   ├── evidence/                    # 验证证据
 │   │   ├── verification-ledger.json # 验证账本（compile/unit/api 可复用结果）
 │   │   └── run-task-status.md       # 任务执行状态（harness-execute 持久化产出）

@@ -193,8 +193,8 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 □ 已生成 4 维度场景表（单元/接口/数据兼容/集成）
 □ 每个自动化场景均标注执行层级、预计时长、资源预算、超时、可复用证据；快速反馈不默认扫描全仓库
 □ 已确定变更名（kebab-case）
-□ implementation-detail.md 按复杂度自适应：简单任务不过度展开，复杂任务写清接口/数据/顺序/风险/测试策略
-□ plan / implementation-detail / test-scenarios 三件套互相引用一致，无 TBD/TODO/空泛占位
+□ Implementation Detail 节（并入 design.md）按复杂度自适应：简单任务不过度展开，复杂任务写清接口/数据/顺序/风险/测试策略
+□ plan（含 Test Scenarios 节）/ design（含 Implementation Detail 节）两件套互相引用一致，无 TBD/TODO/空泛占位
 ```
 
 > 产物是否齐全、任务表与场景表是否非空、优先级与 ownerPhase 取值是否合法，由 finalizer
@@ -226,7 +226,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 - 代码探索只读不写——这个阶段的目标是理解，不是修改
 - 场景表是后续所有步骤的真相源——宁可多花时间打磨，不要草草了事
 - 如果需求不明确，优先提问而不是猜测后继续设计
-- 任务拆分粒度按复杂度调整——plan 简表保持可追踪，implementation-detail 按风险和复杂度自适应展开
+- 任务拆分粒度按复杂度调整——plan 简表保持可追踪，Implementation Detail 节按风险和复杂度自适应展开
 
 > Plan 的结束行为（禁止询问执行模式、只提示 `/harness-execute`）由 `SKILL.md` 的关键规则表定义，
 > 详细规则见 `reference.md`「Plan 结束行为规则」。此处不再复述。

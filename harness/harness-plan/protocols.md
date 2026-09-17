@@ -88,13 +88,16 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 
 | 产物 | 定位 | 详细度 |
 |------|------|--------|
-| `<change-name>-plan.md` | 任务真相源 | 简洁任务表：任务、涉及文件、依赖 |
-| `<change-name>-implementation-detail.md` | 执行参考 | 按复杂度自适应：关键接口、顺序、坑点、测试策略 |
-| `<change-name>-test-scenarios.md` | 测试真相源 | 4 维度测试场景 + 覆盖检查 |
+| `plans/<change-name>-plan.md` | 任务真相源 | 简洁任务表：任务、涉及文件、依赖 |
+| `plans/<change-name>-plan.md` 的 `# Test Scenarios` 节 | 测试真相源 | 4 维度测试场景 + 覆盖检查 |
+| `plans/<change-name>-design.md` 的 `# Implementation Detail` 节 | 执行参考 | 按复杂度自适应：关键接口、顺序、坑点、测试策略 |
 
-`implementation-detail.md` 必须存在，但不再强制写成 2-5 分钟粒度、逐行代码片段或逐 commit 指令。简单任务可以短，复杂任务必须细。
+阶段 11 两件套起，implementation-detail 与 test-scenarios 不再单独落盘，分别并入
+design.md / plan.md 的对应节；legacy change 仍读独立文件（`shared/read-protocol.md`）。
 
-简单修复的四份产物采用“单点事实、引用不复述”：设计写行为契约，plan 写任务与依赖，detail 写关键修改点与命令，scenarios 写可验证用例。不得复制同一段背景、风险或结论来增加篇幅。
+`# Implementation Detail` 节必须存在，但不再强制写成 2-5 分钟粒度、逐行代码片段或逐 commit 指令。简单任务可以短，复杂任务必须细。
+
+简单修复的两份产物采用“单点事实、引用不复述”：设计写行为契约，plan 写任务与依赖，detail 写关键修改点与命令，scenarios 写可验证用例。不得复制同一段背景、风险或结论来增加篇幅。
 
 ### 计划质量门槛
 
@@ -125,7 +128,7 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 ### 原生规划协议自检
 - clarification-protocol：风险 / 复用 / 替代方案 / 推荐方案 / 关键决策均已记录
 - decision-grilling-protocol：用户问题未超预算；每问包含推荐答案；能自查的问题未打扰用户
-- implementation-planning-protocol：plan 简表、implementation-detail、test-scenarios 三件套一致，无占位符
+- implementation-planning-protocol：plan 简表与并入的 `# Test Scenarios` / `# Implementation Detail` 节两件套一致，无占位符
 ```
 
 自检结论直接展示给用户即可，**不要**再追加一条 `verification` 事件——「协议自检通过」不改变

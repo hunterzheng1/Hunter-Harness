@@ -14,7 +14,7 @@ description: harness-review 的原生修复反馈协议。内化 receiving-code-
 
 - `reports/review/review-report-YYYYMMDD-HHmm.md`
 - 当前 diff 的 RED/YELLOW 问题清单
-- `plans/<change-name>-test-scenarios.md`
+- `plans/<change-name>-plan.md`（`# Test Scenarios` 节；legacy 为独立 test-scenarios.md）
 - `evidence/verification-ledger.json` 与 `evidence/run-task-status.md`（如存在）
 
 ### 输出规则
@@ -65,5 +65,5 @@ description: harness-review 的原生修复反馈协议。内化 receiving-code-
 
 | # | 等级 | 影响位置 | 风险说明 | 推荐修复 | 验证方式 | submit 影响 |
 |:--:|:----:|----------|----------|----------|----------|-------------|
-| 1 | RED | `path/to/file:123` | ... | ... | `test-scenarios.md` API-001 + 构建命令 | advisory / blocking |
+| 1 | RED | `path/to/file:123` | ... | ... | 场景表 API-001 + 构建命令 | advisory / blocking |
 ```

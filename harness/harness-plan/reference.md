@@ -189,13 +189,12 @@ source: harness-plan
 
 ```
 .harness/changes/<change-name>/plans/
-├── <change-name>-design.md                  # 设计（v2 由 finalize 派生）
-├── <change-name>-plan.md                    # harness 简洁任务表，execute 默认读取
-├── <change-name>-implementation-detail.md   # 原生自适应详细执行参考，execute 补充读取
-└── <change-name>-test-scenarios.md          # 测试场景表
+├── <change-name>-design.md   # 设计 + `# Implementation Detail` 节（自适应详细执行参考并入）
+└── <change-name>-plan.md     # 简洁任务表 + `# Test Scenarios` 节（测试场景表并入）
 ```
 
-> **v2 路径下这四份都是派生产物**：唯一手写的是 `meta/plan-evidence-input.json`。
+> **v2 路径下这两份都是派生产物**（阶段 11 两件套：implementation-detail 并入 design.md、
+> test-scenarios 并入 plan.md；legacy change 仍是四份独立文件，读取按 `shared/read-protocol.md` 回退）：唯一手写的是 `meta/plan-evidence-input.json`。
 > 阶段 6 的任务拆分结果直接填进它的 `structured_input.tasks`，阶段 7 的场景填 `structured_input.scenarios`——
 > 同一份内容不要先写成 Markdown 再誊进 JSON，finalize 会用派生渲染覆盖手写的 Markdown。
 > 下面的 Markdown 格式说明用于**理解字段语义**与 legacy 路径手写。
@@ -316,8 +315,10 @@ status: approved
 | `.harness/changes/<change>/plans/<change>-design.md` | ✅（派生） | — |
 | `.harness/changes/<change>/spec/<change>-design.md` | — | ✅ |
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅（派生） | ✅ |
-| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅（派生） | ✅ |
-| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅（派生） | ✅ |
+| `.harness/changes/<change>/plans/<change>-design.md` 的 `# Implementation Detail` 节 | ✅（并入节） | — |
+| `.harness/changes/<change>/plans/<change>-plan.md` 的 `# Test Scenarios` 节 | ✅（并入节） | — |
+| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | —（0.3.0+ 两件套已并入 design.md） | ✅ |
+| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | —（0.3.0+ 两件套已并入 plan.md） | ✅ |
 | `.harness/changes/<change>/meta/gate-policy.json` | ✅（**classify 写，非发布产物**；WI-F2 起文档构建唯一入口 `harness_gate.persist_gate_policy`，bootstrap-plan/轻任务 finish 同走此口） | ✅ |
 | `.harness/changes/<change>/meta/plan-profile.json` | ✅（派生） | — |
 | `.harness/changes/<change>/meta/worktree.json` | ✅ | ✅ |
@@ -502,8 +503,8 @@ finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PL
 > `schemaVersion 2`，关门可绑结构化执行收据；否则降为 1。
 
 - **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。唯一的例外是 `adversarial_review` 顶层字段——它由 `plan review-record`（或手工构造的合规收据）写入，evidence-pack 构建时也会透传自然输入里已有的该字段。
-- **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。
-- **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
+- **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 六 target（plans/*.md ×2 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。
+- **验证**：journal `state==="committed"` + 六 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
 - **legacy 收据**：v2 路径不写 `plan-finalization.json`；消费方若读历史 legacy receipt，`harness_plan_finalize.py verify` 保持可读。0.3.0 起 v2 无 legacy 回退——自然输入不完整先补齐（例如补真实审批记录），不得走已删除的 Python finalizer。
 
 ### 发布后修订计划（v2 重跑流）
@@ -522,7 +523,7 @@ finalize 硬性要求证据包顶层 `adversarial_review` 收据，缺失即 `PL
 一次完成；事务链天然保留历史（每次 finalize 一条事务记录），修订全程可审计。
 （0.3.0 前 legacy change 用的 `republish` 子命令已删除；历史收据只读。）
 
-⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，execute 阶段 `validate_plan_handoff` 也会记 WARN。重跑修订流会重新派生它，这才是唯一正确入口。
+⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从场景产物（`structured_input.scenarios`，落盘于 plan.md 的 `# Test Scenarios` 节）派生的，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，execute 阶段 `validate_plan_handoff` 也会记 WARN。重跑修订流会重新派生它，这才是唯一正确入口。
 
 ### Plan 结束行为规则
 

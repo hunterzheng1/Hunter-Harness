@@ -1002,6 +1002,7 @@ def _scenario_candidates_pei(
     archive_id: str,
     producer_version: str,
     created_at: str,
+    scenarios_rel: str,
 ) -> list[dict[str, Any]]:
     structured = _pei_section(payload, "structured_input", "$")
     records = _pei_records(
@@ -1028,9 +1029,7 @@ def _scenario_candidates_pei(
             summary=title,
             body=f"场景：{scenario_id}\n{title}",
             keywords=_keywords(scenario_id, "test-evidence"),
-            source_refs=_plan_source_refs(
-                change_key, f"plans/{change_key}-test-scenarios.md"
-            ),
+            source_refs=_plan_source_refs(change_key, scenarios_rel),
         ))
     return out
 
@@ -1108,6 +1107,12 @@ def build_plan_candidates(
         # 提取顺序与旧 md 路径一致（requirements → goal → risks → invariants
         # → tradeoffs → compatibility → tasks → scenarios），保证候选数组顺序
         # 与 candidate_id 去重优先级逐字节兼容。
+        # 阶段 11 两件套：场景节并入 plan.md（`# Test Scenarios`），旧四件套归档
+        # 仍为独立 test-scenarios.md。source_refs 受 core 包包含性校验约束，
+        # 必须指向包内真实存在的 plans/*.md 渲染件。
+        scenarios_rel = f"plans/{change_key}-test-scenarios.md"
+        if not (archive_root / scenarios_rel).is_file():
+            scenarios_rel = f"plans/{change_key}-plan.md"
         collect(_requirement_candidates_pei(payload, **kwargs))
         collect(_goal_candidates_pei(payload, **kwargs))
         collect(_risk_candidates_pei(payload, **kwargs))
@@ -1115,7 +1120,7 @@ def build_plan_candidates(
         collect(_tradeoff_candidates_pei(payload, **kwargs))
         collect(_compatibility_candidates_pei(payload, **kwargs))
         collect(_task_candidates_pei(payload, **kwargs))
-        collect(_scenario_candidates_pei(payload, **kwargs))
+        collect(_scenario_candidates_pei(payload, scenarios_rel=scenarios_rel, **kwargs))
         return candidates
 
     if (archive_root / _TASK_JSON_REL).is_file():

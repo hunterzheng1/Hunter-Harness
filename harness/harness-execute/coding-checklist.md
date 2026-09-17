@@ -28,9 +28,9 @@ description: harness-execute 的执行检查清单。仅在编码执行时读取
 - [ ] 确定变更名：Glob 搜索 `.harness/changes/*/plans/*-plan.md`（排除 `.harness/archive/*/`），提取 `change-name`
 - [ ] 读取并执行 `meta/worktree.json`：如果 `requested=true` 必须创建/切换 worktree，创建失败则停止或询问用户改为主目录；禁止静默降级
 - [ ] **读取计划文件（主任务源）**：`.harness/changes/<change>/plans/<change>-plan.md` — 获取任务列表和依赖关系
-- [ ] **读取详细计划（补充参考）**：`.harness/changes/<change>/plans/<change>-implementation-detail.md`（新版必需；legacy 缺失时 🟡WARN）
+- [ ] **读取详细计划（补充参考）**：`plans/<change>-design.md` 的 `# Implementation Detail` 节（legacy 为独立 implementation-detail.md，缺失时 🟡WARN）
 - [ ] **读取设计文档**：`.harness/changes/<change>/plans/<change>-design.md`（v2）；不存在时回退 `spec/<change>-design.md`（legacy）— 获取核心设计决策和不变项
-- [ ] **读取测试场景表**：`.harness/changes/<change>/plans/<change>-test-scenarios.md` — 获取与当前任务相关的测试场景
+- [ ] **读取测试场景表**：`plans/<change>-plan.md` 的 `# Test Scenarios` 节（legacy 为独立 test-scenarios.md）— 获取与当前任务相关的测试场景
 - [ ] **读取验证账本**：通过 context 返回的 `executionRoot` 读取 `evidence/verification-ledger.json`（如存在）— 复用已有 compile/unitTest 结果
 - [ ] **读取任务状态**：`.harness/changes/<change>/evidence/run-task-status.md`（如存在）— 恢复上次运行状态
 - [ ] **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change>/reports/review/fixback-*.md`
@@ -173,7 +173,7 @@ description: harness-execute 的执行检查清单。仅在编码执行时读取
 - [ ] 如果任一 `ownerPhase=run` 的 P0 场景仅静态验证 → 最终结果必须是 🟡WARN
 - [ ] `ownerPhase=test` 的任务或场景只记录为“待测试阶段执行”，不得将编码阶段降级为 WARN
 - [ ] 最终摘要禁止写 `5✅ + 17🟡 = 22/22`，必须写 `自动化测试通过: 5 / 静态检查未真实验证: 17 / 未验证: 0`
-- [ ] **禁止用测试用例数（如 178 tests）冒充场景数**——计数对象是 test-scenarios.md 的场景编号
+- [ ] **禁止用测试用例数（如 178 tests）冒充场景数**——计数对象是场景表（plan.md `# Test Scenarios` 节）的场景编号
 - [ ] 四类计数自洽：run-owned 🟡/❌ 计入未验证；test-owned ⏳ 单列移交数量
 - [ ] 输出为场景表映射（UT/API/COM/INT 逐条或范围 ✅/🟡/❌），不得只给聚合测试数
 

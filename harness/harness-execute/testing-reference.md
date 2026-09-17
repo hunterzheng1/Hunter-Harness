@@ -245,7 +245,7 @@ const CREDENTIAL_CACHE = '.harness/changes/<change-name>/runtime/credential-cach
 
 // ===== Payload schema（从数据契约/接口定义/真实样例生成，禁止临场猜）=====
 // 关键字段从项目的数据契约（如 VO/DTO/接口定义）读取，必填字段逐一核对
-// 详见 .harness/changes/<change>/plans/<change>-test-scenarios.md
+// 详见 plan.md 的 `# Test Scenarios` 节（legacy 为独立 test-scenarios.md）
 
 const setupState = {
   resourceId: null,

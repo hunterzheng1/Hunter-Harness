@@ -61,8 +61,8 @@ REFACTOR 只允许不改变行为的整理。若重构改变行为，必须回�
 
 审查范围只限当前变更簇：
 
-- 是否偏离 plan / implementation-detail。
-- 是否遗漏 test-scenarios 中的 P0/P1 场景。
+- 是否偏离 plan / Implementation Detail 节。
+- 是否遗漏 Test Scenarios 节中的 P0/P1 场景。
 - 是否破坏 API、数据、权限、安全或兼容契约。
 - 是否引入非计划文件、临时 debug、敏感信息或过程性注释。
 
