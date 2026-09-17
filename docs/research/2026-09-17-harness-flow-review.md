@@ -14,6 +14,19 @@
 >
 > 修订 2：2026-09-17 标注实施状态——短期包三项已落地（06B-4 / 09-M4 / 10-M3），
 > 详见 §6 状态列与 §4 就地标注。
+>
+> 修订 3：2026-09-17 标注实施状态——四件套→两件套（11-M3）已落地并推送
+> （commit `871c354` + `aef737e`）：渲染层 4md+4json 收敛为 2md+4json，design.md 并入
+> Implementation Detail 节、plan.md 并入 Test Scenarios 节，六 target 精确集合跨层一致；
+> §2.1/§3.2 的 target 计数同步为 6，F5 与 §4.1/§6 就地标注。
+>
+> 修订 4：2026-09-17 标注实施状态——执行环增强四件套（15-M1 档位裁决 dry-run、
+> 15-M2 quirk 指纹建议、15-M3 失败断路器、15-M4 review 三链状态表）已落地；
+> §4.2/§4.3/§4.4/§4.6 与 §6 就地标注；§4.1 残留的 8 target 计数同步修正为 6。
+>
+> 修订 5：2026-09-17 标注实施状态——plan 侧两件套落地：10-M4（codebase-map 进
+> Clarify 静态检查）与 11-M4（plan publish --patch 补丁式修订）；§4.1/§4.6 与 §6
+> 就地标注。
 
 ## 0. 执行摘要
 
@@ -30,8 +43,11 @@
   (2) plan 四件套收敛为两件套并让 Execute 支持依赖图并行；(3) 知识查询成为 plan 的
   必走输入而非可选建议。
 - **实施状态速览（2026-09-17）**：短期包三项——Clarify 前置步（10-M3）、知识查询
-  门禁化（09-M4）、知识候选 JSON 直采（06B-4）——已全部落地并推送；其余建议状态
-  见 §6 状态列。
+  门禁化（09-M4）、知识候选 JSON 直采（06B-4）——已全部落地并推送；四件套→两件套
+  （11-M3，`871c354` + `aef737e`）已落地并推送；执行环增强四件套（15-M1 档位裁决
+  dry-run、15-M2 quirk 指纹建议、15-M3 失败断路器、15-M4 review 三链状态表）已落地；
+  plan 侧两件套（10-M4 codebase-map 进 Clarify、11-M4 publish 补丁式修订）已落地；
+  其余建议状态见 §6 状态列。
 
 ## 1. 调研方法与范围
 
@@ -53,7 +69,7 @@
 | OpenAI agents 指南 | 架构指南 | 单 agent→多 agent 渐进；护栏分层 | — | 确定性规则优先，LLM 护栏兜底 | 失败率/人工升级率作护栏 KPI | 护栏分层模型清晰 | 无流程级状态机 |
 | 12-Factor Agents | 工程原则 | 无固定阶段 | **事件日志统一状态** | 控制流归代码、不归提示词 | 人可介入任何点 | 「拥有自己的控制流」「工具即结构化输出」直接命中本项目编排层问题 | 原则非实现 |
 | SWE-agent | 自治 agent + ACI | 无显式阶段（ReAct 循环） | 仓库状态 | 无流程门禁 | 全自动 | ACI 证明接口设计显著影响成功率 | 面向 benchmark，无合规需求 |
-| 本项目 harness | 流程脚手架 + 脚本门禁 | Plan→Execute→Review→Submit→Archive（可裁剪）+ 轻任务单命令 | 结构化 JSON（plan-evidence-input）→ 8 target 哈希绑定 | **Python/TS 脚本全确定**，LLM 只做提案 | 每阶段 blocking 确认；三人格对抗评审 + 双评估器 | 证据链完整度、身份绑定、fail-closed 对比组最强 | 编排脆弱、串行、评审非增量、人读层冗余 |
+| 本项目 harness | 流程脚手架 + 脚本门禁 | Plan→Execute→Review→Submit→Archive（可裁剪）+ 轻任务单命令 | 结构化 JSON（plan-evidence-input）→ 6 target 哈希绑定（11-M3 两件套后） | **Python/TS 脚本全确定**，LLM 只做提案 | 每阶段 blocking 确认；三人格对抗评审 + 双评估器 | 证据链完整度、身份绑定、fail-closed 对比组最强 | 编排脆弱、串行、评审非增量、人读层冗余 |
 
 ### 2.2 跨方案收敛出的共性原则（评估基准）
 
@@ -111,7 +127,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 
 ### 3.2 总体优势（应予保留）
 
-1. **v2 证据包架构**：单一结构化输入 → 8 个哈希绑定 target，Markdown 仅为人读层。
+1. **v2 证据包架构**：单一结构化输入 → 6 个哈希绑定 target（11-M3 两件套后），Markdown 仅为人读层。
 2. **账本身份绑定**（diffHash/ownershipHash/productTreeHash + 跨账本引用 + can-reuse 纯函数）。
 3. **Review 角色分离**：三人格 + 双独立评估器 + `blockingFor` 精确阻断 + 哨兵反钳制。
 4. **轻/重双入口**：fast/standard/full 由 diff 信号裁决，比「用户自选档位」更防误用。
@@ -125,7 +141,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | F2 | **Execute 严格串行**，无依赖图/波次 | execute SKILL 全流程无并行概念；Kiro Wave 已证明可行 | 大 change 周期长 | P1 |
 | F3 | **评审全量而非增量** | [审核整改任务书](../roadmap/proposals/review-remediation-execution-2026-09-12.md) §9.2 列为缺失 | token 成本高；大 diff 下评审质量稀释 | P1 |
 | F4 | **知识回流不进 plan 输入闭环**：`harness_knowledge.py query` 仅「建议」，失败仅警告 | plan SKILL 检索步骤无强制；roadmap 06/07 仍有知识调用收口问题 | 经验复用率取决于模型自觉 | P1 |
-| F5 | **plan 四件套重叠度高**，roadmap 09 已决议收敛为两件套未实施 | [精简分析](simplification-analysis-2026-09.md) §6.4-3 | 渲染 token 膨胀；四处一致性维护 | P2 |
+| F5 | **plan 四件套重叠度高**，roadmap 09/11 决议收敛为两件套（11-M3 已实施） | [精简分析](simplification-analysis-2026-09.md) §6.4-3 | 渲染 token 膨胀；四处一致性维护 | P2 |
 | F6 | **可观测性面向记账而非决策**：缺周期时长、门禁首过率、评审发现密度、自动度等决策级度量呈现；AI 采用度测量学仍开放 | roadmap 10；`harness_efficiency.py` 有数据无消费场景 | 改进靠感觉 | P2 |
 | F7 | **巨型脚本单点**：`harness_archive.py` 曾达 11,717 行；Python 48k+ 行、skill 文档 13.5k 行 | [精简分析](simplification-analysis-2026-09.md) §0 | 演进成本高 | P2 |
 | F8 | **轻任务分档裁决边角语义仍在收敛**：R1–R5（分类滞后、abandoned 误提交、CI 收据绑定 HEAD 树等） | [审核整改任务书](../roadmap/proposals/review-remediation-execution-2026-09-12.md) §2 | 信任成本；已有专项在修 | P1（跟踪既有专项） |
@@ -137,13 +153,13 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 ### 4.1 Plan
 
 - **设计目标**：一次结构化记录、机器先验后渲染、冻结执行边界。
-- **当前表现**：evidence-pack→finalize 8 target 原子发布 + 哈希漂移检测；材料读取预算、改动地图钩子、派生渲染均已工程化。
+- **当前表现**：evidence-pack→finalize 6 target 原子发布（11-M3 两件套后）+ 哈希漂移检测；材料读取预算、改动地图钩子、派生渲染均已工程化。
 - **差距**：四件套冗余（F5）；无显式需求消歧阶段（Spec Kit Clarify / Kiro Analyze 均有专职步）；知识查询非强制（F4）；人工修订需编辑整份 JSON，无增量修订语法。
 - **建议**：
   - [P1] 增加 **Clarify 前置步**：evidence-pack 校验前做确定性静态检查（空 objective、scenario/task 悬空引用、验收条件不可测）+ 一次 LLM 歧义扫描，输出强制确认清单。其中「验收条件不可测」的判据具体化为：验收条件须落到**命令 + 可判读输出**（退出码、匹配串、截图比对），不接受纯自然语言描述。依据：Spec Kit Clarify、Kiro Analyze Requirements；SDLC Playbook「state a target and make it quantifiable」（§2.3-C）。**状态：已实施（10-M3，commit `1618b87`）。**
-  - [P2] 实施 roadmap 09：**四件套→两件套**（design+execution、plan+scenarios 合并），JSON 真相源不动。依据：精简分析 §6.4-3。
+  - [P2] 实施 roadmap 09：**四件套→两件套**（design+execution、plan+scenarios 合并），JSON 真相源不动。依据：精简分析 §6.4-3。**状态：已实施（11-M3，commit `871c354` + `aef737e`）。**
   - [P1] 知识查询升级为 **plan gate 可配置要求**（fast 豁免，standard/full 必查并写入 `knowledge_refs`）。依据：F4；OpenAI 护栏分层。**状态：已实施（09-M4，commit `bbaba0f`）。**
-  - [P3] evidence-input 支持**补丁式修订**（`plan publish --patch`）。
+  - [P3] evidence-input 支持**补丁式修订**（`plan publish --patch`）。**状态：已实施（11-M4，2026-09-17）**：`--patch` 接受 JSON 字面量或 `.json` 文件，RFC 7386 深合并（对象递归、数组整体替换、null 删键）；stderr 在写回前输出合并预览摘要；内存合并先过既有字段级结构校验（evidence-pack HP-13 同源）才写回，违规 fail-closed 不触碰原文件；专属错误码 `PLAN_PATCH_INVALID` / `PLAN_PATCH_TARGET_NOT_FOUND`。
 
 ### 4.2 Execute
 
@@ -154,7 +170,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
   - [P1] **场景级依赖图 + 波次执行**：scenario-manifest 已有引用闭包，扩展为显式 DAG 按拓扑层并发派发（worktree-per-wave 或复用轻任务 WI-3.3 的 write-scope 冲突检测）。依据：Kiro Wave；审核整改任务书 §9.1。
     > 收益预期修正（§2.3-B）：SDLC Playbook 指出并行会话的实际上限是「一个人能评审过来的流数」，且 auto-accept 以门禁/测试成熟为前提。个人场景下 full 档单 change 内波次并行的周期收益有限（评审带宽即瓶颈），主收益场景为 standard 批量任务吞吐；P1 评级保留，立项时应以 standard 档为首个试点。
   - [P1] **修复轮次验收测试防篡改检测**（F10）：修复/重试/fixback 轮次的 diff 若触碰 plan 声明的验收测试文件，确定性阻断并升级人工确认（实现位置可选精确暂存层或 review 门禁；一般测试文件维持现 advisory）。依据：§2.3-A；SDLC Playbook Stage 4「the loop itself needs protecting」。
-  - [P2] **失败断路器**：同场景连续 2 次同类失败即暂停升级。依据：OpenAI 指南「护栏失败升级人工」。
+  - [P2] **失败断路器**：同场景连续 2 次同类失败即暂停升级。依据：OpenAI 指南「护栏失败升级人工」。**状态：已实施（15-M3，2026-09-17）**：`harness_context.py execute_circuit_check` 按（verification kind, 失败指纹）最近连续 >=2 次 FAIL 判定 open 并阻断 `bootstrap-execute`，`--circuit-ack` 人工确认放行；纯派生不持久化。
   - [P2] manifest 校准自动化（编辑动作后 hook 式触发）。
 
 ### 4.3 Review
@@ -165,7 +181,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **建议**：
   - [P1] 落地 O2 **增量评审**：以本轮 diff + 受影响接口/调用者构建输入，finding 绑定源内容哈希。依据：审核整改任务书 §9.2 验收标准。
   - [P2] 评审收益度量（各 persona/evaluator 独立发现数、确认率、阻断率），为裁剪冗余角色提供数据。依据：roadmap 10。
-  - [P3] `harness_review.py status --change <cn>` 输出三链 join 表。
+  - [P3] `harness_review.py status --change <cn>` 输出三链 join 表。**状态：已实施（15-M4，2026-09-17）**：scenario→finding→fixback join，manifest 缺失优雅降级，finding 关联优先 `scenarioRefs`（declared）否则 path 启发式，fixback 经 `issueId == finding.id` 对齐。
 
 ### 4.4 Submit
 
@@ -173,7 +189,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **当前表现**：integration worktree + journal + protection refs + 结构化 abandon/recover，恢复语义为各环节中最强。
 - **差距**：record-quirk 依赖人工写签名；R4/R5 所涉 CI 证据绑定影响 submit 前置可信度（专项在修）。
 - **建议**：
-  - [P2] record-quirk 增加**失败指纹自动建议**（人工确认后写入），不改变门禁语义。触发判据采用 §2.3-D：同一 finding 第二次出现即建议固化，替代人工判断沉淀时机。
+  - [P2] record-quirk 增加**失败指纹自动建议**（人工确认后写入），不改变门禁语义。触发判据采用 §2.3-D：同一 finding 第二次出现即建议固化，替代人工判断沉淀时机。**状态：已实施（15-M2，2026-09-17）**：`record-quirk --suggest` 扫描 ledger validations 与 run-sessions FAIL 收据，按归一化命令 + exitCode + 归一化输出尾部 sha1 前 12 位聚类，>=2 次才建议，只读不写盘。
   - [P1] 跟踪 R4/R5 修复落地。依据：审核整改任务书 §7/§8。
 
 ### 4.5 Archive
@@ -187,9 +203,9 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 
 ### 4.6 支撑环（入口 / 知识 / 同步 / 地图）
 
-- **入口分层（task vs plan）**：设计正确且业界独有；风险在裁决语义边角（F8，专项在修）。建议 [P2]：档位裁决信号开放 `harness_task.py classify --dry-run`，让升档可解释。
+- **入口分层（task vs plan）**：设计正确且业界独有；风险在裁决语义边角（F8，专项在修）。建议 [P2]：档位裁决信号开放 `harness_task.py classify --dry-run`，让升档可解释。**状态：已实施（15-M1，2026-09-17）**：以 `task begin --dry-run` 落地（begin 路径信号与裁决同源，比独立 classify 子命令更少分叉），纯只读零副作用；信号源为 `--write-scope` 声明路径 + 当前脏树（与 finish post-run 同视图），`_dirty_paths` 同步修复为 `--untracked-files=all`（untracked 目录折叠曾漏判 auth marker）。
 - **知识闭环**：建议 [P1] 查询结果结构化注入 plan evidence（同 F4）。
-- **sync / codebase-map**：定位合理；建议 [P3] codebase-map 产物作为 Clarify 步自动输入。
+- **sync / codebase-map**：定位合理；建议 [P3] codebase-map 产物作为 Clarify 步自动输入。**状态：已实施（10-M4，2026-09-17）**：`harness_clarify.py` 新增 `codebase_map_refs_known` 检查项——`path_scope.type=paths` 时 task `affected_paths` 越出扫描范围给 `CLARIFY_MAP_REF_UNKNOWN` 定位缺陷；`full`/`fast`/`focus` 视为整仓覆盖；manifest 缺失/不可读跳过不失败；`clarify check` 与 plan 关门门禁同源消费。
 
 ## 5. 理想形态重构（抛开现有架构）
 
@@ -232,7 +248,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | 阶段 | 内容 | 对应问题 | 风险 |
 |---|---|---|---|
 | 短期（1–2 迭代） | Clarify 前置步；知识查询门禁化；知识候选 JSON 直采（**三项均已落地**：10-M3 / 09-M4 / 06B-4，2026-09-17）；跟踪 R1–R5 专项收尾 | F4、F8、知识反解析 | 低，局部增强 |
-| 中期（1 季度） | Execute DAG 波次；增量评审落地（O2）；四件套→两件套 | F2、F3、F5 | 中：调度器是新组件，先在 fast/standard 档试点 |
+| 中期（1 季度） | Execute DAG 波次；增量评审落地（O2）；~~四件套→两件套~~（已提前落地，11-M3） | F2、F3 | 中：调度器是新组件，先在 fast/standard 档试点 |
 | 长期（按需） | 编排引擎化（skill 文档退化为阶段操作手册，新 entrypoint 与 skill 双轨过渡）；收据签名层；决策级度量面板 | F1、F6 | 高：须保护现有契约测试锚点 |
 
 ## 6. 建议优先级汇总
@@ -247,10 +263,10 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | **P1** | 增量评审（跟踪 O2 专项） | F3；审核整改任务书 §9.2 | 评审 token 与质量双赢 | 移交跟踪（O2 专项） |
 | **P1** | 修复轮次验收测试防篡改检测 | F10；SDLC Playbook Stage 4（§2.3-A） | 修复证据可信度从「靠自觉」到「被保证」 | 已登记，暂不立项（2026-09-17 决策） |
 | **P1** | R1–R5 专项落地跟踪 | 审核整改任务书 | 轻任务路径可信度 | 移交跟踪（审核整改任务书） |
-| **P2** | 四件套→两件套 | roadmap 09；精简分析 §6.4-3 | 渲染/阅读 token 下降 | 未启动（roadmap 11 既有决议；06B-4 已解除前置阻塞） |
-| **P2** | 失败断路器、quirk 指纹建议、档位裁决可解释 | §4.2/§4.4/§4.6 | 减少无效 attempt 与人工摩擦 | 未启动 |
+| **P2** | 四件套→两件套 | roadmap 09；精简分析 §6.4-3 | 渲染/阅读 token 下降 | **已实施**（11-M3，commit `871c354` + `aef737e`） |
+| **P2** | 失败断路器、quirk 指纹建议、档位裁决可解释 | §4.2/§4.4/§4.6 | 减少无效 attempt 与人工摩擦 | **已实施**（15-M1/M2/M3，commit `c87a1c3`） |
 | **P2** | 决策级度量面板 | F6；roadmap 10 | 后续优化有数据依据 | 未启动 |
-| **P3** | plan 补丁式修订、review 闭环状态表、codebase-map 进 Clarify | §4.1/§4.3/§4.6 | 易用性 | 未启动 |
+| **P3** | plan 补丁式修订、review 闭环状态表、codebase-map 进 Clarify | §4.1/§4.3/§4.6 | 易用性 | **三项均已实施**（15-M4 / 11-M4 / 10-M4，commit `c87a1c3` / `a8f5ae1` / `7204948`） |
 
 **一句话结论**：当前 harness 在「证据与门禁」维度的工程化程度已超过本次调研的全部公开参照系；
 真正拉开差距的是**编排层的实现介质**（提示词 vs 状态机）与**执行/评审的并行与增量能力**；

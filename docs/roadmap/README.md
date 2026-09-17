@@ -51,6 +51,9 @@ flowchart TD
     S04B --> S14
     S12 --> S14
     S13 --> S14
+    S01 --> S15["15 执行环与支撑环增强"]
+    S11 --> S15
+    S12 --> S15
 ```
 
 图中的 `04A/04B`、`06A/06B-1/06B-2/3` 和 `07A/07B` 是同一阶段内的工作包，不新增公共阶段编号。推荐按以下波次实施：
@@ -202,6 +205,7 @@ Interface 发生破坏性变化时，暂停依赖方并更新契约；不得让�
 | 12 | [Plan 分层质量门](./stages/12-plan-quality-gates-and-finalization.md) | 结构检查、语义一致性和高风险评审 | 实施中（12-M1/M2 验证 Module、M4T durable publication contract 与 Plan-specific FS contract seam 已关闭；真实 StageVerifier、文件发布、事件持久化与状态机 Adapter 待接入） |
 | 13 | [Platform 信息架构](./stages/13-platform-information-architecture.md) | 分支文件、项目资料、项目知识和变更记录 | 实施中（13.1～13.5 查询契约、只读 Server Adapter、13.6a 分支监控 Query Adapter、13.6b Materials PG source/production composition、13.6c 导出内部 contract/stream/CAS/metadata 与 13.7 Web 工作台性能/可访问性已关闭；分支快照生产者、知识/变更持久源、导出 HTTP 生命周期与完整生产 API 接线待实施） |
 | 14 | [迁移、发布与整体验收](./stages/14-migration-rollout-and-acceptance.md) | 兼容迁移、效果指标、回滚和真实流程验证 | 待实施 |
+| 15 | [执行环与支撑环增强](./stages/15-execution-loop-enhancements.md) | 档位裁决可解释、quirk 指纹建议、失败断路器、review 三链状态表 | 已实施（15-M1～M4，2026-09-17；源自 2026-09-17 流程调研报告 P2/P3 执行环建议；DAG 波次与度量面板登记为后续） |
 
 ## 阶段与工作包切分规则
 
