@@ -814,6 +814,160 @@ def status(change_dir: Path) -> dict[str, Any]:
         "items": items,
         "currentRiskCount": len(current_risks),
         "currentRisks": current_risks,
+        # 15-M4：scenario→finding→fixback 三链闭环视图（只读 join，零 schema 变更）
+        "scenarioChain": _scenario_chain(change_dir, items),
+    }
+
+
+def _scenario_chain(
+    change_dir: Path, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """scenario→finding→fixback 三链 join（15-M4，只读派生视图）。
+
+    - scenario 源：`meta/scenario-manifest.json`（v2 包装与 legacy 平铺兼容，
+      复用 harness_plan_finalize.unpack_v2_scenario_manifest）；缺失时降级
+      为 findings×dispositions 视图（available=False），不报错。
+    - finding 关联：finding.scenarioRefs（可选声明字段）优先；否则按
+      finding.path 与 scenario 的 paths/files/testFile 启发式反挂，
+      标注 linkage=heuristic。
+    - fixback 关联：batch.issues[].issueId == finding.id（issue 创建时即从
+      finding id 透传，见 harness_fixback.open_review_batch）。
+    """
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    if not manifest_path.is_file():
+        return {
+            "available": False,
+            "reason": "scenario-manifest-missing",
+            "note": "降级为 findings×dispositions 视图",
+        }
+    try:
+        manifest = _read_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "available": False,
+            "reason": "scenario-manifest-invalid",
+            "note": f"manifest unreadable: {exc}",
+        }
+    if isinstance(manifest, dict) and isinstance(manifest.get("content"), dict):
+        # v2 包装形态（schemaId/content）：content.scenarios
+        manifest = manifest["content"]
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list):
+        return {
+            "available": False,
+            "reason": "scenario-manifest-invalid",
+            "note": "scenarios must be a list",
+        }
+
+    state_dir = _state_dir(change_dir)
+    # fixback 批次索引：issueId → batch/issue 状态
+    issue_index: dict[str, dict[str, Any]] = {}
+    fixback_dir = state_dir / "fixback" / "batches"
+    if fixback_dir.is_dir():
+        for batch_path in sorted(fixback_dir.glob("*.json")):
+            try:
+                batch = _read_json(batch_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(batch, dict):
+                continue
+            for issue in batch.get("issues") or []:
+                if not isinstance(issue, dict):
+                    continue
+                issue_id = str(issue.get("issueId") or "")
+                if issue_id and issue_id not in issue_index:
+                    issue_index[issue_id] = {
+                        "batchId": str(batch.get("batchId") or batch_path.stem),
+                        "batchStatus": batch.get("status"),
+                        "issueStatus": issue.get("status"),
+                    }
+
+    # findings 的 scenarioRefs 需要原始文档（items 视图未携带）
+    findings_raw: dict[str, dict[str, Any]] = {}
+    fpath = findings_path(change_dir)
+    if fpath.is_file():
+        try:
+            fdoc = _read_json(fpath)
+        except (OSError, json.JSONDecodeError):
+            fdoc = {}
+        if isinstance(fdoc, dict):
+            for raw in fdoc.get("findings") or []:
+                if isinstance(raw, dict) and raw.get("id"):
+                    findings_raw[str(raw["id"])] = raw
+
+    def _finding_view(item: dict[str, Any], linkage: str) -> dict[str, Any]:
+        fid = str(item.get("id") or "")
+        return {
+            "id": fid,
+            "severity": item.get("severity"),
+            "title": item.get("title"),
+            "path": item.get("path"),
+            "linkage": linkage,
+            "disposition": item.get("disposition"),
+            "fixback": issue_index.get(fid),
+        }
+
+    linked_ids: set[str] = set()
+    scenarios_view: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        sid = str(scenario.get("id") or "").strip()
+        scenario_paths: set[str] = set()
+        for key in ("paths", "files", "relatedFiles"):
+            value = scenario.get(key)
+            if isinstance(value, list):
+                scenario_paths.update(
+                    str(p).replace("\\", "/") for p in value if str(p).strip()
+                )
+        test_file = str(scenario.get("testFile") or "").strip()
+        if test_file:
+            scenario_paths.add(test_file.replace("\\", "/"))
+
+        scenario_findings: list[dict[str, Any]] = []
+        for item in items:
+            fid = str(item.get("id") or "")
+            raw = findings_raw.get(fid) or {}
+            refs = raw.get("scenarioRefs")
+            if isinstance(refs, list) and sid in {str(r) for r in refs}:
+                scenario_findings.append(_finding_view(item, "declared"))
+                linked_ids.add(fid)
+                continue
+            fpath_str = str(item.get("path") or "").replace("\\", "/")
+            if fpath_str and any(
+                fpath_str == sp
+                or fpath_str.startswith(sp.rstrip("/") + "/")
+                or sp.startswith(fpath_str.rstrip("/") + "/")
+                for sp in scenario_paths
+            ):
+                scenario_findings.append(_finding_view(item, "heuristic"))
+                linked_ids.add(fid)
+
+        scenarios_view.append(
+            {
+                "id": sid,
+                "priority": scenario.get("priority"),
+                "ownerPhase": scenario.get("ownerPhase"),
+                "requiredEvidenceKind": scenario.get("requiredEvidenceKind"),
+                "findings": scenario_findings,
+                "findingCounts": {
+                    severity: sum(
+                        1 for f in scenario_findings if f["severity"] == severity
+                    )
+                    for severity in ("RED", "YELLOW", "OK")
+                    if any(f["severity"] == severity for f in scenario_findings)
+                },
+            }
+        )
+
+    unlinked = [
+        str(item.get("id")) for item in items
+        if str(item.get("id") or "") not in linked_ids
+    ]
+    return {
+        "available": True,
+        "scenarios": scenarios_view,
+        "unlinkedFindings": unlinked,
     }
 
 
@@ -1184,7 +1338,42 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    return _emit(status(Path(args.change_dir)), as_json=True)
+    # 15-M4：--change-dir 与 --change(+--project) 二选一
+    raw_dir = getattr(args, "change_dir", None)
+    change_name = str(getattr(args, "change", "") or "").strip()
+    if raw_dir and change_name:
+        return _emit(
+            {
+                "ok": False,
+                "code": "STATUS_ARGS_CONFLICT",
+                "error": "--change-dir 与 --change 只能二选一",
+            },
+            as_json=True,
+        )
+    if change_name:
+        project = Path(getattr(args, "project", None) or Path.cwd()).resolve()
+        change_dir = project / ".harness" / "changes" / change_name
+        if not change_dir.is_dir():
+            return _emit(
+                {
+                    "ok": False,
+                    "code": "CHANGE_DIR_MISSING",
+                    "error": f"{change_dir} 不存在",
+                },
+                as_json=True,
+            )
+    elif raw_dir:
+        change_dir = Path(raw_dir)
+    else:
+        return _emit(
+            {
+                "ok": False,
+                "code": "STATUS_ARGS_MISSING",
+                "error": "需要 --change-dir 或 --change（搭配 --project，默认 cwd）",
+            },
+            as_json=True,
+        )
+    return _emit(status(change_dir), as_json=True)
 
 
 def cmd_diff_scope(args: argparse.Namespace) -> int:
@@ -1242,7 +1431,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_scaffold.set_defaults(func=cmd_scaffold)
 
     p_status = sub.add_parser("status")
-    p_status.add_argument("--change-dir", required=True)
+    # 15-M4：--change（搭配 --project，默认 cwd）与 --change-dir 二选一。
+    p_status.add_argument("--change-dir", default=None)
+    p_status.add_argument("--change", default=None, help="change 名（配 --project）")
+    p_status.add_argument("--project", default=None, help="项目根（默认 cwd）")
     p_status.set_defaults(func=cmd_status)
 
     p_scope = sub.add_parser(

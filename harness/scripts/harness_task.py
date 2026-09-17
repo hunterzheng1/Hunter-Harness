@@ -321,9 +321,14 @@ def _dirty_paths(project: Path) -> list[str]:
 
     重命名 `R  old -> new` 拆成两侧：old 视为删除（预存删除同样会被
     add -A 扫进提交），new 为脏路径。
+
+    `--untracked-files=all`（15-M1）：默认 normal 模式把全新目录折叠成
+    `dir/` 单条目，post-run full 信号与 baseline/foreign 指纹都会漏看
+    目录内文件（如 src/auth/login.py 折叠成 src/ 不命中 auth marker）；
+    展开为文件级后信号链与指纹链一致。
     """
     proc = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=project,
         capture_output=True,
         text=True,
@@ -562,6 +567,119 @@ def find_open_task_start(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def _begin_dry_run_report(
+    project: Path,
+    change: str,
+    declared_tier: str | None,
+    write_scope: list[str] | None,
+) -> dict[str, Any]:
+    """begin --dry-run：档位裁决可解释（纯只读——不建目录、不落盘）。
+
+    信号来源：--write-scope 声明路径 + 当前脏树（finish post-run 的扫描
+    对象）。最终档位以 finish post-run 裁决为准——docs-only / no-code-diff
+    降级信号只有存在实际 diff 后才能判定，dry-run 基础档位恒为 standard。
+    """
+    contract = hg._load_risk_signals_contract()
+    full_markers = {
+        str(signal): [str(marker) for marker in markers]
+        for signal, markers in (contract.get("fullMarkers") or {}).items()
+    }
+    scope = [str(p).replace("\\", "/") for p in (write_scope or [])]
+    dirty = sorted(
+        rel.replace("\\", "/")
+        for rel in _dirty_paths(project)
+        if not rel.replace("\\", "/").startswith(".harness/")
+    )
+
+    def _details(paths: list[str]) -> list[dict[str, Any]]:
+        if not paths:
+            return []
+        lowered = "\n".join(p.lower() for p in paths)
+        details: list[dict[str, Any]] = []
+        for signal in _full_signals_for_paths(paths):
+            if signal == "contract-schema":
+                matched = sorted(
+                    p for p in paths if p.lower() in hg.CONTRACT_SCHEMA_PATHS
+                )
+                details.append(
+                    {
+                        "signal": signal,
+                        "matchedMarkers": ["<exact-path>"],
+                        "matchedPaths": matched,
+                    }
+                )
+                continue
+            markers = [m for m in full_markers.get(signal, ()) if m in lowered]
+            matched = sorted(
+                p for p in paths if any(m in p.lower() for m in markers)
+            )
+            details.append(
+                {
+                    "signal": signal,
+                    "matchedMarkers": markers,
+                    "matchedPaths": matched,
+                }
+            )
+        return details
+
+    scope_signals = _details(scope)
+    worktree_signals = _details(dirty)
+    rejection_signals = sorted(
+        {item["signal"] for item in scope_signals + worktree_signals}
+    )
+    declared_full = declared_tier == "full"
+    would_reject = bool(rejection_signals) or declared_full
+
+    tier = "standard"
+    trace: list[dict[str, str]] = [
+        {
+            "source": "default",
+            "tier": "standard",
+            "note": "begin 时无 post-run diff 证据，docs-only/no-code-diff "
+            "降级信号仅 finish 可判定",
+        }
+    ]
+    if declared_tier is not None:
+        if declared_tier in ACCEPTED_TIERS and TIER_RANK[declared_tier] > TIER_RANK[tier]:
+            tier = declared_tier
+        trace.append(
+            {
+                "source": "declaredTier",
+                "tier": str(declared_tier),
+                "note": "floor 只升不降；full 声明超出轻任务入口承接范围",
+            }
+        )
+    return {
+        "ok": True,
+        "code": "TASK_CLASSIFY_DRY_RUN",
+        "dryRun": True,
+        "changeId": change,
+        "declaredTier": declared_tier,
+        "writeScope": scope or None,
+        "signalThresholds": {
+            "fullMarkers": full_markers,
+            "contractSchemaPaths": sorted(hg.CONTRACT_SCHEMA_PATHS),
+            "rejectionRule": "任一 full 信号命中即拒绝轻任务入口，转 /harness-plan",
+        },
+        "scopeSignals": scope_signals,
+        "worktreeSignals": worktree_signals,
+        "worktreeDirtyPaths": dirty,
+        "wouldReject": would_reject,
+        "rejectionSignals": rejection_signals,
+        "rejectionReason": (
+            "declared tier full 超出轻任务入口承接范围" if declared_full else None
+        ),
+        "verdictTier": None if would_reject else tier,
+        "tierFloorTrace": trace,
+        "notes": [
+            "dry-run 只报告不拒绝；wouldReject=true 时真实 begin 会以 "
+            "TASK_TIER_UPGRADE_REQUIRED 拒绝",
+            "最终档位以 finish post-run 裁决为准：docs-only → fast，"
+            "no-code-diff 沿用 recorded tier",
+        ],
+    }
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     project = Path(args.project).resolve()
@@ -570,6 +688,9 @@ def cmd_begin(args: argparse.Namespace) -> int:
     acceptance = [str(item).strip() for item in (args.acceptance or []) if str(item).strip()]
     executor = str(args.executor or "").strip() or "unknown"
     declared_tier = str(args.tier) if getattr(args, "tier", None) else None
+    # 15-M1：--dry-run 只解释裁决不建任务——goal/acceptance 对裁决无意义，
+    # 放宽必填校验。
+    dry_run = bool(getattr(args, "dry_run", False))
 
     problems: list[str] = []
     if not change:
@@ -578,9 +699,9 @@ def cmd_begin(args: argparse.Namespace) -> int:
         problems.append(
             f"--change must match {CHANGE_NAME_RE.pattern}; got: {change!r}"
         )
-    if not goal:
+    if not goal and not dry_run:
         problems.append("--goal is required (one sentence, becomes businessGoal)")
-    if not acceptance:
+    if not acceptance and not dry_run:
         problems.append(
             "--acceptance is required and repeatable "
             "(at least one verifiable condition)"
@@ -614,6 +735,33 @@ def cmd_begin(args: argparse.Namespace) -> int:
             as_json,
         )
         return 2
+
+    # 15-M1：--dry-run 在 load_task / 建目录之前短路——纯只读裁决解释，
+    # 对已有/终态任务同样可用（假设性查询），不产生任何文件副作用。
+    if dry_run:
+        dry_scope, dry_scope_problems = _normalize_write_scope(
+            getattr(args, "write_scope", None)
+        )
+        if dry_scope_problems:
+            emit(
+                error_envelope(
+                    "TASK_SCOPE_INVALID",
+                    "--write-scope 声明非法：须为仓库相对 POSIX 路径，"
+                    "不允许绝对路径 / 父级引用 / 空路径",
+                    field_path="args.write_scope",
+                    problems=dry_scope_problems,
+                    recovery_action=(
+                        "示例：--write-scope src/auth --write-scope docs/api.md"
+                    ),
+                ),
+                as_json,
+            )
+            return 2
+        emit(
+            _begin_dry_run_report(project, change, declared_tier, dry_scope),
+            as_json,
+        )
+        return 0
 
     change_dir = project / ".harness" / "changes" / change
     existing_task = load_task(change_dir)
@@ -2674,12 +2822,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_begin.add_argument("--project", default=".")
     p_begin.add_argument("--change", required=True, help="kebab-case change id")
     p_begin.add_argument("--executor", default="unknown", help="executor tool name")
-    p_begin.add_argument("--goal", required=True, help="任务目标（一句话，成为 businessGoal）")
+    p_begin.add_argument(
+        "--goal",
+        # 15-M1：不在 argparse 层强制必填（--dry-run 不需要 goal/acceptance）；
+        # 非 dry-run 路径由 cmd_begin 手动校验给出 TASK_CONTEXT_MISSING 信封。
+        help="任务目标（一句话，成为 businessGoal）；非 --dry-run 时必填",
+    )
     p_begin.add_argument(
         "--acceptance",
         action="append",
-        required=True,
-        help="可验证验收条件；可重复",
+        help="可验证验收条件；可重复；非 --dry-run 时至少一条",
     )
     p_begin.add_argument(
         "--tier",
@@ -2702,6 +2854,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CHANGE",
         help="依赖的 change id（可重复）；目标须达 completed 才允许 begin，"
         "abandoned/superseded 须先重开或替换依赖",
+    )
+    p_begin.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="档位裁决可解释：只报告信号命中/阈值与裁决过程，不建目录不落盘",
     )
     p_begin.add_argument("--json", action="store_true")
     p_begin.set_defaults(func=cmd_begin)

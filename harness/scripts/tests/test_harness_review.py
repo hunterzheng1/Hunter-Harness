@@ -1181,5 +1181,158 @@ class CarryoverV3CompatTests(DiffScopeFixture):
         self.assertEqual(len(out["carriedOverIds"]), 1)
 
 
+class ScenarioChainTests(ReviewFixture):
+    """15-M4：scenario→finding→fixback 三链闭环状态表。"""
+
+    def _write_manifest(self, scenarios: list[dict]) -> None:
+        (self.change_dir / "meta" / "scenario-manifest.json").write_text(
+            json.dumps(
+                {"schemaVersion": 2, "changeName": "demo", "scenarios": scenarios}
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_findings(self, findings: list[dict]) -> None:
+        path = self.state_dir / "reports" / "review" / "review-findings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "r1",
+                    "changeName": "demo",
+                    "findings": findings,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_dispositions(self, dispositions: list[dict]) -> None:
+        path = self.state_dir / "reports" / "review" / "fixback-dispositions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"schemaVersion": 1, "dispositions": dispositions}),
+            encoding="utf-8",
+        )
+
+    def _write_fixback_batch(self, batch_id: str, issues: list[dict]) -> None:
+        path = self.state_dir / "fixback" / "batches" / f"{batch_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"batchId": batch_id, "status": "in-progress", "issues": issues}
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _finding(fid: str, severity: str, path: str, **extra) -> dict:
+        base = {
+            "id": fid,
+            "dimension": "architecture",
+            "severity": severity,
+            "path": path,
+            "line": 1,
+            "title": f"finding {fid}",
+            "fixbackAction": "code",
+        }
+        base.update(extra)
+        return base
+
+    def test_missing_manifest_degrades_gracefully(self) -> None:
+        self._write_findings([self._finding("f1", "RED", "src/app.py")])
+        result = review.status(self.change_dir)
+        chain = result["scenarioChain"]
+        self.assertFalse(chain["available"])
+        self.assertEqual(chain["reason"], "scenario-manifest-missing")
+        # 既有字段不受影响
+        self.assertEqual(result["counts"]["RED"], 1)
+
+    def test_declared_scenario_refs_join(self) -> None:
+        self._write_manifest(
+            [
+                {"id": "UT-001", "priority": "P1", "ownerPhase": "execute",
+                 "requiredEvidenceKind": "ledger"},
+                {"id": "API-001", "priority": "P1", "ownerPhase": "review",
+                 "requiredEvidenceKind": "ledger"},
+            ]
+        )
+        self._write_findings(
+            [
+                self._finding("f1", "RED", "src/app.py", scenarioRefs=["UT-001"]),
+                self._finding("f2", "YELLOW", "src/other.py"),
+            ]
+        )
+        self._write_dispositions(
+            [{"findingId": "f1", "disposition": "FIXED", "recordedAt": "t1"}]
+        )
+        self._write_fixback_batch(
+            "fb-1",
+            [{"issueId": "f1", "status": "CLOSED", "severity": "RED",
+              "path": "src/app.py", "line": 1, "summary": "s"}],
+        )
+        result = review.status(self.change_dir)
+        chain = result["scenarioChain"]
+        self.assertTrue(chain["available"], chain)
+        by_id = {s["id"]: s for s in chain["scenarios"]}
+        ut = by_id["UT-001"]
+        self.assertEqual(len(ut["findings"]), 1)
+        f1 = ut["findings"][0]
+        self.assertEqual(f1["id"], "f1")
+        self.assertEqual(f1["linkage"], "declared")
+        self.assertEqual(f1["disposition"], "FIXED")
+        self.assertEqual(f1["fixback"]["batchId"], "fb-1")
+        self.assertEqual(f1["fixback"]["issueStatus"], "CLOSED")
+        self.assertEqual(ut["findingCounts"], {"RED": 1})
+        self.assertEqual(by_id["API-001"]["findings"], [])
+        self.assertEqual(chain["unlinkedFindings"], ["f2"])
+
+    def test_heuristic_path_linkage(self) -> None:
+        self._write_manifest(
+            [{"id": "UT-001", "priority": "P1", "ownerPhase": "execute",
+              "testFile": "tests/test_app.py"}]
+        )
+        self._write_findings(
+            [self._finding("f1", "YELLOW", "tests/test_app.py")]
+        )
+        result = review.status(self.change_dir)
+        chain = result["scenarioChain"]
+        f1 = chain["scenarios"][0]["findings"][0]
+        self.assertEqual(f1["linkage"], "heuristic")
+        self.assertEqual(chain["unlinkedFindings"], [])
+
+    def test_change_alias_resolves_project_layout(self) -> None:
+        """--change 别名与 --change-dir 等价（经 cmd_status 解析）。"""
+        import argparse
+
+        self._write_findings([self._finding("f1", "RED", "src/app.py")])
+        args = argparse.Namespace(
+            change_dir=None, change="demo", project=str(self.project)
+        )
+        import io
+        import contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = review.cmd_status(args)
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["counts"]["RED"], 1)
+
+    def test_change_alias_missing_dir_errors(self) -> None:
+        import argparse
+        import io
+        import contextlib
+
+        args = argparse.Namespace(
+            change_dir=None, change="ghost", project=str(self.project)
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = review.cmd_status(args)
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(buf.getvalue())["code"], "CHANGE_DIR_MISSING")
+
+
 if __name__ == "__main__":
     unittest.main()

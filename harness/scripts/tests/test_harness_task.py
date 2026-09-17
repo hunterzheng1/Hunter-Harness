@@ -1682,5 +1682,96 @@ class AssetOutboxWiringTests(HarnessTaskFixture):
         self.assertEqual(summary.get("warning"), "ASSET_OUTBOX_MAINTENANCE_FAILED", out)
 
 
+class BeginDryRunTests(HarnessTaskFixture):
+    """15-M1：begin --dry-run 档位裁决可解释——只报告，零文件副作用。"""
+
+    def _dry_run(self, *extra: str, change: str = "dry-1") -> tuple[int, dict]:
+        return self._run(
+            "begin", "--project", str(self.project), "--change", change,
+            "--executor", "test", "--dry-run", "--json", *extra,
+        )
+
+    def test_clean_scope_accepts_and_reports_thresholds(self) -> None:
+        """干净树 + 无信号 scope：wouldReject=false，阈值表完整，落盘为零。"""
+        rc, out = self._dry_run("--write-scope", "docs/notes.md")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["code"], "TASK_CLASSIFY_DRY_RUN")
+        self.assertTrue(out["dryRun"])
+        self.assertFalse(out["wouldReject"], out)
+        self.assertEqual(out["verdictTier"], "standard")
+        self.assertEqual(out["scopeSignals"], [])
+        thresholds = out["signalThresholds"]
+        self.assertIn("auth", thresholds["fullMarkers"])
+        self.assertIn("contractSchemaPaths", thresholds)
+        self.assertFalse(
+            (self.project / ".harness" / "changes" / "dry-1").exists(),
+            "dry-run 不得创建 change 目录",
+        )
+
+    def test_goal_and_acceptance_not_required(self) -> None:
+        """dry-run 放宽 goal/acceptance 必填（裁决与二者无关）。"""
+        rc, out = self._dry_run()
+        self.assertEqual(rc, 0, out)
+
+    def test_scope_full_signal_explains_rejection(self) -> None:
+        """scope 命中 full 信号：wouldReject=true 且给出命中 marker 与路径。"""
+        rc, out = self._dry_run("--write-scope", "src/auth/login.py")
+        self.assertEqual(rc, 0, out)  # dry-run 只报告不拒绝
+        self.assertTrue(out["wouldReject"], out)
+        self.assertIn("auth", out["rejectionSignals"])
+        self.assertIsNone(out["verdictTier"])
+        detail = next(s for s in out["scopeSignals"] if s["signal"] == "auth")
+        self.assertIn("auth", detail["matchedMarkers"])
+        self.assertEqual(detail["matchedPaths"], ["src/auth/login.py"])
+
+    def test_contract_schema_exact_path_signal(self) -> None:
+        """contract-schema 精确路径命中（非子串）。"""
+        rc, out = self._dry_run(
+            "--write-scope", "harness/scripts/harness_gate.py"
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out["wouldReject"], out)
+        self.assertIn("contract-schema", out["rejectionSignals"])
+
+    def test_declared_full_reports_without_rejecting_exit(self) -> None:
+        """--tier full + --dry-run：退出码 0，报告 wouldReject 与原因。"""
+        rc, out = self._dry_run("--tier", "full")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out["wouldReject"], out)
+        self.assertIn("full", out["rejectionReason"])
+        self.assertIsNone(out["verdictTier"])
+
+    def test_dirty_worktree_signals_surfaced(self) -> None:
+        """当前脏树命中信号：worktreeSignals 报告（finish post-run 同视图）。"""
+        (self.project / "src" / "auth").mkdir(parents=True)
+        (self.project / "src" / "auth" / "login.py").write_text(
+            "x = 1\n", encoding="utf-8"
+        )
+        rc, out = self._dry_run()
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out["wouldReject"], out)
+        self.assertIn("auth", out["rejectionSignals"])
+        self.assertIn("src/auth/login.py", out["worktreeDirtyPaths"])
+        detail = next(s for s in out["worktreeSignals"] if s["signal"] == "auth")
+        self.assertEqual(detail["matchedPaths"], ["src/auth/login.py"])
+
+    def test_harness_internal_dirt_excluded(self) -> None:
+        """.harness/ 下脏文件不计入信号（框架自留地豁免与 _full_signals 一致）。"""
+        internal = self.project / ".harness" / "state" / "local" / "auth-note.md"
+        internal.parent.mkdir(parents=True, exist_ok=True)
+        internal.write_text("x\n", encoding="utf-8")
+        rc, out = self._dry_run()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(out["wouldReject"], out)
+
+    def test_tier_floor_trace_records_declared(self) -> None:
+        """声明 standard 时 floor 轨迹含 default + declaredTier 两级。"""
+        rc, out = self._dry_run("--tier", "standard")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["verdictTier"], "standard")
+        sources = [t["source"] for t in out["tierFloorTrace"]]
+        self.assertEqual(sources, ["default", "declaredTier"])
+
+
 if __name__ == "__main__":
     unittest.main()

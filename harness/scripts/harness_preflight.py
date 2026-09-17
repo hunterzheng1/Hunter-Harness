@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
 import shlex
@@ -258,6 +259,236 @@ def cmd_record_quirk(
         "pitfallsPath": str(pitfalls_path),
         "pitfallsLine": pitfalls_line,
         "profile": profile,
+    }
+
+
+# ---------------------------------------------------------------------------
+# record-quirk --suggest（15-M2）— 失败指纹自动建议（只读，不写盘）
+# ---------------------------------------------------------------------------
+
+# 同一失败指纹出现次数阈值（调研报告 §2.3-D：≥2 才建议）。
+_SUGGEST_THRESHOLD = 2
+
+_TS_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b")
+_CLOCK_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b")
+_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+_ABSPATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][\w.\-]+){2,}")
+_NUM_RE = re.compile(r"\b\d+\b")
+_WS_RE = re.compile(r"\s+")
+
+_ERROR_LINE_RES = (
+    re.compile(r"\berror\s+[A-Z]{1,4}\d{2,5}\b[^\n]{0,80}", re.IGNORECASE),
+    re.compile(r"\bFAIL(?:ED)?\b[^\n]{0,80}"),
+    re.compile(
+        r"\b(?:SyntaxError|TypeError|ReferenceError|ValueError|KeyError|"
+        r"IndexError|AssertionError|ModuleNotFoundError|ImportError)\b[^\n]{0,80}"
+    ),
+    re.compile(r"\berror:?\b[^\n]{0,100}", re.IGNORECASE),
+    re.compile(r"\bexit(?:ed)?\s+(?:with\s+)?(?:code\s+)?\d+\b", re.IGNORECASE),
+)
+
+
+def _normalize_output_tail(text: str, *, max_lines: int = 5, max_chars: int = 240) -> str:
+    """输出尾部归一化：去时间戳/sha/绝对路径/数字等易变段后压缩。
+
+    指纹只用于「同一失败」聚类，不持久化，因此归一化规则可在后续版本
+    收紧而不影响存量状态。
+    """
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    joined = " | ".join(lines[-max_lines:])
+    joined = _TS_RE.sub("<ts>", joined)
+    joined = _CLOCK_RE.sub("<ts>", joined)
+    joined = _SHA_RE.sub("<sha>", joined)
+    joined = _ABSPATH_RE.sub("<path>", joined)
+    joined = _NUM_RE.sub("<n>", joined)
+    joined = _WS_RE.sub(" ", joined)
+    return joined[:max_chars]
+
+
+def _normalize_command(command: str, *, max_chars: int = 120) -> str:
+    joined = _ABSPATH_RE.sub("<path>", command.strip())
+    joined = _SHA_RE.sub("<sha>", joined)
+    joined = _WS_RE.sub(" ", joined)
+    return joined[:max_chars]
+
+
+def _extract_error_signature(tail_normalized: str, command: str, exit_code: Any) -> str:
+    """从归一化尾部提取人可读的错误签名作为 suggestedPattern 候选。"""
+    for pattern_re in _ERROR_LINE_RES:
+        match = pattern_re.search(tail_normalized)
+        if match:
+            return _WS_RE.sub(" ", match.group(0)).strip()[:120]
+    base = _normalize_command(command, max_chars=60) or "<unknown-command>"
+    return f"{base} → exit={exit_code}"
+
+
+def _failure_fingerprint(command: str, exit_code: Any, tail_normalized: str) -> str:
+    digest = hashlib.sha1(
+        f"{_normalize_command(command)}|{exit_code}|{tail_normalized}".encode("utf-8")
+    ).hexdigest()
+    return digest[:12]
+
+
+def _read_tail(path: Path, *, max_bytes: int = 16384) -> str:
+    """只读输出文件尾部（限幅，避免大日志拖慢建议扫描）。"""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(-max_bytes, 2)
+            data = fh.read()
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _collect_failure_evidence(project: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """聚合全部 change 的 ledger 失败条目与 run-session FAIL 收据（只读）。"""
+    evidence: list[dict[str, Any]] = []
+    scanned = {"ledgers": 0, "sessions": 0}
+    changes_root = project / ".harness" / "state" / "changes"
+    if not changes_root.is_dir():
+        return evidence, scanned
+
+    for ledger_path in sorted(changes_root.glob("*/evidence/verification-ledger.json")):
+        scanned["ledgers"] += 1
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        validations = ledger.get("validations")
+        if not isinstance(validations, dict):
+            continue
+        change_id = ledger_path.parents[1].name
+        for kind, entry in validations.items():
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("status") or "").upper()
+            if status in ("", "OK"):
+                continue
+            command = str(entry.get("command") or entry.get("runnerCommand") or kind)
+            evidence.append(
+                {
+                    "source": "ledger",
+                    "changeId": change_id,
+                    "verification": str(kind),
+                    "command": command,
+                    "exitCode": entry.get("exitCode"),
+                    "outputTail": "",
+                    "status": status,
+                }
+            )
+
+    for session_path in sorted(changes_root.glob("*/runtime/run-sessions/*/session.json")):
+        scanned["sessions"] += 1
+        try:
+            receipt = json.loads(session_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(receipt.get("status") or "").upper() != "FAIL":
+            continue
+        change_id = session_path.parents[3].name
+        tail = ""
+        for key in ("stderrPath", "stdoutPath"):
+            raw = receipt.get(key)
+            if isinstance(raw, str) and raw:
+                tail = _read_tail(Path(raw))
+                if tail:
+                    break
+        evidence.append(
+            {
+                "source": "run-session",
+                "changeId": change_id,
+                "verification": str(receipt.get("verification") or ""),
+                "command": str(receipt.get("command") or receipt.get("verification") or ""),
+                "exitCode": receipt.get("exitCode"),
+                "outputTail": tail,
+                "sessionId": str(receipt.get("sessionId") or session_path.parent.name),
+            }
+        )
+    return evidence, scanned
+
+
+def cmd_suggest_quirks(project: Path) -> dict[str, Any]:
+    """record-quirk --suggest：扫描历史失败指纹，输出 quirk 候选建议（不写盘）。
+
+    判据（调研报告 §2.3-D）：同一失败指纹（归一化命令 + exitCode + 归一化
+    输出尾部）出现 ≥2 次才进入建议；已被 knownPreexistingErrors/shellQuirks
+    覆盖的指纹标注 alreadyRecorded 供人工过滤。人工确认后走现有
+    record-quirk 落盘——本命令永不写文件。
+    """
+    project = project.resolve()
+    evidence, scanned = _collect_failure_evidence(project)
+
+    clusters: dict[str, list[dict[str, Any]]] = {}
+    for item in evidence:
+        tail_normalized = _normalize_output_tail(item.get("outputTail") or "")
+        fp = _failure_fingerprint(
+            str(item.get("command") or ""), item.get("exitCode"), tail_normalized
+        )
+        item["fingerprint"] = fp
+        item["tailNormalized"] = tail_normalized
+        clusters.setdefault(fp, []).append(item)
+
+    profile, _ = _load_or_skeleton(project)
+    recorded_patterns = [
+        str(e.get("pattern") or "")
+        for e in (profile.get("knownPreexistingErrors") or [])
+        if isinstance(e, dict)
+    ] + [str(p) for p in (profile.get("shellQuirks") or [])]
+
+    suggestions: list[dict[str, Any]] = []
+    for fp, items in sorted(
+        clusters.items(), key=lambda kv: (-len(kv[1]), kv[0])
+    ):
+        if len(items) < _SUGGEST_THRESHOLD:
+            continue
+        sample = items[0]
+        signature = _extract_error_signature(
+            sample["tailNormalized"],
+            str(sample.get("command") or ""),
+            sample.get("exitCode"),
+        )
+        already = any(
+            pat and (pat in signature or signature in pat)
+            for pat in recorded_patterns
+        )
+        suggestions.append(
+            {
+                "fingerprint": fp,
+                "occurrences": len(items),
+                "suggestedPattern": signature,
+                "suggestedAction": "skip-not-block",
+                "reason": (
+                    f"同一失败指纹出现 {len(items)} 次（≥{_SUGGEST_THRESHOLD} 阈值）；"
+                    "若为预先存在/环境性失败，人工确认后可 record-quirk"
+                ),
+                "alreadyRecorded": already,
+                "evidence": [
+                    {
+                        "source": e["source"],
+                        "changeId": e["changeId"],
+                        "verification": e.get("verification"),
+                        "command": _normalize_command(str(e.get("command") or "")),
+                        "exitCode": e.get("exitCode"),
+                        "excerpt": e["tailNormalized"][:160],
+                    }
+                    for e in items[:5]
+                ],
+            }
+        )
+
+    return {
+        "ok": True,
+        "action": "record-quirk-suggest",
+        "project": str(project),
+        "threshold": _SUGGEST_THRESHOLD,
+        "scanned": scanned,
+        "suggestions": suggestions,
+        "notes": [
+            "只读建议：本命令不写任何文件；确认后用 record-quirk 落盘",
+            "指纹 = 归一化命令 + exitCode + 归一化输出尾部（去时间戳/路径/sha）",
+        ],
     }
 
 
@@ -594,14 +825,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_quirk = sub.add_parser("record-quirk", help="Append quirk without overwriting peers")
     p_quirk.add_argument("--project", required=True, type=Path)
-    p_quirk.add_argument("--pattern", required=True)
-    p_quirk.add_argument("--reason", required=True)
+    # 15-M2：--suggest 模式下 pattern/reason/action 不需要（纯只读建议）；
+    # 非 suggest 路径由 main 手动校验必填，保持信封式错误。
+    p_quirk.add_argument("--pattern")
+    p_quirk.add_argument("--reason")
     p_quirk.add_argument(
         "--action",
-        required=True,
         choices=sorted(VALID_QUIRK_ACTIONS),
     )
     p_quirk.add_argument("--fixed-command", default=None)
+    p_quirk.add_argument(
+        "--suggest",
+        action="store_true",
+        help="扫描历史失败指纹并输出 quirk 候选建议（只读，不写盘）",
+    )
     p_quirk.add_argument("--json", action="store_true")
 
     p_agents = sub.add_parser("check-agents", help="Validate agent definition usability")
@@ -626,6 +863,30 @@ def main(argv: list[str] | None = None) -> int:
         hard = result.get("status") in ("missing", "invalid")
         return emit_json(result, ok=not hard)
     if args.command == "record-quirk":
+        if getattr(args, "suggest", False):
+            # 15-M2：只读建议通道，不需要 pattern/reason/action
+            result = cmd_suggest_quirks(args.project)
+            return emit_json(result, ok=bool(result.get("ok", False)))
+        missing = [
+            flag
+            for flag, value in (
+                ("--pattern", args.pattern),
+                ("--reason", args.reason),
+                ("--action", args.action),
+            )
+            if value is None or str(value).strip() == ""
+        ]
+        if missing:
+            return emit_json(
+                {
+                    "ok": False,
+                    "action": "record-quirk",
+                    "issues": [
+                        f"missing required: {', '.join(missing)}（或改用 --suggest 只读建议模式）"
+                    ],
+                },
+                ok=False,
+            )
         result = cmd_record_quirk(
             args.project,
             pattern=args.pattern,

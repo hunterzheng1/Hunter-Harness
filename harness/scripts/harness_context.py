@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1204,6 +1205,139 @@ def _execute_run_identity(change_dir: Path) -> tuple[str, int] | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# 执行失败断路器（15-M3）——纯派生判定，不持久化，不引入第二真相源
+# ---------------------------------------------------------------------------
+
+_CIRCUIT_THRESHOLD = 2  # 同 (verification, 失败指纹) 连续 FAIL 次数阈值
+
+_CIRCUIT_TS_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"
+)
+_CIRCUIT_CLOCK_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b")
+_CIRCUIT_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+_CIRCUIT_ABSPATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][\w.\-]+){2,}")
+_CIRCUIT_NUM_RE = re.compile(r"\b\d+\b")
+_CIRCUIT_WS_RE = re.compile(r"\s+")
+
+
+def _circuit_normalize_tail(text: str, *, max_lines: int = 5, max_chars: int = 240) -> str:
+    """失败输出尾部归一化（去时间戳/sha/绝对路径/数字等易变段）。
+
+    与 harness_preflight._normalize_output_tail 同族规则但独立演进：
+    断路器指纹只在判定内比较，不跨工具消费，不属契约常量。
+    """
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    joined = " | ".join(lines[-max_lines:])
+    joined = _CIRCUIT_TS_RE.sub("<ts>", joined)
+    joined = _CIRCUIT_CLOCK_RE.sub("<ts>", joined)
+    joined = _CIRCUIT_SHA_RE.sub("<sha>", joined)
+    joined = _CIRCUIT_ABSPATH_RE.sub("<path>", joined)
+    joined = _CIRCUIT_NUM_RE.sub("<n>", joined)
+    joined = _CIRCUIT_WS_RE.sub(" ", joined)
+    return joined[:max_chars]
+
+
+def _circuit_read_tail(raw_path: Any, *, max_bytes: int = 16384) -> str:
+    if not isinstance(raw_path, str) or not raw_path:
+        return ""
+    path = Path(raw_path)
+    try:
+        if not path.is_file():
+            return ""
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(-max_bytes, 2)
+            data = fh.read()
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _circuit_fingerprint(receipt: dict[str, Any]) -> str:
+    tail = ""
+    for key in ("stderrPath", "stdoutPath"):
+        tail = _circuit_read_tail(receipt.get(key))
+        if tail:
+            break
+    normalized = _circuit_normalize_tail(tail)
+    return hashlib.sha1(
+        f"{receipt.get('exitCode')}|{normalized}".encode("utf-8")
+    ).hexdigest()[:12]
+
+
+def execute_circuit_check(change_dir: Path) -> dict[str, Any]:
+    """失败断路器判定（只读派生）：同 (verification, 指纹) 最近连续
+    ≥_CIRCUIT_THRESHOLD 次 FAIL → open。
+
+    数据源：run-sessions 历史收据（完整时间序列）。ledger validations 是
+    覆盖式只留最新，不提供序列，故只作证据补充不作判定输入。
+    """
+    state_root = hpaths.resolve_state_dir_for_contract(change_dir)
+    sessions_root = state_root / "runtime" / "run-sessions"
+    if not sessions_root.is_dir():
+        return {"state": "closed", "threshold": _CIRCUIT_THRESHOLD,
+                "reason": "no-run-sessions", "circuits": []}
+
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for session_json in sorted(sessions_root.glob("*/session.json")):
+        try:
+            receipt = json.loads(session_json.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        kind = str(receipt.get("verification") or "").strip() or "<unknown>"
+        by_kind.setdefault(kind, []).append(receipt)
+
+    circuits: list[dict[str, Any]] = []
+    for kind, items in sorted(by_kind.items()):
+        items.sort(key=lambda r: str(r.get("startedAt") or ""))
+        consecutive = 0
+        fingerprint: str | None = None
+        recent: list[dict[str, Any]] = []
+        for receipt in reversed(items):
+            if str(receipt.get("status") or "").upper() != "FAIL":
+                break
+            fp = _circuit_fingerprint(receipt)
+            if fingerprint is None:
+                fingerprint = fp
+            if fp != fingerprint:
+                break
+            consecutive += 1
+            recent.append(receipt)
+        if consecutive >= _CIRCUIT_THRESHOLD and fingerprint:
+            sample = recent[0]
+            circuits.append(
+                {
+                    "verification": kind,
+                    "fingerprint": fingerprint,
+                    "consecutiveFailures": consecutive,
+                    "exitCode": sample.get("exitCode"),
+                    "signature": _circuit_normalize_tail(
+                        _circuit_read_tail(sample.get("stderrPath"))
+                        or _circuit_read_tail(sample.get("stdoutPath")),
+                        max_lines=2,
+                        max_chars=160,
+                    ),
+                    "recentSessions": [
+                        {
+                            "sessionId": str(r.get("sessionId") or ""),
+                            "startedAt": str(r.get("startedAt") or ""),
+                            "exitCode": r.get("exitCode"),
+                        }
+                        for r in recent[:3]
+                    ],
+                }
+            )
+    return {
+        "state": "open" if circuits else "closed",
+        "threshold": _CIRCUIT_THRESHOLD,
+        "circuits": circuits,
+    }
+
+
 def bootstrap_execute(
     project: Path,
     *,
@@ -1216,6 +1350,7 @@ def bootstrap_execute(
     executor_tool: str | None = None,
     executor_agent: str | None = None,
     executor_model: str | None = None,
+    circuit_ack: str | None = None,
 ) -> dict[str, Any]:
     """execute 阶段一次性引导：prepare → context begin → gate begin。
 
@@ -1251,6 +1386,25 @@ def bootstrap_execute(
             "recoveryAction": (
                 "确认 --change 与 .harness/changes/ 下的目录名一致；"
                 "execute 引导不创建 change（那是 bootstrap-plan 的职责）"
+            ),
+        }
+
+    # 15-M3：失败断路器在 prepare/begin 副作用之前判定——同 (verification,
+    # 失败指纹) 连续 ≥2 次 FAIL 时阻断，人工确认（--circuit-ack）后放行。
+    circuit = execute_circuit_check(change_dir)
+    if circuit["state"] == "open" and not (circuit_ack or "").strip():
+        return {
+            "ok": False,
+            "code": "EXECUTE_CIRCUIT_OPEN",
+            "changeName": change,
+            "circuitBreaker": circuit,
+            "recoveryAction": (
+                "同一验证的同类失败已连续出现 "
+                f"≥{circuit['threshold']} 次（详见 circuitBreaker.circuits），"
+                "继续盲重试大概率再次失败。\n"
+                "1) 先人工定位根因并修复（对照 recentSessions 的输出尾部签名）；\n"
+                "2) 确认已修复后重跑 bootstrap-execute 并附 "
+                "--circuit-ack \"<根因与修复说明>\" 放行。"
             ),
         }
 
@@ -1384,6 +1538,17 @@ def bootstrap_execute(
         "nextAction": (
             "TDD 编码与验证；完成后运行 "
             f"harness_gate.py close --phase execute --change {change} --status <OK|WARN> --json"
+        ),
+        **(
+            {
+                "circuitBreaker": {
+                    **circuit,
+                    "overridden": True,
+                    "ackNote": circuit_ack.strip(),
+                }
+            }
+            if circuit["state"] == "open" and (circuit_ack or "").strip()
+            else {}
         ),
     }
 
@@ -2234,6 +2399,12 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap_execute_parser.add_argument("--executor-tool", default=None)
     bootstrap_execute_parser.add_argument("--executor-agent", default=None)
     bootstrap_execute_parser.add_argument("--executor-model", default=None)
+    bootstrap_execute_parser.add_argument(
+        "--circuit-ack",
+        default=None,
+        metavar="NOTE",
+        help="15-M3 断路器人工确认：附根因与修复说明后放行 EXECUTE_CIRCUIT_OPEN",
+    )
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
     close.add_argument("--project", required=True, type=Path)
@@ -2318,6 +2489,7 @@ def main(argv: list[str] | None = None) -> int:
             executor_tool=args.executor_tool,
             executor_agent=args.executor_agent,
             executor_model=args.executor_model,
+            circuit_ack=args.circuit_ack,
         )
     elif args.command == "close":
         result = close_transition(

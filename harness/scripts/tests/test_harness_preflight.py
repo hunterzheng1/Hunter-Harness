@@ -500,5 +500,146 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class SuggestQuirksTests(unittest.TestCase):
+    """15-M2：record-quirk --suggest 失败指纹自动建议（只读）。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="preflight-suggest-"))
+        self.changes = self.tmp / ".harness" / "state" / "changes"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_ledger(self, change: str, validations: dict) -> None:
+        _write(
+            self.changes / change / "evidence" / "verification-ledger.json",
+            json.dumps({"changeName": change, "validations": validations}) + "\n",
+        )
+
+    def _write_session(
+        self, change: str, session: str, receipt: dict, *, stderr: str = ""
+    ) -> None:
+        session_dir = self.changes / change / "runtime" / "run-sessions" / session
+        if stderr:
+            stderr_path = session_dir / "stderr.log"
+            _write(stderr_path, stderr)
+            receipt = {**receipt, "stderrPath": str(stderr_path)}
+        _write(session_dir / "session.json", json.dumps(receipt) + "\n")
+
+    def test_no_state_dir_returns_empty_suggestions(self) -> None:
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["suggestions"], [])
+        self.assertEqual(result["scanned"], {"ledgers": 0, "sessions": 0})
+
+    def test_single_failure_not_suggested(self) -> None:
+        """单次失败低于阈值，不建议。"""
+        self._write_ledger(
+            "c1",
+            {"unitTestFull": {"status": "FAIL", "command": "mvn test", "exitCode": 1}},
+        )
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["suggestions"], [])
+
+    def test_repeated_fingerprint_suggested_with_evidence(self) -> None:
+        """同一指纹 ≥2 次 → 建议，携带 evidence 与签名。"""
+        for change in ("c1", "c2", "c3"):
+            self._write_ledger(
+                change,
+                {
+                    "unitTestFull": {
+                        "status": "FAIL",
+                        "command": "mvn test",
+                        "exitCode": 1,
+                    }
+                },
+            )
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertEqual(len(result["suggestions"]), 1, result)
+        s = result["suggestions"][0]
+        self.assertEqual(s["occurrences"], 3)
+        self.assertEqual(s["suggestedAction"], "skip-not-block")
+        self.assertFalse(s["alreadyRecorded"])
+        self.assertEqual(len(s["evidence"]), 3)
+        self.assertEqual({e["changeId"] for e in s["evidence"]}, {"c1", "c2", "c3"})
+
+    def test_distinct_fingerprints_not_merged(self) -> None:
+        """不同 exitCode 不聚为一类。"""
+        self._write_ledger(
+            "c1", {"unitTestFull": {"status": "FAIL", "command": "mvn test", "exitCode": 1}}
+        )
+        self._write_ledger(
+            "c2", {"unitTestFull": {"status": "FAIL", "command": "mvn test", "exitCode": 2}}
+        )
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertEqual(result["suggestions"], [])
+
+    def test_session_fail_with_output_tail_signature(self) -> None:
+        """run-session FAIL 收据：从 stderr 尾部提取错误签名，时间戳归一化后聚类。"""
+        for i, change in enumerate(("c1", "c2")):
+            self._write_session(
+                change,
+                f"s{i}",
+                {
+                    "status": "FAIL",
+                    "verification": "unitTestFull",
+                    "exitCode": 1,
+                    "sessionId": f"s{i}",
+                },
+                stderr=(
+                    f"2026-09-1{i}T10:0{i}:00Z running tests\n"
+                    f"FAIL com.example.FooTest.testBar expected:<1> but was:<2>\n"
+                ),
+            )
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertEqual(len(result["suggestions"]), 1, result)
+        s = result["suggestions"][0]
+        self.assertIn("FAIL", s["suggestedPattern"])
+        self.assertEqual(s["evidence"][0]["source"], "run-session")
+
+    def test_already_recorded_pattern_marked(self) -> None:
+        """已 record-quirk 的 pattern 标注 alreadyRecorded，不重复打扰。"""
+        hp.cmd_record_quirk(
+            self.tmp,
+            pattern="BudgetStatusEnum",
+            reason="预存编译错误",
+            action="skip-not-block",
+        )
+        for change in ("c1", "c2"):
+            self._write_session(
+                change,
+                "s1",
+                {"status": "FAIL", "verification": "compile", "exitCode": 1},
+                stderr="error: cannot find symbol BudgetStatusEnum\n",
+            )
+        result = hp.cmd_suggest_quirks(self.tmp)
+        self.assertEqual(len(result["suggestions"]), 1, result)
+        self.assertTrue(result["suggestions"][0]["alreadyRecorded"])
+
+    def test_suggest_writes_nothing(self) -> None:
+        """只读语义：不创建/修改 profile 与 pitfalls。"""
+        for change in ("c1", "c2"):
+            self._write_ledger(
+                change,
+                {"compile": {"status": "FAIL", "command": "mvn compile", "exitCode": 1}},
+            )
+        before = set(self.tmp.rglob("*"))
+        hp.cmd_suggest_quirks(self.tmp)
+        after = set(self.tmp.rglob("*"))
+        self.assertEqual(before, after)
+        self.assertFalse(
+            (self.tmp / ".harness" / "config" / "build-profile.json").exists()
+        )
+
+    def test_main_suggest_without_pattern_ok(self) -> None:
+        code = hp.main(["record-quirk", "--project", str(self.tmp), "--suggest", "--json"])
+        self.assertEqual(code, 0)
+
+    def test_main_without_suggest_still_requires_fields(self) -> None:
+        code = hp.main(["record-quirk", "--project", str(self.tmp), "--json"])
+        self.assertEqual(code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

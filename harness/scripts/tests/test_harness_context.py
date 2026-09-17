@@ -1976,5 +1976,124 @@ class BootstrapExecuteTests(unittest.TestCase):
         self.assertIn("hunter-harness init", result["error"])
 
 
+class ExecuteCircuitBreakerTests(unittest.TestCase):
+    """15-M3：失败断路器——同 (verification, 指纹) 连续 ≥2 次 FAIL 阻断引导。
+
+    纯派生判定（只读 run-sessions），不持久化；人工 --circuit-ack 放行。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-circuit-"))
+        self.change_dir = self.tmp / ".harness" / "changes" / "demo"
+        # 无 change-context.json 时 resolve_state_dir_for_contract 原样返回
+        # contract_dir（colocated 语义），sessions 写在其下。
+        self.state_root = self.change_dir
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _session(
+        self,
+        name: str,
+        verification: str,
+        *,
+        status: str = "FAIL",
+        exit_code: int = 1,
+        started: str,
+        stderr: str = "",
+    ) -> None:
+        session_dir = self.state_root / "runtime" / "run-sessions" / name
+        session_dir.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            "status": status,
+            "verification": verification,
+            "exitCode": exit_code,
+            "sessionId": name,
+            "startedAt": started,
+        }
+        if stderr:
+            stderr_path = session_dir / "stderr.log"
+            stderr_path.write_text(stderr, encoding="utf-8")
+            receipt["stderrPath"] = str(stderr_path)
+        (session_dir / "session.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+
+    def test_no_sessions_closed(self) -> None:
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "closed")
+        self.assertEqual(result["reason"], "no-run-sessions")
+
+    def test_single_failure_closed(self) -> None:
+        self._session("s1", "unitTestFull", started="2026-09-17T01:00:00Z")
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "closed")
+
+    def test_two_same_fingerprint_opens_circuit(self) -> None:
+        for i in (1, 2):
+            self._session(
+                f"s{i}",
+                "unitTestFull",
+                started=f"2026-09-17T0{i}:00:00Z",
+                stderr="FAIL com.example.FooTest.testBar\n",
+            )
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "open", result)
+        self.assertEqual(len(result["circuits"]), 1)
+        circuit = result["circuits"][0]
+        self.assertEqual(circuit["verification"], "unitTestFull")
+        self.assertEqual(circuit["consecutiveFailures"], 2)
+        self.assertEqual(len(circuit["recentSessions"]), 2)
+
+    def test_distinct_fingerprints_do_not_open(self) -> None:
+        self._session(
+            "s1", "unitTestFull", started="2026-09-17T01:00:00Z",
+            stderr="FAIL com.example.FooTest.testA\n",
+        )
+        self._session(
+            "s2", "unitTestFull", started="2026-09-17T02:00:00Z",
+            exit_code=2, stderr="FAIL com.example.BarTest.testB\n",
+        )
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "closed", result)
+
+    def test_ok_after_fail_resets_consecutive(self) -> None:
+        self._session(
+            "s1", "unitTestFull", started="2026-09-17T01:00:00Z",
+            stderr="FAIL x\n",
+        )
+        self._session(
+            "s2", "unitTestFull", status="OK", exit_code=0,
+            started="2026-09-17T02:00:00Z",
+        )
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "closed")
+
+    def test_timestamps_normalized_into_same_fingerprint(self) -> None:
+        """时间戳差异不应产生不同指纹（归一化生效）。"""
+        self._session(
+            "s1", "compile", started="2026-09-17T01:00:00Z",
+            stderr="2026-09-17T01:00:01Z error: cannot find symbol BudgetStatusEnum\n",
+        )
+        self._session(
+            "s2", "compile", started="2026-09-17T02:00:00Z",
+            stderr="2026-09-17T02:00:02Z error: cannot find symbol BudgetStatusEnum\n",
+        )
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "open", result)
+        self.assertEqual(result["circuits"][0]["verification"], "compile")
+
+    def test_verification_groups_are_independent(self) -> None:
+        """不同 verification 的失败互不累计。"""
+        self._session("s1", "unitTestFull", started="2026-09-17T01:00:00Z",
+                      stderr="FAIL a\n")
+        self._session("s2", "compile", started="2026-09-17T02:00:00Z",
+                      stderr="FAIL a\n")
+        result = CONTEXT.execute_circuit_check(self.change_dir)
+        self.assertEqual(result["state"], "closed")
+
+
 if __name__ == "__main__":
     unittest.main()
