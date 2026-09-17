@@ -229,9 +229,13 @@ export async function runPlanPublish(
     const packResult = packCapture.read();
     steps.evidence_pack = packResult;
     if (packExit !== 0) {
+      // 16-M1：结构校验的逐条定位（problems）提升到包装信封顶层——经 publish 触发
+      // 与直接跑 evidence-pack 应看到同一份字段定位，包装层不吞明细（对齐
+      // review-rescue 的 recovery_action / finalize 的 guidance 既有惯例）。
       dependencies.stdout(JSON.stringify({
         ok: false, code: packResult.code ?? "PLAN_EVIDENCE_INPUT_INVALID",
-        failed_step: "evidence-pack", steps
+        failed_step: "evidence-pack", steps,
+        ...(Array.isArray(packResult.problems) ? { problems: packResult.problems } : {})
       }) + "\n");
       return 1;
     }

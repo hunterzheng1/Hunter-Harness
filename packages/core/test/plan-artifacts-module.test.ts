@@ -250,6 +250,55 @@ describe("PlanArtifactModel derived artifacts", () => {
     }
   });
 
+  it("16-M1: 场景依赖声明经归一化透传 human 与 scenario_manifest，缺省与空数组字节不变", () => {
+    const model = createPlanArtifactModel();
+    const input = trustedInput();
+    const scenarios = input.structured_input.scenarios.map((item) => {
+      if (item.scenario_id === "scenario:integration") {
+        return { ...item, depends_on: ["scenario:parameter", "scenario:normal"] };
+      }
+      if (item.scenario_id === "scenario:parameter") return { ...item, depends_on: [] as string[] };
+      return item;
+    });
+    const inputWithDeps = { ...input, structured_input: { ...input.structured_input, scenarios } };
+    const human = model.buildHumanArtifacts(inputWithDeps);
+    const integration = human.test_scenarios.content.scenarios
+      .find((item) => item.scenario_id === "scenario:integration");
+    // 归一化：排序；空数组已归一为缺省
+    expect(integration?.depends_on).toEqual(["scenario:normal", "scenario:parameter"]);
+    const parameter = human.test_scenarios.content.scenarios
+      .find((item) => item.scenario_id === "scenario:parameter");
+    expect(parameter === undefined ? {} : Object.keys(parameter)).not.toContain("depends_on");
+    const machine = model.deriveMachineArtifacts({ schema_version: 2, profile: input.profile,
+      phase_set: input.phase_set, capabilities: ["api", "database"], worktree_policy: "project_default",
+      human_input: inputWithDeps, human });
+    const manifestScenarios = machine.scenario_manifest.content.scenarios as readonly Record<string, unknown>[];
+    const manifestIntegration = manifestScenarios.find((item) => item.scenario_id === "scenario:integration");
+    expect(manifestIntegration?.depends_on).toEqual(["scenario:normal", "scenario:parameter"]);
+    for (const item of manifestScenarios.filter((entry) => entry.scenario_id !== "scenario:integration")) {
+      expect(Object.keys(item)).not.toContain("depends_on");
+    }
+  });
+
+  it("16-M1: 场景依赖未知引用、自引用与成环在冻结层拒绝", () => {
+    const model = createPlanArtifactModel();
+    const input = trustedInput();
+    const expectRejected = (scenarios: HumanArtifactBuildInput["structured_input"]["scenarios"]): void => {
+      expect(() => model.buildHumanArtifacts({ ...input,
+        structured_input: { ...input.structured_input, scenarios } }))
+        .toThrowError(expect.objectContaining({ code: "PLAN_ARTIFACT_REFERENCE_INVALID" }));
+    };
+    expectRejected(input.structured_input.scenarios.map((item) => item.scenario_id === "scenario:normal"
+      ? { ...item, depends_on: ["scenario:ghost"] } : item));
+    expectRejected(input.structured_input.scenarios.map((item) => item.scenario_id === "scenario:normal"
+      ? { ...item, depends_on: ["scenario:normal"] } : item));
+    expectRejected(input.structured_input.scenarios.map((item) => {
+      if (item.scenario_id === "scenario:normal") return { ...item, depends_on: ["scenario:parameter"] };
+      if (item.scenario_id === "scenario:parameter") return { ...item, depends_on: ["scenario:normal"] };
+      return item;
+    }));
+  });
+
   it("rejects a self-rehashed human artifact and foreign profile at the machine boundary", () => {
     const model = createPlanArtifactModel();
     const input = trustedInput();

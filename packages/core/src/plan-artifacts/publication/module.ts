@@ -301,7 +301,10 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
       `- 执行级别: ${scenario.execution_level}`,
       `- 风险等级: ${scenario.risk_level}`,
       `- 优先级: ${scenario.priority}`,
-      `- 负责阶段: ${scenario.owner_phase}`
+      `- 负责阶段: ${scenario.owner_phase}`,
+      // 16-M1：场景级依赖（DAG 波次的输入）。仅声明时渲染，保持旧产物逐字节不变。
+      ...(scenario.depends_on === undefined || scenario.depends_on.length === 0
+        ? [] : [`- 依赖场景: ${scenario.depends_on.join(", ")}`])
     ].join("\n"));
     const entry = appendixEntry(scenario.scenario_id, [
       scenario.evidence_requirements.length === 0 ? "" :

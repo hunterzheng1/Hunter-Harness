@@ -88,7 +88,7 @@ function validScenario(value: unknown): value is TestScenarioInput {
   return plainRecord(value) && exact(value, ["scenario_id", "title", "acceptance", "coverage_dimension",
     "execution_level", "evidence_requirements", "risk_level", "priority", "owner_phase",
     "task_refs", "requirement_refs"],
-    ["verification_command", "executable_test_id", "test_file", "test_title"]) &&
+    ["verification_command", "executable_test_id", "test_file", "test_title", "depends_on"]) &&
     bounded(value.scenario_id, 128) && bounded(value.title, 512) && bounded(value.acceptance, 2_048) &&
     typeof value.coverage_dimension === "string" && coverageDimensions.includes(value.coverage_dimension as never) &&
     typeof value.execution_level === "string" && ["unit", "api", "data_compatibility", "integration", "system"]
@@ -100,7 +100,8 @@ function validScenario(value: unknown): value is TestScenarioInput {
     (value.executable_test_id === undefined || bounded(value.executable_test_id, 512)) &&
     (value.test_file === undefined || bounded(value.test_file, 512)) &&
     (value.test_title === undefined || bounded(value.test_title, 512)) &&
-    stringArray(value.task_refs, 1, 128, 160) && stringArray(value.requirement_refs, 1, 128, 160);
+    stringArray(value.task_refs, 1, 128, 160) && stringArray(value.requirement_refs, 1, 128, 160) &&
+    (value.depends_on === undefined || stringArray(value.depends_on, 0, 64, 128));
 }
 
 function validRequirement(value: unknown): value is RequirementRecord {
@@ -165,6 +166,8 @@ function validateStructured(input: HumanArtifactBuildInput): void {
       structured.tasks.some((task) => !input.phase_set.planned_phases.includes(task.owner_phase) ||
         task.depends_on.some((id) => !taskIds.includes(id) || id === task.task_id) ||
         task.decision_refs.some((id) => !decisionIds.has(id)) || task.scenario_refs.some((id) => !scenarioIds.includes(id))) ||
+      structured.scenarios.some((scenario) => (scenario.depends_on ?? [])
+        .some((id) => !scenarioIds.includes(id) || id === scenario.scenario_id)) ||
       structured.coverage.some((item) => item.scenario_refs.some((id) => !scenarioIds.includes(id)) ||
         item.scenario_refs.some((id) => structured.scenarios.find((scenario) => scenario.scenario_id === id)
           ?.coverage_dimension !== item.coverage_dimension)) ||
@@ -230,6 +233,24 @@ function validateStructured(input: HumanArtifactBuildInput): void {
     visiting.delete(id); done.add(id); return false;
   }
   if (taskIds.some(cyclic)) fail("PLAN_ARTIFACT_REFERENCE_INVALID");
+  {
+    // 16-M1：场景级依赖环与 task 级同等 fail-closed（波次是调度输入，成环即无意义）。
+    // 未知引用/自引用已在上方引用校验链拦截，这里只兜环。
+    const scenarioVisiting = new Set<string>();
+    const scenarioDone = new Set<string>();
+    const byScenario = new Map(structured.scenarios.map((scenario) => [scenario.scenario_id, scenario]));
+    function cyclicScenario(id: string): boolean {
+      if (scenarioDone.has(id)) return false;
+      if (scenarioVisiting.has(id)) return true;
+      scenarioVisiting.add(id);
+      if ((byScenario.get(id)?.depends_on ?? [])
+        .some((dep) => byScenario.has(dep) && cyclicScenario(dep))) return true;
+      scenarioVisiting.delete(id); scenarioDone.add(id); return false;
+    }
+    if (scenarioIds.some((id) => byScenario.has(id) && cyclicScenario(id))) {
+      fail("PLAN_ARTIFACT_REFERENCE_INVALID");
+    }
+  }
 }
 
 function orderedTasks(tasks: readonly PlanTaskInput[]): readonly PlanTaskInput[] {
@@ -456,10 +477,17 @@ function buildHumanArtifactsCanonical(input: HumanArtifactBuildInput): HumanArti
     ownership_refs: sortedUnique(task.ownership_refs) })));
   const plan = artifact("plan", sources,
     { change_key: input.structured_input.change_key, tasks }) as PlanArtifact;
-  const scenarios = input.structured_input.scenarios.map((scenario) => ({ ...scenario,
-    evidence_requirements: sortedUnique(scenario.evidence_requirements),
-    task_refs: sortedUnique(scenario.task_refs), requirement_refs: sortedUnique(scenario.requirement_refs) }))
-    .sort((left, right) => compareCodepoint(left.scenario_id, right.scenario_id));
+  const scenarios = input.structured_input.scenarios.map((scenario) => {
+    // 16-M1：depends_on 归一化——空数组归一为缺省（canonical absence），
+    // 保证未声明依赖的旧输入重派生结果逐字节不变。
+    const { depends_on: dependsOn, ...rest } = scenario;
+    return { ...rest,
+      evidence_requirements: sortedUnique(scenario.evidence_requirements),
+      task_refs: sortedUnique(scenario.task_refs), requirement_refs: sortedUnique(scenario.requirement_refs),
+      ...(dependsOn !== undefined && dependsOn.length > 0
+        ? { depends_on: sortedUnique(dependsOn) }
+        : {}) };
+  }).sort((left, right) => compareCodepoint(left.scenario_id, right.scenario_id));
   const coverage = input.structured_input.coverage.map((item) => ({ ...item,
     scenario_refs: sortedUnique(item.scenario_refs) }));
   const test_scenarios = artifact("test_scenarios", sources,
@@ -544,7 +572,9 @@ function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput):
       ...(scenario.test_file === undefined ? {} : { test_file: scenario.test_file }),
       ...(scenario.test_title === undefined ? {} : { test_title: scenario.test_title }),
       task_refs: scenario.task_refs,
-      requirement_refs: scenario.requirement_refs
+      requirement_refs: scenario.requirement_refs,
+      ...(scenario.depends_on === undefined
+        ? {} : { depends_on: [...scenario.depends_on] })
     })), coverage: human.test_scenarios.content.coverage });
   const body = { schema_version: 2 as const, gate_policy, worktree, implementation_checkpoints,
     scenario_manifest };

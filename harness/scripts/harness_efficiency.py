@@ -437,12 +437,198 @@ def collect_efficiency_summary(change_dir: Path) -> dict[str, Any]:
     )
 
 
+PANEL_SCHEMA_VERSION = 1
+
+_SKIP_DIR_PREFIXES = (".", "_")
+
+
+def _discover_change_dirs(changes_root: Path) -> list[Path]:
+    """枚举 changes 根下的 change 目录（按名排序保确定性；跳过隐藏/工具目录）。"""
+    if not changes_root.is_dir():
+        return []
+    return sorted(
+        (
+            child
+            for child in changes_root.iterdir()
+            if child.is_dir() and not child.name.startswith(_SKIP_DIR_PREFIXES)
+        ),
+        key=lambda p: p.name,
+    )
+
+
+def _session_stage_key(session: dict[str, Any]) -> str:
+    return str(
+        session.get("stage") or session.get("verification") or "unknown"
+    )
+
+
+def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, Any]:
+    """17-M1：跨 change 决策级度量面板（只读聚合，无任何写入）。
+
+    四类指标（调研报告 F6 口径）全部从已持久化的原始事实聚合：
+    - cycleTime：每 change 的 run_sessions 最早开始 → 最晚结束跨度，跨 change 分布；
+    - gateFirstPass：按 (change, stage) 取时间序首条会话，status OK 记首过；
+    - reviewFindings：reports/review/review-findings.json sidecar（跨轮合并视图）的发现密度；
+    - automation：managedByHarness=True 会话占比（包装层自产 vs 手工包装）。
+    单项数据缺失只降级 available=False，绝不阻断整体面板。
+    """
+    changes_root = Path(changes_root).resolve()
+    change_dirs = _discover_change_dirs(changes_root)
+
+    cycle_spans_ms: list[int] = []
+    stage_first_seen: dict[tuple[str, str], tuple[dt.datetime, int, str]] = {}
+    findings_total = 0
+    findings_by_severity: Counter[str] = Counter()
+    changes_with_sessions = 0
+    changes_with_review = 0
+    session_total = 0
+    managed_total = 0
+
+    for change_dir in change_dirs:
+        state_root = resolve_state_dir_for_contract(change_dir)
+        sessions = _read_objects(
+            sorted((state_root / "runtime" / "run-sessions").glob("*/session.json"))
+        )
+        if sessions:
+            changes_with_sessions += 1
+            session_total += len(sessions)
+            managed_total += sum(
+                1 for item in sessions if item.get("managedByHarness") is True
+            )
+            intervals: list[tuple[dt.datetime, dt.datetime]] = []
+            for index, session in enumerate(sessions):
+                start = _timestamp(
+                    session.get("createdAt") or session.get("startedAt")
+                )
+                end = _timestamp(session.get("endedAt"))
+                if start is not None and end is not None and end >= start:
+                    intervals.append((start, end))
+                if start is not None:
+                    key = (change_dir.name, _session_stage_key(session))
+                    status = str(session.get("status") or "UNKNOWN").upper()
+                    seen = (start, index, status)
+                    current = stage_first_seen.get(key)
+                    # 同刻并列时按收集顺序（文件名排序）取先者，保证确定性
+                    if current is None or (start, index) < (current[0], current[1]):
+                        stage_first_seen[key] = seen
+            if intervals:
+                span = max(end for _, end in intervals) - min(
+                    start for start, _ in intervals
+                )
+                cycle_spans_ms.append(int(span.total_seconds() * 1000))
+
+        findings_path = state_root / "reports" / "review" / "review-findings.json"
+        if findings_path.is_file():
+            try:
+                findings_doc = json.loads(
+                    findings_path.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, json.JSONDecodeError):
+                findings_doc = None
+            if isinstance(findings_doc, dict) and isinstance(
+                findings_doc.get("findings"), list
+            ):
+                changes_with_review += 1
+                for finding in findings_doc["findings"]:
+                    if not isinstance(finding, dict):
+                        continue
+                    findings_total += 1
+                    findings_by_severity[
+                        str(finding.get("severity") or "UNKNOWN")
+                    ] += 1
+
+    stage_count = len(stage_first_seen)
+    first_pass_count = sum(
+        1 for _, _, status in stage_first_seen.values() if status == "OK"
+    )
+
+    return {
+        "schemaVersion": PANEL_SCHEMA_VERSION,
+        "generatedAt": now_iso,
+        "changesRoot": str(changes_root),
+        "changes": {
+            "discovered": len(change_dirs),
+            "withSessions": changes_with_sessions,
+            "withReviewFindings": changes_with_review,
+        },
+        "cycleTime": (
+            {
+                "available": True,
+                "changeCount": len(cycle_spans_ms),
+                "medianMs": int(median(cycle_spans_ms)),
+                "minMs": min(cycle_spans_ms),
+                "maxMs": max(cycle_spans_ms),
+            }
+            if cycle_spans_ms
+            else {
+                "available": False,
+                "reason": "no run sessions with parseable timestamps",
+            }
+        ),
+        "gateFirstPass": (
+            {
+                "available": True,
+                "stages": stage_count,
+                "firstPass": first_pass_count,
+                "rate": round(first_pass_count / stage_count, 4),
+            }
+            if stage_count
+            else {"available": False, "reason": "no run sessions"}
+        ),
+        "reviewFindings": (
+            {
+                "available": True,
+                "changesWithReview": changes_with_review,
+                "total": findings_total,
+                "perReviewedChange": round(findings_total / changes_with_review, 4),
+                "bySeverity": dict(sorted(findings_by_severity.items())),
+            }
+            if changes_with_review
+            else {"available": False, "reason": "no review findings sidecars"}
+        ),
+        "automation": (
+            {
+                "available": True,
+                "executionAttempts": session_total,
+                "managedByHarness": managed_total,
+                "manualWrappers": session_total - managed_total,
+                "managedRatio": round(managed_total / session_total, 4),
+            }
+            if session_total
+            else {"available": False, "reason": "no run sessions"}
+        ),
+        "notes": [
+            "Metrics aggregate persisted facts only; the panel writes nothing.",
+            "First-pass is per (change, stage) by earliest run session.",
+            "This panel reports facts and does not assign responsibility.",
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness_efficiency.py")
     parser.add_argument("summary", nargs="?")
-    parser.add_argument("--change-dir", required=True)
+    parser.add_argument("--change-dir", default=None)
+    parser.add_argument(
+        "--changes-root",
+        default=None,
+        help="17-M1 面板模式：包含多个 change 目录的根（如 .harness/changes），与 --change-dir 互斥。",
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="覆盖 generatedAt 的 ISO-8601 UTC 时间戳（测试用）。",
+    )
     args = parser.parse_args(argv)
-    result = collect_efficiency_summary(Path(args.change_dir))
+    if bool(args.change_dir) == bool(args.changes_root):
+        parser.error("exactly one of --change-dir / --changes-root is required")
+    if args.changes_root:
+        now_iso = args.now or dt.datetime.now(dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        result = collect_efficiency_panel(Path(args.changes_root), now_iso=now_iso)
+    else:
+        result = collect_efficiency_summary(Path(args.change_dir))
     text = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     print(text, end="")
     return 0

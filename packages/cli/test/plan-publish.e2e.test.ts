@@ -494,4 +494,93 @@ describe("11-M4：plan publish --patch 补丁式修订", () => {
     // fail closed 且不写回：磁盘 input 与 patch 前逐字节一致
     expect(await fs.readFile(inputPath, "utf8")).toBe(original);
   });
+
+  it("16-M1：场景依赖声明随发布透传 manifest 与渲染文档，未声明者不出现该键", async () => {
+    const input = naturalInput();
+    input.structured_input.scenarios = input.structured_input.scenarios.map((scenario) =>
+      scenario.scenario_id === "scenario:error_codes"
+        ? { ...scenario, depends_on: ["scenario:normal_path", "scenario:business_rules"] }
+        : scenario);
+    await fs.writeFile(inputPath, JSON.stringify(input));
+
+    const out: string[] = [];
+    const exit = await runPlanPublish({ input: inputPath }, deps(out));
+    if (exit !== 0) console.error("DEPS-OUT:", out.join(""));
+    expect(exit).toBe(0);
+
+    const manifestPath = join(
+      root, ".harness", "changes", CHANGE_KEY, "meta", "scenario-manifest.json");
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+      content: { scenarios: Record<string, unknown>[] };
+    };
+    const dependent = manifest.content.scenarios
+      .find((scenario) => scenario.scenario_id === "scenario:error_codes");
+    // 归一化：排序
+    expect(dependent?.depends_on).toEqual(["scenario:business_rules", "scenario:normal_path"]);
+    for (const scenario of manifest.content.scenarios
+      .filter((entry) => entry.scenario_id !== "scenario:error_codes")) {
+      expect(Object.keys(scenario)).not.toContain("depends_on");
+    }
+    // 渲染：人读文档出现"依赖场景"行
+    let combined = "";
+    for (const rel of planDurablePublicationTargetPaths(CHANGE_KEY)) {
+      combined += await fs.readFile(join(root, ".harness", "changes", CHANGE_KEY, rel), "utf8")
+        .catch(() => "");
+    }
+    expect(combined).toContain("- 依赖场景: scenario:business_rules, scenario:normal_path");
+  });
+
+  it("16-M1：未知场景引用、自引用与成环被拦截（带字段定位）", async () => {
+    const withDeps = (id: string, scenarioDeps: string[]) => {
+      const input = naturalInput();
+      input.structured_input.scenarios = input.structured_input.scenarios.map((scenario) =>
+        scenario.scenario_id === id ? { ...scenario, depends_on: scenarioDeps } : scenario);
+      return input;
+    };
+    const indexOf = (id: string) =>
+      naturalInput().structured_input.scenarios.findIndex((s) => s.scenario_id === id);
+    type Problem = { field_path: string; message: string };
+
+    // 未知引用
+    await fs.writeFile(inputPath, JSON.stringify(withDeps("scenario:error_codes", ["scenario:ghost"])));
+    let out: string[] = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(out))).toBe(1);
+    let envelope = JSON.parse(out.join("")) as { code: string; problems: Problem[] };
+    expect(envelope.code).toBe("PLAN_EVIDENCE_INPUT_INVALID");
+    expect(envelope.problems.some((problem) =>
+      problem.field_path ===
+        `structured_input.scenarios[${indexOf("scenario:error_codes")}].depends_on[0]`
+      && problem.message.includes("scenario:ghost"))).toBe(true);
+
+    // 自引用
+    await fs.writeFile(inputPath, JSON.stringify(withDeps("scenario:error_codes", ["scenario:error_codes"])));
+    out = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(out))).toBe(1);
+    envelope = JSON.parse(out.join(""));
+    expect(envelope.code).toBe("PLAN_EVIDENCE_INPUT_INVALID");
+    expect(envelope.problems.some((problem) =>
+      problem.field_path ===
+        `structured_input.scenarios[${indexOf("scenario:error_codes")}].depends_on[0]`
+      && problem.message.includes("自引用"))).toBe(true);
+
+    // 成环：error_codes ↔ normal_path
+    const cyclic = naturalInput();
+    cyclic.structured_input.scenarios = cyclic.structured_input.scenarios.map((scenario) => {
+      if (scenario.scenario_id === "scenario:error_codes") {
+        return { ...scenario, depends_on: ["scenario:normal_path"] };
+      }
+      if (scenario.scenario_id === "scenario:normal_path") {
+        return { ...scenario, depends_on: ["scenario:error_codes"] };
+      }
+      return scenario;
+    });
+    await fs.writeFile(inputPath, JSON.stringify(cyclic));
+    out = [];
+    expect(await runPlanPublish({ input: inputPath }, deps(out))).toBe(1);
+    envelope = JSON.parse(out.join(""));
+    expect(envelope.code).toBe("PLAN_EVIDENCE_INPUT_INVALID");
+    expect(envelope.problems.some((problem) =>
+      problem.field_path === "structured_input.scenarios"
+      && problem.message.includes("成环"))).toBe(true);
+  });
 });

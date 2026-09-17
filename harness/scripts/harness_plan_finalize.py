@@ -149,6 +149,13 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, Any]]:
                 "tier",
             )
             expected_index = _column_index(headers, "预期", "expected")
+            depends_index = _column_index(
+                headers,
+                "依赖",
+                "依赖场景",
+                "dependsOn",
+                "depends on",
+            )
             executable_id_index = _column_index(
                 headers,
                 "executable test ID",
@@ -246,6 +253,20 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, Any]]:
                         and cells[index].strip()
                     ):
                         scenario[key] = cells[index].strip()
+                if (
+                    complete_row
+                    and depends_index is not None
+                    and depends_index < len(cells)
+                    and cells[depends_index].strip()
+                    and not set(cells[depends_index].strip()) <= {"-", ":", "—", "·"}
+                ):
+                    depends_on = [
+                        item.strip()
+                        for item in cells[depends_index].split(",")
+                        if item.strip()
+                    ]
+                    if depends_on:
+                        scenario["dependsOn"] = depends_on
                 scenarios.append(scenario)
                 row_index += 1
             i = row_index
@@ -283,6 +304,10 @@ _V2_SCENARIO_OPTIONAL_FIELD_MAP = (
     ("executable_test_id", "executableTestId"),
     ("test_file", "testFile"),
     ("test_title", "testTitle"),
+)
+# 列表型可选字段（不走字符串空值判断）：仅非空字符串列表才映射，空列表归一为缺省。
+_V2_SCENARIO_OPTIONAL_LIST_FIELD_MAP = (
+    ("depends_on", "dependsOn"),
 )
 V2_MANIFEST_UNSUPPORTED = "SCENARIO_MANIFEST_V2_UNSUPPORTED"
 
@@ -342,6 +367,12 @@ def unpack_v2_scenario_manifest(manifest: Any) -> dict[str, Any] | None:
             value = item.get(source)
             if str(value or "").strip():
                 mapped[legacy] = value
+        for source, legacy in _V2_SCENARIO_OPTIONAL_LIST_FIELD_MAP:
+            value = item.get(source)
+            if isinstance(value, list):
+                entries = [str(dep).strip() for dep in value if str(dep).strip()]
+                if entries:
+                    mapped[legacy] = entries
         scenarios.append(mapped)
     if missing:
         return {
@@ -362,6 +393,80 @@ def unpack_v2_scenario_manifest(manifest: Any) -> dict[str, Any] | None:
             "schemaVersion": scenario_manifest_schema_version(scenarios),
             "scenarios": scenarios,
         },
+    }
+
+
+def compute_scenario_waves(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
+    """16-M1：从场景清单的 dependsOn 派生拓扑波次（纯函数，不持久化）。
+
+    入参为 legacy 形状的场景区列表（``unpack_v2_scenario_manifest`` 的输出或
+    legacy manifest 的 ``scenarios`` 数组）。返回::
+
+        {"available": True, "waveCount": N, "waves": [[id, ...], ...],
+         "parallelizable": bool, "declared": int}
+
+    - 无依赖声明：全部场景归入单一波次（wave 0，互为可并行候选）。
+    - 未知引用 / 成环：``available=False`` + ``reason`` + 细节；调用方只做
+      advisory 降级，不得阻断主流程。
+    波次内按 scenario_id 排序，输出确定性；同一输入永远同一波次计划。
+    """
+    deps: dict[str, list[str]] = {}
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(
+            scenario.get("id") or scenario.get("scenario_id") or ""
+        ).strip()
+        if not scenario_id or scenario_id in deps:
+            continue
+        raw_deps = scenario.get("dependsOn")
+        if not isinstance(raw_deps, list):
+            raw_deps = scenario.get("depends_on")
+        deps[scenario_id] = (
+            [str(dep).strip() for dep in raw_deps if str(dep).strip()]
+            if isinstance(raw_deps, list)
+            else []
+        )
+    if not deps:
+        return {"available": False, "reason": "scenario-manifest-empty", "waves": []}
+    id_set = set(deps)
+    unknown_refs = sorted(
+        {dep for dep_list in deps.values() for dep in dep_list} - id_set
+    )
+    if unknown_refs:
+        return {
+            "available": False,
+            "reason": "scenario-dependency-unresolved",
+            "unknownRefs": unknown_refs,
+            "waves": [],
+        }
+    # Kahn 拓扑分层：每层 = 依赖已全部落在之前层级的场景集合
+    remaining = {scenario_id: set(dep_list) for scenario_id, dep_list in deps.items()}
+    waves: list[list[str]] = []
+    resolved: set[str] = set()
+    while remaining:
+        ready = sorted(
+            scenario_id
+            for scenario_id, dep_set in remaining.items()
+            if dep_set <= resolved
+        )
+        if not ready:
+            return {
+                "available": False,
+                "reason": "scenario-dependency-cycle",
+                "cycleNodes": sorted(remaining),
+                "waves": waves,
+            }
+        waves.append(ready)
+        resolved.update(ready)
+        for scenario_id in ready:
+            del remaining[scenario_id]
+    return {
+        "available": True,
+        "waveCount": len(waves),
+        "waves": waves,
+        "parallelizable": len(waves) < len(deps),
+        "declared": sum(1 for dep_list in deps.values() if dep_list),
     }
 
 

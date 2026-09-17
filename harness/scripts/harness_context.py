@@ -23,6 +23,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hpaths  # noqa: E402
+import harness_plan_finalize as hpf  # noqa: E402
 
 
 PHASE_GRAPH = {
@@ -1534,6 +1535,7 @@ def bootstrap_execute(
         ),
         "testBaseline": test_guard,
         "plannedPhases": prepared.get("plannedPhases"),
+        "scenarioWaves": _bootstrap_scenario_waves(change_dir),
         "gateWarnings": gate_payload.get("gateWarnings"),
         "nextAction": (
             "TDD 编码与验证；完成后运行 "
@@ -1551,6 +1553,40 @@ def bootstrap_execute(
             else {}
         ),
     }
+
+
+def _bootstrap_scenario_waves(change_dir: Path) -> dict[str, Any]:
+    """16-M1：从 scenario-manifest 派生场景 DAG 拓扑波次（advisory，只读）。
+
+    失败安全：manifest 缺失/畸形/依赖未解析或成环时返回 ``available=False`` +
+    ``reason``，绝不阻断 bootstrap——波次是调度建议，不是门禁。
+    """
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    if not manifest_path.is_file():
+        return {"available": False, "reason": "scenario-manifest-missing", "waves": []}
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"available": False, "reason": "scenario-manifest-unreadable", "waves": []}
+    if not isinstance(raw, dict):
+        return {"available": False, "reason": "scenario-manifest-unreadable", "waves": []}
+    unpacked = hpf.unpack_v2_scenario_manifest(raw)
+    if isinstance(unpacked, dict):
+        if not unpacked.get("ok"):
+            return {
+                "available": False,
+                "reason": str(unpacked.get("code") or "scenario-manifest-unsupported"),
+                "waves": [],
+            }
+        manifest = unpacked.get("manifest")
+    elif isinstance(raw.get("scenarios"), list):
+        manifest = raw
+    else:
+        return {"available": False, "reason": "scenario-manifest-unsupported", "waves": []}
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list) or not scenarios:
+        return {"available": False, "reason": "scenario-manifest-empty", "waves": []}
+    return hpf.compute_scenario_waves(scenarios)
 
 
 def _bootstrap_execute_failed(

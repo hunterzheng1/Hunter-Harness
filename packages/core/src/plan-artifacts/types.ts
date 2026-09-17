@@ -67,6 +67,11 @@ export interface TestScenarioInput {
   readonly test_title?: string | undefined;
   readonly task_refs: readonly string[];
   readonly requirement_refs: readonly string[];
+  // 16-M1：可选场景级依赖（引用其他 scenario_id）。缺省表示无依赖（全部同级
+  // 可并行候选）；声明后发布期校验未知引用/自引用/成环，execute 侧派生拓扑波次
+  // 作 advisory 调度建议。与 task.depends_on 正交：task 级管实现顺序，场景级
+  // 管验证顺序（如"错误码场景依赖正常路径先通过"）。
+  readonly depends_on?: readonly string[] | undefined;
 }
 
 export interface CoverageApplicabilityInput {

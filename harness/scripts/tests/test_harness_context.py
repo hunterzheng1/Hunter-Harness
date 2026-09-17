@@ -2095,5 +2095,81 @@ class ExecuteCircuitBreakerTests(unittest.TestCase):
         self.assertEqual(result["state"], "closed")
 
 
+class BootstrapScenarioWavesTest(unittest.TestCase):
+    """16-M1：bootstrap-execute 的场景波次派生（advisory，失败安全不阻断）。"""
+
+    def _change_dir(self, tmp: str, manifest: dict | None) -> Path:
+        change_dir = Path(tmp) / "chg"
+        (change_dir / "meta").mkdir(parents=True, exist_ok=True)
+        if manifest is not None:
+            (change_dir / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+        return change_dir
+
+    def _v2_wrapper(self, scenarios: list[dict]) -> dict:
+        return {
+            "artifact_type": "scenario_manifest",
+            "schema_version": 2,
+            "content": {"scenarios": scenarios},
+        }
+
+    def test_v2_wrapper_with_deps_produces_waves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = self._change_dir(tmp, self._v2_wrapper([
+                {"scenario_id": "UT-001", "priority": "P0", "owner_phase": "execute",
+                 "required_evidence_kind": "automated_test"},
+                {"scenario_id": "UT-002", "priority": "P1", "owner_phase": "execute",
+                 "required_evidence_kind": "automated_test", "depends_on": ["UT-001"]},
+                {"scenario_id": "UT-003", "priority": "P1", "owner_phase": "execute",
+                 "required_evidence_kind": "automated_test"},
+            ]))
+            waves = CONTEXT._bootstrap_scenario_waves(change_dir)
+            self.assertTrue(waves["available"])
+            self.assertEqual(waves["waves"], [["UT-001", "UT-003"], ["UT-002"]])
+            self.assertEqual(waves["waveCount"], 2)
+            self.assertEqual(waves["declared"], 1)
+
+    def test_legacy_flat_manifest_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = self._change_dir(tmp, {"schemaVersion": 2, "scenarios": [
+                {"id": "A", "priority": "P1", "ownerPhase": "execute",
+                 "requiredEvidenceKind": "automated_test"},
+                {"id": "B", "priority": "P1", "ownerPhase": "execute",
+                 "requiredEvidenceKind": "automated_test", "dependsOn": ["A"]},
+            ]})
+            waves = CONTEXT._bootstrap_scenario_waves(change_dir)
+            self.assertTrue(waves["available"])
+            self.assertEqual(waves["waves"], [["A"], ["B"]])
+
+    def test_missing_or_broken_manifest_degrades_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = CONTEXT._bootstrap_scenario_waves(self._change_dir(tmp, None))
+            self.assertFalse(missing["available"])
+            self.assertEqual(missing["reason"], "scenario-manifest-missing")
+
+            unsupported = CONTEXT._bootstrap_scenario_waves(
+                self._change_dir(tmp, {"not": "a manifest"}))
+            self.assertFalse(unsupported["available"])
+            self.assertEqual(unsupported["reason"], "scenario-manifest-unsupported")
+
+            cyclic = CONTEXT._bootstrap_scenario_waves(self._change_dir(tmp, self._v2_wrapper([
+                {"scenario_id": "A", "priority": "P0", "owner_phase": "execute",
+                 "required_evidence_kind": "automated_test", "depends_on": ["B"]},
+                {"scenario_id": "B", "priority": "P0", "owner_phase": "execute",
+                 "required_evidence_kind": "automated_test", "depends_on": ["A"]},
+            ])))
+            self.assertFalse(cyclic["available"])
+            self.assertEqual(cyclic["reason"], "scenario-dependency-cycle")
+
+            unreadable_dir = Path(tmp) / "broken"
+            (unreadable_dir / "meta").mkdir(parents=True)
+            (unreadable_dir / "meta" / "scenario-manifest.json").write_text(
+                "{not json", encoding="utf-8")
+            unreadable = CONTEXT._bootstrap_scenario_waves(unreadable_dir)
+            self.assertFalse(unreadable["available"])
+            self.assertEqual(unreadable["reason"], "scenario-manifest-unreadable")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -609,6 +609,102 @@ class PlanVerifyTests(unittest.TestCase):
         self.assertEqual(result["code"], "SCENARIO_MANIFEST_DRIFT")
 
 
+class ScenarioDependencyContractTest(unittest.TestCase):
+    """16-M1：场景级 DAG 依赖（depends_on）契约与波次派生。"""
+
+    def test_parse_test_scenarios_reads_depends_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "test-scenarios.md"
+            write(path, "\n".join([
+                "| ID | 场景 | 优先级 | 依赖 |",
+                "| --- | --- | --- | --- |",
+                "| UT-001 | 正常路径 | P0 | — |",
+                "| UT-002 | 错误码 | P1 | UT-001, UT-003 |",
+                "| UT-003 | 并发 | P2 | UT-001 |",
+                "",
+            ]))
+            scenarios = finalizer.parse_test_scenarios(path)
+            by_id = {item["id"]: item for item in scenarios}
+            self.assertNotIn("dependsOn", by_id["UT-001"])
+            self.assertEqual(by_id["UT-002"]["dependsOn"], ["UT-001", "UT-003"])
+            self.assertEqual(by_id["UT-003"]["dependsOn"], ["UT-001"])
+
+    def test_unpack_v2_manifest_carries_depends_on(self) -> None:
+        wrapper = {
+            "artifact_type": "scenario_manifest",
+            "content": {
+                "scenarios": [
+                    {"scenario_id": "UT-001", "priority": "P0", "owner_phase": "execute",
+                     "required_evidence_kind": "automated_test"},
+                    {"scenario_id": "UT-002", "priority": "P1", "owner_phase": "execute",
+                     "required_evidence_kind": "automated_test",
+                     "depends_on": ["UT-001", " "]},
+                    {"scenario_id": "UT-003", "priority": "P1", "owner_phase": "execute",
+                     "required_evidence_kind": "automated_test", "depends_on": []},
+                ]
+            },
+        }
+        result = finalizer.unpack_v2_scenario_manifest(wrapper)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        by_id = {item["id"]: item for item in result["manifest"]["scenarios"]}
+        self.assertNotIn("dependsOn", by_id["UT-001"])
+        self.assertEqual(by_id["UT-002"]["dependsOn"], ["UT-001"])
+        # 空数组归一为缺省（canonical absence）
+        self.assertNotIn("dependsOn", by_id["UT-003"])
+
+    def test_compute_scenario_waves_layers(self) -> None:
+        chain = [
+            {"id": "A"},
+            {"id": "B", "dependsOn": ["A"]},
+            {"id": "C", "dependsOn": ["B"]},
+        ]
+        waves = finalizer.compute_scenario_waves(chain)
+        self.assertTrue(waves["available"])
+        self.assertEqual(waves["waves"], [["A"], ["B"], ["C"]])
+        self.assertEqual(waves["waveCount"], 3)
+        self.assertFalse(waves["parallelizable"])
+        self.assertEqual(waves["declared"], 2)
+
+        diamond = [
+            {"id": "A"},
+            {"id": "B", "dependsOn": ["A"]},
+            {"id": "C", "dependsOn": ["A"]},
+            {"id": "D", "dependsOn": ["B", "C"]},
+        ]
+        self.assertEqual(
+            finalizer.compute_scenario_waves(diamond)["waves"],
+            [["A"], ["B", "C"], ["D"]],
+        )
+        # 输入顺序不影响输出（确定性）
+        self.assertEqual(
+            finalizer.compute_scenario_waves(list(reversed(diamond)))["waves"],
+            finalizer.compute_scenario_waves(diamond)["waves"],
+        )
+
+        flat = [{"id": "A"}, {"id": "B"}]
+        flat_waves = finalizer.compute_scenario_waves(flat)
+        self.assertEqual(flat_waves["waves"], [["A", "B"]])
+        self.assertTrue(flat_waves["parallelizable"])
+        self.assertEqual(flat_waves["declared"], 0)
+
+    def test_compute_scenario_waves_degrades_on_cycle_and_unknown(self) -> None:
+        cyclic = [{"id": "A", "dependsOn": ["B"]}, {"id": "B", "dependsOn": ["A"]}]
+        bad = finalizer.compute_scenario_waves(cyclic)
+        self.assertFalse(bad["available"])
+        self.assertEqual(bad["reason"], "scenario-dependency-cycle")
+        self.assertEqual(bad["cycleNodes"], ["A", "B"])
+
+        unresolved = finalizer.compute_scenario_waves([{"id": "A", "dependsOn": ["ghost"]}])
+        self.assertFalse(unresolved["available"])
+        self.assertEqual(unresolved["reason"], "scenario-dependency-unresolved")
+        self.assertEqual(unresolved["unknownRefs"], ["ghost"])
+
+        empty = finalizer.compute_scenario_waves([])
+        self.assertFalse(empty["available"])
+        self.assertEqual(empty["reason"], "scenario-manifest-empty")
+
+
 if __name__ == "__main__":
     unittest.main()
 

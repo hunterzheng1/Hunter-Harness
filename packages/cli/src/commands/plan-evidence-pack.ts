@@ -185,7 +185,10 @@ const EVIDENCE_PACK_TEMPLATE = {
         evidence_requirements: ["<证据要求，如 focused_test>"],
         risk_level: "medium",
         priority: "P2",
-        owner_phase: "execute"
+        owner_phase: "execute",
+        // 可选：场景级依赖（execute 侧派生 DAG 拓扑波次作调度建议）。引用其他
+        // scenario_id；发布期校验未知引用/自引用/成环。可整条删除（缺省=无依赖）
+        depends_on: ["<UT-001>"]
       }
     ],
     approved_scopes: [{ text: "<纳入范围条目>" }]
@@ -302,7 +305,7 @@ const TASK_DERIVED_KEYS = ["depends_on", "decision_refs", "scenario_refs", "requ
 const SCENARIO_KEYS = ["scenario_id", "title", "acceptance", "coverage_dimension", "execution_level",
   "evidence_requirements", "risk_level", "priority", "owner_phase"] as const;
 const SCENARIO_OPTIONAL_KEYS = ["verification_command", "task_refs", "requirement_refs",
-  "executable_test_id", "test_file", "test_title"] as const;
+  "executable_test_id", "test_file", "test_title", "depends_on"] as const;
 const EXECUTION_LEVELS = ["unit", "api", "data_compatibility", "integration", "system"] as const;
 const RISK_LEVELS = ["low", "medium", "high"] as const;
 const SCENARIO_PRIORITIES = ["P0", "P1", "P2"] as const;
@@ -583,7 +586,58 @@ export function collectInputProblems(input: EvidencePackInputFile): readonly Inp
           });
         }
       }
+      // 16-M1：场景级 DAG 依赖。缺省 = 无依赖（全部同级可并行候选）；给出时
+      // 必须是非空字符串数组、不含自引用。未知引用与成环需要全量 id 集，
+      // 在下方闭包检查里统一报。
+      if ("depends_on" in scenario) {
+        const dependsOn: unknown = scenario.depends_on;
+        if (!Array.isArray(dependsOn)) {
+          problems.push({
+            field_path: `${path}.depends_on`,
+            message: "必须是字符串数组（引用其他 scenario_id），可整键省略"
+          });
+        } else {
+          dependsOn.forEach((dep, depIndex) => {
+            if (typeof dep !== "string" || dep.trim() === "") {
+              problems.push({
+                field_path: `${path}.depends_on[${depIndex}]`,
+                message: "必须是非空字符串（scenario_id）"
+              });
+            } else if (dep === scenario.scenario_id) {
+              problems.push({
+                field_path: `${path}.depends_on[${depIndex}]`,
+                message: "不允许自引用"
+              });
+            }
+          });
+        }
+      }
     });
+  }
+
+  // 16-M1：跨场景闭包检查（需要全量 scenario_id 集，不能放在逐场景循环里）
+  if (Array.isArray(scenarios)) {
+    const declaredIds = new Set(
+      scenarios.filter(isRecord).map((scenario) => String(scenario.scenario_id))
+    );
+    scenarios.forEach((scenario, index) => {
+      if (!isRecord(scenario) || !Array.isArray(scenario.depends_on)) return;
+      scenario.depends_on.forEach((dep, depIndex) => {
+        if (typeof dep === "string" && dep.trim() !== "" && !declaredIds.has(dep)) {
+          problems.push({
+            field_path: `structured_input.scenarios[${index}].depends_on[${depIndex}]`,
+            message: `引用了未声明的场景 ${dep}`
+          });
+        }
+      });
+    });
+    const cycle = findScenarioDependencyCycle(scenarios.filter(isRecord));
+    if (cycle !== undefined) {
+      problems.push({
+        field_path: "structured_input.scenarios",
+        message: `场景依赖成环: ${cycle.join(" -> ")}`
+      });
+    }
   }
 
   const machine: unknown = input.machine;
@@ -965,6 +1019,42 @@ export function buildTierGateOverlayFields(
 }
 
 
+/** 16-M1：场景依赖环检测。确定性 DFS（按声明序、依赖按原序），命中返回环路径。 */
+function findScenarioDependencyCycle(
+  scenarios: readonly Record<string, unknown>[]
+): readonly string[] | undefined {
+  const depsOf = new Map<string, readonly string[]>();
+  for (const scenario of scenarios) {
+    const id = typeof scenario.scenario_id === "string" ? scenario.scenario_id : "";
+    if (id === "") continue;
+    depsOf.set(id, Array.isArray(scenario.depends_on)
+      ? scenario.depends_on.filter((dep): dep is string => typeof dep === "string")
+      : []);
+  }
+  const state = new Map<string, "visiting" | "done">();
+  const stack: string[] = [];
+  const visit = (id: string): readonly string[] | undefined => {
+    const mark = state.get(id);
+    if (mark === "done") return undefined;
+    if (mark === "visiting") return [...stack.slice(stack.indexOf(id)), id];
+    state.set(id, "visiting");
+    stack.push(id);
+    for (const dep of depsOf.get(id) ?? []) {
+      if (!depsOf.has(dep)) continue; // 未知引用另有专属 problem，不在此重复报
+      const cycle = visit(dep);
+      if (cycle !== undefined) return cycle;
+    }
+    stack.pop();
+    state.set(id, "done");
+    return undefined;
+  };
+  for (const id of depsOf.keys()) {
+    const cycle = visit(id);
+    if (cycle !== undefined) return cycle;
+  }
+  return undefined;
+}
+
 function coverageFrom(scenarios: readonly Record<string, unknown>[]): readonly Record<string, unknown>[] {
   // 与 core fixture 同一推导：八维全覆盖，无场景维度记 not_applicable
   return COVERAGE_DIMENSIONS.map((dimension) => {
@@ -1340,12 +1430,19 @@ export async function runPlanEvidencePack(
         ownership_refs: sortRefs((task.ownership_refs as string[] | undefined)?.length
           ? task.ownership_refs as string[] : ownershipRefs)
       })),
-      scenarios: input.structured_input.scenarios.map((scenario) => ({
-        ...scenario,
-        task_refs: sortRefs(deriveScenarioTaskRefs(scenario)),
-        requirement_refs: sortRefs((scenario.requirement_refs as string[] | undefined)?.length
-          ? scenario.requirement_refs as string[] : requirementRefs)
-      })),
+      scenarios: input.structured_input.scenarios.map((scenario) => {
+        // 16-M1：depends_on 归一化——排序 + 空数组归一为缺省（canonical absence），
+        // 与 core 派生规则一致，未声明依赖的输入字节不变。
+        const { depends_on: rawDependsOn, ...rest } = scenario;
+        const dependsOn = sortRefs((rawDependsOn as string[] | undefined) ?? []);
+        return {
+          ...rest,
+          task_refs: sortRefs(deriveScenarioTaskRefs(scenario)),
+          requirement_refs: sortRefs((scenario.requirement_refs as string[] | undefined)?.length
+            ? scenario.requirement_refs as string[] : requirementRefs),
+          ...(dependsOn.length > 0 ? { depends_on: dependsOn } : {})
+        };
+      }),
       coverage: input.structured_input.coverage ?? coverageFrom(input.structured_input.scenarios),
       requirements,
       approved_scopes: approvedScopes,

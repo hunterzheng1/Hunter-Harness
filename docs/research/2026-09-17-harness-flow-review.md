@@ -167,7 +167,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **当前表现**：收据链（context→gate）、profile 解析验证命令、diffHash/ownershipHash 绑定、worktree 决策静态化、change lease。
 - **差距**：无并行（F2，收益预期见下注记）；失败→修复→重跑无结构化重试策略与断路器；修复轮次验收测试防篡改无确定性防线（F10）；修复回流校准 manifest 是手动步骤。
 - **建议**：
-  - [P1] **场景级依赖图 + 波次执行**：scenario-manifest 已有引用闭包，扩展为显式 DAG 按拓扑层并发派发（worktree-per-wave 或复用轻任务 WI-3.3 的 write-scope 冲突检测）。依据：Kiro Wave；审核整改任务书 §9.1。
+  - [P1] **场景级依赖图 + 波次执行**：scenario-manifest 已有引用闭包，扩展为显式 DAG 按拓扑层并发派发（worktree-per-wave 或复用轻任务 WI-3.3 的 write-scope 冲突检测）。依据：Kiro Wave；审核整改任务书 §9.1。**状态：16-M1 已实施（2026-09-18）**：场景级 `depends_on` 契约 + 未知引用/自引用/成环 fail-closed 校验（TS core/CLI 与 Python 三层同步）+ `compute_scenario_waves` 拓扑波次派生，`bootstrap-execute` 信封注入 `scenarioWaves` advisory（降级不阻断）；实际并行派发登记为 16-M2，按 §2.3-B 首试点 standard 档。
     > 收益预期修正（§2.3-B）：SDLC Playbook 指出并行会话的实际上限是「一个人能评审过来的流数」，且 auto-accept 以门禁/测试成熟为前提。个人场景下 full 档单 change 内波次并行的周期收益有限（评审带宽即瓶颈），主收益场景为 standard 批量任务吞吐；P1 评级保留，立项时应以 standard 档为首个试点。
   - [P1] **修复轮次验收测试防篡改检测**（F10）：修复/重试/fixback 轮次的 diff 若触碰 plan 声明的验收测试文件，确定性阻断并升级人工确认（实现位置可选精确暂存层或 review 门禁；一般测试文件维持现 advisory）。依据：§2.3-A；SDLC Playbook Stage 4「the loop itself needs protecting」。
   - [P2] **失败断路器**：同场景连续 2 次同类失败即暂停升级。依据：OpenAI 指南「护栏失败升级人工」。**状态：已实施（15-M3，2026-09-17）**：`harness_context.py execute_circuit_check` 按（verification kind, 失败指纹）最近连续 >=2 次 FAIL 判定 open 并阻断 `bootstrap-execute`，`--circuit-ack` 人工确认放行；纯派生不持久化。
@@ -248,8 +248,8 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | 阶段 | 内容 | 对应问题 | 风险 |
 |---|---|---|---|
 | 短期（1–2 迭代） | Clarify 前置步；知识查询门禁化；知识候选 JSON 直采（**三项均已落地**：10-M3 / 09-M4 / 06B-4，2026-09-17）；跟踪 R1–R5 专项收尾 | F4、F8、知识反解析 | 低，局部增强 |
-| 中期（1 季度） | Execute DAG 波次；增量评审落地（O2）；~~四件套→两件套~~（已提前落地，11-M3） | F2、F3 | 中：调度器是新组件，先在 fast/standard 档试点 |
-| 长期（按需） | 编排引擎化（skill 文档退化为阶段操作手册，新 entrypoint 与 skill 双轨过渡）；收据签名层；决策级度量面板 | F1、F6 | 高：须保护现有契约测试锚点 |
+| 中期（1 季度） | Execute DAG 波次（16-M1 契约+advisory 波次派生已落地，2026-09-18；实际调度器 16-M2 待立项）；增量评审落地（O2）；~~四件套→两件套~~（已提前落地，11-M3） | F2、F3 | 中：调度器是新组件，先在 standard 档试点 |
+| 长期（按需） | 编排引擎化（skill 文档退化为阶段操作手册，新 entrypoint 与 skill 双轨过渡）；收据签名层；~~决策级度量面板~~（已提前落地，17-M1，2026-09-18） | F1、F6 | 高：须保护现有契约测试锚点 |
 
 ## 6. 建议优先级汇总
 
@@ -259,13 +259,13 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | **P1** | Clarify 前置 + 歧义确认 | Spec Kit Clarify / Kiro Analyze | 减少「做错需求」返工 | **已实施**（10-M3，commit `1618b87`） |
 | **P1** | 知识查询门禁化 + 注入 plan evidence | F4；OpenAI 护栏分层 | 经验复用从「靠自觉」到「被保证」 | **已实施**（09-M4，commit `bbaba0f`） |
 | **P1** | 知识候选 JSON 直采，废弃 Markdown 反解析 | 精简分析 §6.2 | 解锁渲染层自由；为四件套收敛铺路 | **已实施**（06B-4，commit `5a63442`） |
-| **P1** | Execute 场景 DAG 波次并行（首试点 standard 档） | F2；Kiro Wave；WI-3.3 现成冲突检测 | standard 批量吞吐提升；full 档收益受个人评审带宽约束（§2.3-B） | 未启动（中期项） |
+| **P1** | Execute 场景 DAG 波次并行（首试点 standard 档） | F2；Kiro Wave；WI-3.3 现成冲突检测 | standard 批量吞吐提升；full 档收益受个人评审带宽约束（§2.3-B） | **16-M1 已实施**（2026-09-18：契约 + 校验 + advisory 波次派生）；实际调度 16-M2 待立项 |
 | **P1** | 增量评审（跟踪 O2 专项） | F3；审核整改任务书 §9.2 | 评审 token 与质量双赢 | 移交跟踪（O2 专项） |
 | **P1** | 修复轮次验收测试防篡改检测 | F10；SDLC Playbook Stage 4（§2.3-A） | 修复证据可信度从「靠自觉」到「被保证」 | 已登记，暂不立项（2026-09-17 决策） |
 | **P1** | R1–R5 专项落地跟踪 | 审核整改任务书 | 轻任务路径可信度 | 移交跟踪（审核整改任务书） |
 | **P2** | 四件套→两件套 | roadmap 09；精简分析 §6.4-3 | 渲染/阅读 token 下降 | **已实施**（11-M3，commit `871c354` + `aef737e`） |
 | **P2** | 失败断路器、quirk 指纹建议、档位裁决可解释 | §4.2/§4.4/§4.6 | 减少无效 attempt 与人工摩擦 | **已实施**（15-M1/M2/M3，commit `c87a1c3`） |
-| **P2** | 决策级度量面板 | F6；roadmap 10 | 后续优化有数据依据 | 未启动 |
+| **P2** | 决策级度量面板 | F6；roadmap 10 | 后续优化有数据依据 | **已实施**（17-M1，2026-09-18：`harness_efficiency.py --changes-root` 跨 change 聚合周期时长/门禁首过率/评审发现密度/自动度，只读） |
 | **P3** | plan 补丁式修订、review 闭环状态表、codebase-map 进 Clarify | §4.1/§4.3/§4.6 | 易用性 | **三项均已实施**（15-M4 / 11-M4 / 10-M4，commit `c87a1c3` / `a8f5ae1` / `7204948`） |
 
 **一句话结论**：当前 harness 在「证据与门禁」维度的工程化程度已超过本次调研的全部公开参照系；
