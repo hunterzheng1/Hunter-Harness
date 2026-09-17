@@ -480,6 +480,38 @@ Adapter 直接消费阶段 01 canonical serialized `ArchiveIngestReceipt`，不�
 - ✅ **W5 全链路 e2e**：build → CAS → enqueue → claim → publish → ack(acknowledged) → gc(cleaned) 真实收据全通；push/pull skill 契约测试翻转为发布语义（policy/capabilities/bundle 三处登记）。
 - 剩余：平台侧 `archives:ingest` 路由实现（阶段 13 切片）与真实环境联调、Platform Worker reaper。
 
+### 06B-4：知识候选 JSON 直采
+
+状态：待实施。立项于 2026-09-17，采纳决策见 [D3](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+
+现状锚点：`harness/scripts/harness_knowledge_candidates.py` 的 `build_plan_candidates`（约 898 行起）经 `_markdown_sections`、`_goal_from_design` 等解析器，从 `plans/<change>-design.md` / `-plan.md` / `-test-scenarios.md` 的 `## Goal`、`## Requirements`、`## Risks`、`## Invariants`、`## Tradeoffs`、`## Compatibility boundaries`、`## Tasks` 章节反解析候选；调用方为 `harness_archive.py` 与 `harness_task.py`。Markdown 已降级为渲染视图后，这形成「从渲染物反向解析」的反向依赖，并阻塞阶段 11 的四件套收敛（渲染层不能自由调整）。
+
+- Module / Adapter：候选直采 Module（JSON 真相源 → `KnowledgeCandidate`）+ archive/task 调用方接线 Adapter。
+- 负责人：待定。
+- 输入 Interface 及版本：`meta/plan-evidence-input.json` 当前 Schema（真相源）、scenario-manifest 等机器 sidecar、阶段 01 冻结的 `KnowledgeCandidate` v1。
+- 输出 Interface 及版本：`KnowledgeCandidate` v1 不变——共享 Schema 不动，只换提取源。
+- 允许修改的路径：`harness/scripts/harness_knowledge_candidates.py`、`harness/scripts/harness_archive.py`、`harness/scripts/harness_task.py`、`harness/scripts/tests/test_harness_knowledge_candidates.py` 与相关 fixture。
+- 禁止修改的共享区域：阶段 01 `KnowledgeCandidate` / `ProjectContentCandidate` 共享 Schema、归档 ZIP core-v2 核心包协议、服务端知识提取器与知识索引、`plans/*.md` 渲染模板（属阶段 11）。
+- 是否访问网络 / 调用模型 / 写文件：写文件（候选清单落盘）；不访问网络；不调用模型（直采为确定性映射）。
+- 兼容与回滚方式：已产出归档不追溯重算；只影响新归档的候选生成。回滚 = 恢复反解析路径（保留为 dead code 直至本工作包验收后删除）。
+- 聚焦测试：每类候选从 JSON 直采的字段映射；缺失可选分区时候选为空而非报错；候选 ID 与内容指纹稳定性；hostile 输入（额外字段、类型漂移）拒绝。
+- 依赖的 fixture：一个旧 fixture（既有 md 反解析产物的候选快照）+ 一个当前 fixture（plan-evidence-input.json 直采产物的候选快照）。
+- 汇合门禁：迁移矩阵覆盖全部被替换的提取来源；可复用知识仍只由服务端提取器生成，本工作包只改本地候选生成源（不变量 1、2 不受影响）。
+
+迁移矩阵（候选 ID 与内容指纹以「稳定」为目标；无法稳定的差异必须在验收记录中逐条解释）：
+
+| 候选类别 | 旧提取源 | 新提取源 | 兼容策略 |
+|---|---|---|---|
+| 目标（goal） | design.md `## Goal` | plan-evidence-input 目标字段 | 候选 ID 稳定，内容指纹以 JSON 字段重算 |
+| 需求（requirement） | design.md `## Requirements` | plan-evidence-input 需求/范围字段 | 同上 |
+| 风险（risk） | design.md `## Risks` | plan-evidence-input 风险字段 | 同上 |
+| 不变量（invariant） | design.md `## Invariants` | plan-evidence-input 不变量字段 | 同上 |
+| 取舍（tradeoff） | design.md `## Tradeoffs` | plan-evidence-input 决策/取舍字段 | 同上 |
+| 兼容边界（compatibility） | design.md `## Compatibility boundaries` | plan-evidence-input 约束字段 | 同上 |
+| 任务摘要（task） | plan.md `## Tasks` | plan-evidence-input 任务/场景引用 | 同上 |
+
+各行的 JSON 字段映射表在实施时冻结并写入 Module 注释与聚焦测试；本表只固定「类别 → 来源替换」的边界，不预定义字段名。
+
 ## 操作进度与监控
 
 不可变归档事件只记录生命周期事实。归档进行中的可变进度写入归档树外的本地状态，例如：

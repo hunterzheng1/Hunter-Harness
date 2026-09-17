@@ -209,6 +209,31 @@ Plan 不直接覆盖规则、架构或领域文档。规则候选和可执行架
 - 项目内容候选到阶段 07/13 的只读消费与归档上传；本 Module 不直接应用或 Push。
 - 阶段 11 产物模型与阶段 12 finalizer。二者必须严格串行消费本工作包冻结的 approved receipt。
 
+### 10-M3：需求歧义 Clarify 前置步
+
+状态：待实施。立项于 2026-09-17，采纳决策见 [D1](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+
+边界声明：阶段 10 既有决策树面向*设计决策*（fact / engineering_default / product_decision / risk_decision），在已有意图与证据之上收敛实现方案；10-M3 面向*需求歧义*，在 evidence-pack 校验与 finalize 之前执行，回答「需求本身是否有唯一可执行解释」。两者不共享节点语义：静态检查不通过或确认清单未闭环时，不进入决策树与审批流程。
+
+- Module / Adapter：新增 Clarify 纯 Module（静态检查器）+ plan finalize 前置接线 Adapter。
+- 负责人：待定。
+- 输入 Interface 及版本：阶段 08 `PlanProfile` v1、阶段 09 `IntentContract` v1（含 `uncertainties`）与 plan-evidence-input 当前 Schema。
+- 输出 Interface 及版本：新增 `ClarifyReport` v1（本工作包定义并冻结，消费方为阶段 12 分层质量门与阶段 14 验收）。
+- 允许修改的路径：`harness/scripts/harness_plan_finalize.py`（或新增 `harness/scripts/harness_clarify.py`）、`harness/scripts/harness_plan/`（若采用包内模块）、`harness/harness-plan/SKILL.md`、`harness/scripts/tests/` 聚焦测试与 fixture。
+- 禁止修改的共享区域：阶段 08 `PlanProfile` / `PlannedPhaseSet`、阶段 11/12 产物 Schema 与 finalizer 主体、阶段 01 共享 Schema、OpenAPI 与 Platform。
+- 是否访问网络 / 调用模型 / 写文件：写文件（`clarify_report` 落盘）；调用模型（每次 plan 至多一次歧义扫描）；不访问网络。
+- 兼容与回滚方式：存量 change 无 `clarify_report` 时按当前行为放行并记录 `status=not_required`（兼容读取）；回滚 = 关闭门禁配置项，报告文件保留为历史证据。
+- 聚焦测试：空 objective 拒绝、scenario/task 悬空引用拒绝、不可测验收条件拒绝、确认清单未闭环阻断 finalize、确认完成后放行、fast 档跳过语义。
+- 依赖的 fixture：合法 plan-evidence-input 最小集 + 各含一类缺陷的 fixture 组。
+- 汇合门禁：静态检查零 LLM 参与（确定性、可复算）；`ClarifyReport` 全字段 snake_case，状态机枚举为 `passed | failed | confirmations_required | not_required`。
+
+设计要点：
+
+1. 确定性静态检查（fail-closed）：空 objective、scenario/task 悬空引用、验收条件不可测（无观察点或判据）。静态层不调用模型，输出与 LLM 扫描结果合并为一份 `ClarifyReport`。
+2. 一次 LLM 歧义扫描：以阶段 09 `IntentContract.uncertainties` 为候选来源之一，结合需求原文做有界扫描，产出强制确认清单；清单确认完成前 finalize 阻断。每次 plan 至多一次扫描，成本有界。
+3. `ClarifyReport` 为机器可读收据：记录检查项、缺陷定位（field_path）、确认清单、答案闭包与最终状态；中文文案仅展示用，状态判定只读机器字段。
+4. 与阶段 12 的协调：`ClarifyReport` interface 由本工作包冻结；阶段 12 finalizer 后续可将其作为分层质量门输入消费，本工作包不修改 finalizer。
+
 ## 停止条件和回退
 
 如果宿主交互能力无法在一轮稳定展示多个问题，保留决策前沿模型，但按同一轮中的固定顺序逐个呈现。不要退回没有依赖关系的全局问题列表。

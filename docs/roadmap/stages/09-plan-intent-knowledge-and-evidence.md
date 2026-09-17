@@ -237,6 +237,24 @@ PlanningContext = {
 - PlanningContext 的持久化、事件、恢复和现有 `harness-plan` / Python 状态机接线。
 - 阶段 10～12 的决策、产物与质量门必须消费该唯一上下文，不得重复查询、再次压缩或建立第二套意图来源。
 
+### 09-M4：知识查询门禁化
+
+状态：待实施。立项于 2026-09-17，采纳决策见 [D2](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+
+现状张力与本工作包的化解：`harness-plan` SKILL 阶段 1 现行规则为「条件触发，不每次必查」，依据是 2026-09 审查实测「无条件查询的自然语言原文 8/8 零命中」。该实测只覆盖*原文直查*——把用户需求整段原文直接作为查询词。本工作包门禁化的是另一件事：基于阶段 09 已冻结的 `IntentContract` 结构化线索（目标、领域词、模块线索、约束）构造查询，并锚定 `KnowledgeQueryReceipt`、把结果引用写入 `knowledge_refs`。8/8 零命中否定的是原文直查的收益，不构成对结构化必查的否定；门禁的对象是「执行并留证」，不是「必须命中」。
+
+- Module / Adapter：plan gate 门禁校验 Module（收据存在性、身份绑定、档位规则判定）+ finalize/gate 接线 Adapter。
+- 负责人：待定。
+- 输入 Interface 及版本：09-M2 已冻结的 `knowledge-query-http` v1 与 `KnowledgeQueryReceipt` v1、阶段 08 `PlanProfile` v1（档位来源）、plan-evidence-input 当前 Schema。
+- 输出 Interface 及版本：门禁判定结果并入既有 plan gate 机器输出；`knowledge_refs` 字段落在 plan-evidence-input 产物 Schema，定义权归阶段 11，本工作包只在契约注册表登记（门禁语义阶段 09、字段阶段 11、消费方阶段 12/14）。
+- 允许修改的路径：`harness/scripts/harness_gate.py`、`harness/scripts/harness_plan_finalize.py`、`harness/scripts/harness_profile.py`、`harness/harness-plan/SKILL.md`、`harness/harness-knowledge-query/SKILL.md`、`harness/scripts/tests/` 聚焦测试与 fixture。
+- 禁止修改的共享区域：阶段 01 共享 Schema、服务端知识索引与 Platform 路由（09-M2 已冻结的 bounded endpoint 不变）、fast 档既有行为、阶段 11 产物字段定义。
+- 是否访问网络 / 调用模型 / 写文件：访问网络（复用既有 bounded endpoint）；写文件（收据锚点与 `knowledge_refs` 落盘）；不调用模型（查询构造为确定性规则）。
+- 兼容与回滚方式：门禁默认 fail-closed，提供配置项降级为警告；存量无收据的 change 按 fast 豁免之外的档位规则提示一次迁移说明。回滚 = 配置项关闭门禁，恢复条件触发语义。
+- 聚焦测试：fast 档豁免并记录跳过原因；standard/full 缺收据 fail-closed、有合法收据放行、伪造或跨项目收据拒绝；查询失败留下失败收据并按配置放行或阻断；第二次定向查询仍受阶段 09 预算约束。
+- 依赖的 fixture：09-M2 查询 contract fixture、合法/伪造/跨项目收据样例、各档位 profile fixture。
+- 汇合门禁：门禁判定只读机器字段（receipt 身份、档位、配置），中文文案仅展示；SKILL 文档、CLI 提示与脚本行为三者一致；fast 档零行为变化。
+
 ## 停止条件和回退
 
 如果现有知识 API 无法返回来源或时效字段，先保留兼容字段并在客户端标记「来源信息不完整」。不要为了完成本阶段伪造验证时间或相关性分数。
