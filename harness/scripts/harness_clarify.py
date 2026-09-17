@@ -5,7 +5,10 @@
 执行。三层结构：
 
 1. 确定性静态检查（零 LLM，fail-closed）：空 objective / scenario/task 悬空
-   引用 / 不可测验收条件（无观察点或判据）直接判 failed；
+   引用 / 不可测验收条件（无观察点或判据）直接判 failed；10-M4 起新增
+   codebase-map 输入——``.harness/codebase/map/map-manifest.json`` 为 paths
+   模式时，task affected_paths 越出地图扫描范围给定位缺陷，manifest 缺失或
+   不可读则跳过不失败（只读消费，阶段 05 拥有其 schema）；
 2. 一次 LLM 歧义扫描：由 agent 在 SKILL 引导下执行（每次 plan 至多一次，确认
    清单 ≤5 条），结果经 ``record-scan`` 留证；答案经 ``confirm`` 逐条闭包；
 3. ClarifyReport v1（``meta/clarify-report.json``）：机器可读收据，全字段
@@ -298,8 +301,126 @@ def _check_acceptance_testable(scenarios: list[Any]) -> dict[str, Any]:
     return {"check_id": "acceptance_testable", "ok": not defects, "defects": defects}
 
 
-def run_static_checks(pei: dict[str, Any]) -> list[dict[str, Any]]:
-    """对 PEI 跑全部确定性静态检查，返回 check 结果列表（含 ok/defects）。"""
+# ---------------------------------------------------------------------------
+# 10-M4：codebase-map manifest 作为静态检查输入（只读消费，阶段 05 拥有 schema）
+# ---------------------------------------------------------------------------
+
+MAP_MANIFEST_REL = Path(".harness") / "codebase" / "map" / "map-manifest.json"
+# full/fast/focus 均为整仓扫描（文档子集不同），视为全量覆盖；paths 为局部范围。
+_MAP_FULL_COVERAGE_TYPES = frozenset({"full", "fast", "focus"})
+
+
+def _project_root_for_change(change_dir: Path) -> Path | None:
+    """从 contract 布局 <project>/.harness/changes/<cn> 反推项目根；布局不符返回 None。"""
+    resolved = Path(change_dir).resolve()
+    if resolved.parent.name == "changes" and resolved.parent.parent.name == ".harness":
+        return resolved.parent.parent.parent
+    return None
+
+
+def load_map_manifest(change_dir: Path) -> dict[str, Any] | None:
+    """加载 codebase-map manifest；缺失/不可读/非对象/布局不符一律返回 None（跳过语义）。"""
+    root = _project_root_for_change(change_dir)
+    if root is None:
+        return None
+    manifest_path = root / MAP_MANIFEST_REL
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _normalize_map_path(raw: str) -> str:
+    return raw.replace("\\", "/").strip().strip("/")
+
+
+def _check_map_refs(
+    tasks: list[Any], map_manifest: dict[str, Any] | None
+) -> dict[str, Any]:
+    """affected_paths 与 codebase-map 扫描范围对齐检查。
+
+    paths 模式地图只覆盖声明的扫描根，越出范围的受影响路径 = 地图中不存在该
+    模块的信息，给 CLARIFY_MAP_REF_UNKNOWN 定位缺陷；整仓模式视为全量覆盖。
+    manifest 缺失/不可读/范围无法判定时 skipped（ok=True），不阻断 fail-closed。
+    """
+    check_id = "codebase_map_refs_known"
+    if map_manifest is None:
+        return {
+            "check_id": check_id,
+            "ok": True,
+            "skipped": True,
+            "skip_reason": "codebase map manifest 缺失或不可读，跳过（存量 change 行为不变）",
+            "defects": [],
+        }
+    scope = map_manifest.get("path_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    scope_type = str(scope.get("type") or "").strip()
+    if scope_type in _MAP_FULL_COVERAGE_TYPES:
+        return {"check_id": check_id, "ok": True, "defects": []}
+    if scope_type != "paths":
+        return {
+            "check_id": check_id,
+            "ok": True,
+            "skipped": True,
+            "skip_reason": f"无法判定的 path_scope.type（{scope_type or 'missing'}），跳过",
+            "defects": [],
+        }
+    raw_paths = scope.get("paths")
+    roots: list[str] = []
+    if isinstance(raw_paths, list):
+        for item in raw_paths:
+            if isinstance(item, str):
+                normalized = _normalize_map_path(item)
+                if normalized:
+                    roots.append(normalized)
+    if not roots:
+        return {
+            "check_id": check_id,
+            "ok": True,
+            "skipped": True,
+            "skip_reason": "paths 模式未声明 path_scope.paths，跳过",
+            "defects": [],
+        }
+    defects: list[dict[str, Any]] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            continue
+        task_id = str(task.get("task_id") or "").strip() or f"#{index}"
+        affected = task.get("affected_paths")
+        if not isinstance(affected, list):
+            continue
+        for path_index, raw in enumerate(affected):
+            if not isinstance(raw, str) or not str(raw).strip():
+                continue
+            normalized = _normalize_map_path(raw)
+            if any(
+                normalized == root or normalized.startswith(root + "/")
+                for root in roots
+            ):
+                continue
+            defects.append(
+                _defect(
+                    "CLARIFY_MAP_REF_UNKNOWN",
+                    f"structured_input.tasks[{index}].affected_paths[{path_index}]",
+                    f"任务 {task_id} 的受影响路径 {raw} 不在 codebase map 扫描范围内"
+                    f"（paths 模式仅覆盖：{', '.join(roots)}）；"
+                    "请修正受影响路径，或重跑 codebase-map 扩展扫描范围",
+                )
+            )
+    return {"check_id": check_id, "ok": not defects, "defects": defects}
+
+
+def run_static_checks(
+    pei: dict[str, Any], map_manifest: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """对 PEI 跑全部确定性静态检查，返回 check 结果列表（含 ok/defects）。
+
+    map_manifest 由调用方从 change_dir 所在项目根加载（10-M4）；None 时
+    codebase-map 检查项输出 skipped 结果，不影响 fail-closed 语义。
+    """
     structured = pei.get("structured_input")
     structured = structured if isinstance(structured, dict) else {}
     tasks = structured.get("tasks")
@@ -313,6 +434,7 @@ def run_static_checks(pei: dict[str, Any]) -> list[dict[str, Any]]:
         _check_task_objectives(tasks),
         *_check_refs_closed(tasks, scenarios, requirements),
         _check_acceptance_testable(scenarios),
+        _check_map_refs(tasks, map_manifest),
     ]
 
 
@@ -452,7 +574,11 @@ def run_check(change_dir: Path) -> dict[str, Any]:
                 f"{CLARIFY_PEI_REL.as_posix()} 顶层必须是对象",
             )
         pei = loaded
-    checks = run_static_checks(pei) if pei is not None else []
+    checks = (
+        run_static_checks(pei, load_map_manifest(change_dir))
+        if pei is not None
+        else []
+    )
     previous = _load_report(change_dir)
     scan = previous.get("scan") if isinstance(previous, dict) else None
     status = _compute_status(tier, pei_present, checks, scan)
@@ -776,7 +902,7 @@ def validate_clarify_gate(project: Path, change_dir: Path) -> dict[str, Any]:
             "message": f"{CLARIFY_PEI_REL.as_posix()} 顶层必须是对象",
         })
         return verdict
-    checks = run_static_checks(pei)
+    checks = run_static_checks(pei, load_map_manifest(change_dir))
     defects = _all_defects(checks)
     if defects:
         verdict.update({

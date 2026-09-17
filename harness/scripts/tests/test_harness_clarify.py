@@ -7,7 +7,9 @@
 - 不可测验收条件拒绝（acceptance 判据为空 / evidence_requirements 观察点为空）；
 - 确认清单未闭环阻断 finalize（plan 关门 fail-closed）、确认完成后放行；
 - 每次 plan 至多一次扫描（幂等重放 / 预算 ≤5 条）、答案闭包；
-- fast 档跳过语义；off 回滚；存量无报告兼容放行（not_required）。
+- fast 档跳过语义；off 回滚；存量无报告兼容放行（not_required）；
+- codebase-map manifest 进静态检查（10-M4）：paths 模式下 affected_paths 越出
+  扫描范围给定位缺陷；manifest 缺失/不可读跳过不失败。
 """
 
 from __future__ import annotations
@@ -224,6 +226,7 @@ class StaticCheckTests(ClarifyCase):
                 "scenario_task_refs_closed",
                 "requirement_refs_closed",
                 "acceptance_testable",
+                "codebase_map_refs_known",
             ],
         )
         self.assertTrue(all(check["ok"] for check in report["checks"]))
@@ -348,6 +351,141 @@ class StaticCheckTests(ClarifyCase):
         self.assertEqual(report["status"], "passed")
         self.assertEqual(
             report["scan"]["confirmations"][0]["answer"], "Cache-Aside"
+        )
+
+
+class CodebaseMapCheckTests(ClarifyCase):
+    """10-M4：codebase-map manifest 作为 Clarify 静态检查输入（只读消费）。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._set_policy(tier="standard")
+        self._write_pei()
+
+    def _write_map_manifest(self, scope: dict | None, raw: str | None = None) -> None:
+        map_dir = self.project / ".harness" / "codebase" / "map"
+        map_dir.mkdir(parents=True, exist_ok=True)
+        if raw is None:
+            raw = json.dumps(
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-09-17T00:00:00Z",
+                    "generator": {"name": "harness-codebase-map", "version": "test"},
+                    "project_root": str(self.project),
+                    "path_scope": scope,
+                    "documents": [],
+                },
+                ensure_ascii=False,
+            )
+        (map_dir / "map-manifest.json").write_text(raw + "\n", encoding="utf-8")
+
+    def _map_check_item(self) -> dict:
+        for check in self._report()["checks"]:
+            if check["check_id"] == "codebase_map_refs_known":
+                return check
+        self.fail("clarify-report 缺少 codebase_map_refs_known 检查项")
+
+    def test_missing_map_skips_check_and_still_passes(self) -> None:
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["status"], "passed")
+        check = self._map_check_item()
+        self.assertTrue(check["ok"])
+        self.assertTrue(check["skipped"])
+        self.assertEqual(check["defects"], [])
+
+    def test_full_scope_map_covers_everything(self) -> None:
+        self._write_map_manifest({"type": "full", "paths": []})
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        check = self._map_check_item()
+        self.assertTrue(check["ok"])
+        self.assertFalse(check.get("skipped", False))
+        self.assertEqual(check["defects"], [])
+
+    def test_paths_scope_covering_affected_path_passes(self) -> None:
+        self._write_map_manifest({"type": "paths", "paths": ["harness/scripts"]})
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        check = self._map_check_item()
+        self.assertTrue(check["ok"])
+        self.assertFalse(check.get("skipped", False))
+        self.assertEqual(check["defects"], [])
+
+    def test_paths_scope_missing_module_is_located_defect(self) -> None:
+        self._write_map_manifest({"type": "paths", "paths": ["docs/roadmap"]})
+        result = self._check()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["code"], "CLARIFY_CHECK_FAILED")
+        check = self._map_check_item()
+        self.assertFalse(check["ok"])
+        self.assertEqual(len(check["defects"]), 1)
+        defect = check["defects"][0]
+        self.assertEqual(defect["code"], "CLARIFY_MAP_REF_UNKNOWN")
+        self.assertEqual(
+            defect["field_path"], "structured_input.tasks[0].affected_paths[0]"
+        )
+        self.assertIn("harness/scripts/harness_clarify.py", defect["message"])
+
+    def test_defect_field_path_tracks_task_and_path_indexes(self) -> None:
+        document = _pei()
+        document["structured_input"]["tasks"] = [
+            {
+                "task_id": "t1",
+                "objective": "文档调整",
+                "affected_paths": ["docs/roadmap/README.md"],
+                "owner_phase": "execute",
+            },
+            {
+                "task_id": "t2",
+                "objective": "脚本调整",
+                "affected_paths": ["harness/scripts/a.py", "src/b.ts"],
+                "owner_phase": "execute",
+            },
+        ]
+        self._write_pei(document)
+        self._write_map_manifest({"type": "paths", "paths": ["docs/roadmap"]})
+        result = self._check()
+        self.assertFalse(result["ok"])
+        check = self._map_check_item()
+        self.assertEqual(
+            [defect["field_path"] for defect in check["defects"]],
+            [
+                "structured_input.tasks[1].affected_paths[0]",
+                "structured_input.tasks[1].affected_paths[1]",
+            ],
+        )
+
+    def test_malformed_manifest_skips_without_failure(self) -> None:
+        self._write_map_manifest(None, raw="{oops")
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(self._map_check_item()["skipped"])
+
+    def test_non_dict_manifest_skips_without_failure(self) -> None:
+        self._write_map_manifest(None, raw="[]")
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(self._map_check_item()["skipped"])
+
+    def test_unknown_scope_type_skips_without_failure(self) -> None:
+        self._write_map_manifest({"type": "mystery", "paths": ["docs/"]})
+        result = self._check()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(self._map_check_item()["skipped"])
+
+    def test_gate_reruns_map_check(self) -> None:
+        """plan 关门全量重跑静态检查：paths 模式覆盖缺口同样阻断（check/gate 同源）。"""
+        self._write_map_manifest({"type": "paths", "paths": ["docs/"]})
+        result = self._validate()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "CLARIFY_GATE_STATIC_FAILED")
+        self.assertTrue(
+            any(
+                defect["code"] == "CLARIFY_MAP_REF_UNKNOWN"
+                for defect in result["defects"]
+            )
         )
 
 

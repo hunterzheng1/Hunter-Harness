@@ -234,6 +234,22 @@ Plan 不直接覆盖规则、架构或领域文档。规则候选和可执行架
 3. `ClarifyReport` 为机器可读收据：记录检查项、缺陷定位（field_path）、确认清单、答案闭包与最终状态；中文文案仅展示用，状态判定只读机器字段。
 4. 与阶段 12 的协调：`ClarifyReport` interface 由本工作包冻结；阶段 12 finalizer 后续可将其作为分层质量门输入消费，本工作包不修改 finalizer。
 
+### 10-M4：codebase-map 产物作为 Clarify 静态检查输入
+
+状态：已实施（2026-09-17）。来源：[流程调研报告](../../research/2026-09-17-harness-flow-review.md) §4.6 [P3] 建议「codebase-map 产物作为 Clarify 步自动输入」。
+
+- Module / Adapter：`harness/scripts/harness_clarify.py`（静态检查注册点 `run_static_checks`）。
+- 输入 Interface 及版本：`.harness/codebase/map/map-manifest.json`（阶段 05 Codebase Map 产物，只读消费；不存在时跳过而非失败）。
+- 输出 Interface 及版本：`ClarifyReport` 静态检查新增一个检查项（如 task_refs / 受影响路径指向的模块在 map 中不存在时给出定位缺陷）；`ClarifyReport` schema 不新增顶层字段，检查项复用既有缺陷结构。
+- 允许修改的路径：`harness/scripts/harness_clarify.py`、`harness/scripts/tests/test_harness_clarify.py`（或既有 clarify 聚焦测试）。
+- 禁止修改的共享区域：`map-manifest.json` schema（阶段 05 拥有）；`ClarifyReport` 状态机枚举与既有检查项语义；finalize 门禁接线。
+- 是否访问网络 / 调用模型 / 写文件：否 / 否 / 否（静态检查零 LLM，报告落盘沿用 10-M3 既有路径）。
+- 兼容与回滚方式：map 缺失时检查项输出 `skipped` 类结果，不阻断 fail-closed 语义；存量 change 无 map 目录行为不变。
+- 聚焦测试：map 存在且引用模块缺失 → 缺陷定位；map 存在且引用齐全 → 通过；map 缺失 → 跳过不失败。
+- 依赖的 fixture：合成 map-manifest + plan-evidence-input 最小集。
+- 汇合门禁：clarify 聚焦测试全绿；静态检查仍零 LLM。
+- 实施注记（2026-09-17）：检查项 `check_id=codebase_map_refs_known`——`path_scope.type=paths` 时 task `affected_paths` 越出扫描根给 `CLARIFY_MAP_REF_UNKNOWN`（field_path 定位到 `tasks[i].affected_paths[j]`）；`full`/`fast`/`focus` 视为整仓覆盖；manifest 缺失/畸形/范围类型未声明 → `skipped` 不阻断 fail-closed。`clarify check` 与 plan 关门门禁共用 `run_static_checks`（同源消费），聚焦测试 65/65 全绿。
+
 ## 停止条件和回退
 
 如果宿主交互能力无法在一轮稳定展示多个问题，保留决策前沿模型，但按同一轮中的固定顺序逐个呈现。不要退回没有依赖关系的全局问题列表。
