@@ -22,7 +22,6 @@ import {
   remoteSyncPushStatusHttpRequestSchema,
   remoteSyncPushStatusHttpResponseSchema,
   remoteSyncRemoteSnapshotHttpResponseSchema,
-  remoteSyncHttpScopeSchema,
   remoteSyncHttpMaxFileBytes,
 } from "../src/index.js";
 
@@ -98,14 +97,10 @@ describe("Remote Sync HTTP v1 shared contract", () => {
     expect(REMOTE_SYNC_HTTP_OPERATIONS.snapshot.idempotency_header).toBeUndefined();
   });
 
-  it("keeps auth and project-key scope server-bound", () => {
-    expect(remoteSyncHttpScopeSchema.safeParse("files:read").success).toBe(true);
-    expect(remoteSyncHttpScopeSchema.safeParse("files:write").success).toBe(true);
-    expect(remoteSyncHttpScopeSchema.safeParse("project:admin").success).toBe(false);
+  it("keeps auth server-bound", () => {
     expect(REMOTE_SYNC_HTTP_OPERATIONS.snapshot.auth).toEqual({
       actor_source: "authenticated_principal",
-      project_allowlist_source: "server_authority",
-      project_key_scope: "files:read"
+      project_allowlist_source: "server_authority"
     });
     expect(remoteSyncLeaseAcquireHttpRequestSchema.safeParse({
       source, ttl_ms: 60_000, actor_id: "spoofed"

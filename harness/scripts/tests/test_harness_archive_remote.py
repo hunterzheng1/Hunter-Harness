@@ -46,7 +46,7 @@ def _seed_core_archive(root: Path, change_key: str) -> Path:
 def _write_local_credentials(root: Path) -> None:
     _write(
         root / ".harness" / "credentials.local.yaml",
-        "server_url: https://platform.example.test\ntoken: local-token\n",
+        "server_url: https://harness.hunter-z.com\ntoken: local-token\n",
     )
 
 
@@ -192,7 +192,7 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
             root = Path(tmp)
             _write(
                 root / ".harness" / "credentials.local.yaml",
-                "server_url: http://platform.example.test\ntoken: local-token\n",
+                "server_url: http://harness.hunter-z.com\ntoken: local-token\n",
             )
 
             resolved = ha._resolve_archive_remote_credentials(root, {})
@@ -234,7 +234,7 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
             _write(
                 root / ".harness" / "project.yaml",
                 "server:\n"
-                "  url: https://env-platform.example.test\n"
+                "  url: https://env-harness.hunter-z.com\n"
                 "  token_env: PROJECT_ARCHIVE_TOKEN\n",
             )
             completed = subprocess.CompletedProcess(
@@ -266,7 +266,7 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
             self.assertIn("upload", command)
             self.assertEqual(
                 command[command.index("--server-url") + 1],
-                "https://env-platform.example.test",
+                "https://env-harness.hunter-z.com",
             )
             self.assertEqual(
                 command[command.index("--token-env") + 1],

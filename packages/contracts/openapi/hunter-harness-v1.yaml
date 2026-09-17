@@ -1417,7 +1417,6 @@ paths:
       summary: Stage one bounded raw file stream for Remote Sync push
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-body-transport: single_bounded_stream
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, REMOTE_CONTENT_UPLOAD_INPUT_INVALID, REMOTE_CONTENT_UPLOAD_STREAM_INVALID, REMOTE_CONTENT_UPLOAD_HASH_MISMATCH, REMOTE_CONTENT_UPLOAD_SIZE_MISMATCH]
@@ -1490,7 +1489,6 @@ paths:
       summary: Resolve one raw Remote Sync file upload identity
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:read
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, REMOTE_CONTENT_UPLOAD_INPUT_INVALID, REMOTE_CONTENT_UPLOAD_STREAM_INVALID, REMOTE_CONTENT_UPLOAD_HASH_MISMATCH, REMOTE_CONTENT_UPLOAD_SIZE_MISMATCH]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1530,7 +1528,6 @@ paths:
       operationId: acquireRemoteSyncLease
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1563,7 +1560,6 @@ paths:
       operationId: renewRemoteSyncLease
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1601,7 +1597,6 @@ paths:
       operationId: releaseRemoteSyncLease
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1639,7 +1634,6 @@ paths:
       operationId: getRemoteSyncSnapshot
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:read
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1669,7 +1663,6 @@ paths:
       operationId: streamRemoteSyncContent
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:read
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, SYNC_STREAM_INVALID]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1724,7 +1717,6 @@ paths:
       operationId: prepareRemoteSyncPush
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, SYNC_STREAM_INVALID]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1761,7 +1753,6 @@ paths:
       operationId: commitRemoteSyncPush
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1795,7 +1786,6 @@ paths:
       operationId: getRemoteSyncPushStatus
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1837,7 +1827,6 @@ paths:
       operationId: getRemoteSyncPushReceipt
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:write
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -1879,7 +1868,6 @@ paths:
       operationId: pullRemoteSync
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: files:read
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2027,10 +2015,9 @@ paths:
     post:
       operationId: queryProjectKnowledge
       summary: Execute one bounded, receipt-backed remote knowledge query
-      description: The actor, project allowlist and knowledge:read scope come from authenticated server authority. The response contains bounded summaries only; document bodies are not returned.
+      description: The actor and project allowlist come from authenticated server authority. The response contains bounded summaries only; document bodies are not returned.
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: "knowledge:read"
       x-hunter-idempotency-header: Idempotency-Key
       x-hunter-request-id-header: X-Request-Id
       x-hunter-error-codes:
@@ -2080,13 +2067,6 @@ paths:
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
       x-hunter-normalizer-id: normalizePlatformInformationListHttpQuery
-      x-hunter-project-key-scope-by-view:
-        {
-          branch_monitor: "platform:read",
-          branch_files: "files:read",
-          project_materials: "files:read",
-          project_knowledge: "knowledge:read",
-        }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, PLATFORM_INFORMATION_CURSOR_INVALID]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2116,7 +2096,6 @@ paths:
       summary: Walk every authorized page to a terminal cursor and return its verified proof
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: "platform:read"
       x-hunter-normalizer-id: normalizePlatformInformationListHttpQuery
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED, PLATFORM_INFORMATION_CURSOR_INVALID]
@@ -2147,13 +2126,6 @@ paths:
       summary: Create or replay a durable platform information export
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope-by-view:
-        {
-          branch_monitor: "platform:read",
-          branch_files: "files:read",
-          project_materials: "files:read",
-          project_knowledge: "knowledge:read",
-        }
       x-hunter-idempotency-header: Idempotency-Key
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
@@ -2202,13 +2174,6 @@ paths:
       summary: Stream a ready platform information export artifact
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope-by-view:
-        {
-          branch_monitor: "platform:read",
-          branch_files: "files:read",
-          project_materials: "files:read",
-          project_knowledge: "knowledge:read",
-        }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2247,13 +2212,6 @@ paths:
       summary: Read one authorized project information detail by stable identity
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope-by-view:
-        {
-          branch_monitor: "platform:read",
-          branch_files: "files:read",
-          project_materials: "files:read",
-          project_knowledge: "knowledge:read",
-        }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2285,13 +2243,6 @@ paths:
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
       x-hunter-normalizer-id: normalizePlatformInformationListHttpQuery
-      x-hunter-project-key-scope-by-view:
-        {
-          branch_monitor: "platform:read",
-          branch_files: "files:read",
-          project_materials: "files:read",
-          project_knowledge: "knowledge:read",
-        }
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2323,7 +2274,6 @@ paths:
       summary: Create a read-only branch file restore preview
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: "files:read"
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
@@ -2366,7 +2316,6 @@ paths:
       summary: Validate preview-bound conflict decisions and return a request-only Pull intent
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: "files:read"
       x-hunter-validator-id: validatePlatformInformationConfirmRestoreHttpRequest
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
@@ -2412,7 +2361,6 @@ paths:
       summary: Create a request-only knowledge extraction retry intent
       x-hunter-auth-source: authenticated_principal
       x-hunter-project-allowlist-source: server_authority
-      x-hunter-project-key-scope: "knowledge:write"
       x-hunter-error-codes:
         "400": [VALIDATION_FAILED]
         "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]

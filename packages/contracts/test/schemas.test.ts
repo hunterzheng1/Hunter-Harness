@@ -113,17 +113,17 @@ describe("v1.0 fixed-projection contracts", () => {
       agents: ["codex"],
       profile: "java",
       codebuddy_surface: "ide",
-      server_url: "https://platform.example.test"
+      server_url: "https://harness.hunter-z.com"
     });
     expect(strippedInit.stripped.sort()).toEqual(["agents", "codebuddy_surface", "profile"]);
     expect(initConfigSchema.parse(strippedInit.value)).toEqual({
-      server_url: "https://platform.example.test"
+      server_url: "https://harness.hunter-z.com"
     });
 
-    const untouched = stripLegacyConfigFields({ server_url: "https://platform.example.test" });
+    const untouched = stripLegacyConfigFields({ server_url: "https://harness.hunter-z.com" });
     expect(untouched.stripped).toEqual([]);
     expect(initConfigSchema.parse(untouched.value)).toEqual({
-      server_url: "https://platform.example.test"
+      server_url: "https://harness.hunter-z.com"
     });
 
     const strippedProject = stripLegacyConfigFields({
@@ -214,8 +214,8 @@ describe("shared contracts", () => {
     expect(isAllowedServerUrl("http://127.0.0.1:3003", true)).toBe(true);
     expect(isAllowedServerUrl("http://localhost:3003", true)).toBe(true);
     expect(isAllowedServerUrl("http://127.0.0.1:3003")).toBe(false);
-    expect(isAllowedServerUrl("http://platform.example.test", true)).toBe(false);
-    expect(isAllowedServerUrl("https://platform.example.test")).toBe(true);
+    expect(isAllowedServerUrl("http://harness.hunter-z.com", true)).toBe(false);
+    expect(isAllowedServerUrl("https://harness.hunter-z.com")).toBe(true);
     expect(projectConfigSchema.safeParse({
       harness: { name: "hunter-harness", schema_version: 1 },
       project: {
@@ -224,7 +224,7 @@ describe("shared contracts", () => {
         local_project_key: "018f1f2e-7b5a-7cc0-8c2d-2b320cab1234",
         project_id: null
       },
-      server: { url: "https://user:pw@platform.example.test", token_env: "HUNTER_HARNESS_TOKEN" }
+      server: { url: "https://user:pw@harness.hunter-z.com", token_env: "HUNTER_HARNESS_TOKEN" }
     }).success).toBe(false);
   });
 

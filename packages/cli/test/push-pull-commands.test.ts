@@ -501,7 +501,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const root = await mkdtemp(join(tmpdir(), "hh-pushpull-cred-"));
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(join(root, ".harness", "credentials.local.yaml"),
-      "server_url: https://platform.example.test\ntoken: file-token\nactor_id: actor_owner\n",
+      "server_url: https://harness.hunter-z.com\ntoken: file-token\nactor_id: actor_owner\n",
       "utf8");
     const deps = dependencies(vi.fn());
     delete deps.pushPull;
@@ -516,7 +516,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
 
     expect(deps.fetch).toHaveBeenCalled();
     const [url, init] = vi.mocked(deps.fetch).mock.calls[0] as [string, RequestInit];
-    expect(String(url)).toContain("https://platform.example.test");
+    expect(String(url)).toContain("https://harness.hunter-z.com");
     expect((init.headers as Headers).get("Authorization")).toBe("Bearer file-token");
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       ok: false,
@@ -551,7 +551,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const root = await mkdtemp(join(tmpdir(), "hh-pushpull-legacy-"));
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(join(root, ".harness", "credentials.local.yaml"),
-      "server_url: https://platform.example.test\ntoken: file-token\n", "utf8");
+      "server_url: https://harness.hunter-z.com\ntoken: file-token\n", "utf8");
     const deps = dependencies(vi.fn());
     delete deps.pushPull;
     deps.cwd = root;
@@ -563,7 +563,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
 
     // 只尝试过 key-info 自动补全，未进入同步传输。
     const calls = vi.mocked(deps.fetch).mock.calls.map(([url]) => String(url));
-    expect(calls).toEqual(["https://platform.example.test/api/v1/auth/key-info"]);
+    expect(calls).toEqual(["https://harness.hunter-z.com/api/v1/auth/key-info"]);
     expect(vi.mocked(deps.stderr).mock.calls.join("")).toContain("actor_id");
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       ok: false,
@@ -578,7 +578,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const root = await mkdtemp(join(tmpdir(), "hh-pushpull-heal-"));
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(join(root, ".harness", "credentials.local.yaml"),
-      "server_url: https://platform.example.test\ntoken: file-token\n", "utf8");
+      "server_url: https://harness.hunter-z.com\ntoken: file-token\n", "utf8");
     const deps = dependencies(vi.fn());
     delete deps.pushPull;
     deps.cwd = root;
@@ -594,7 +594,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     ], deps)).toBe(4);
 
     const calls = vi.mocked(deps.fetch).mock.calls.map(([url]) => String(url));
-    expect(calls[0]).toBe("https://platform.example.test/api/v1/auth/key-info");
+    expect(calls[0]).toBe("https://harness.hunter-z.com/api/v1/auth/key-info");
     expect(calls.length).toBeGreaterThan(1);
     // 补全成功：后续进入真实同步传输（网络失败 → REMOTE_UNAVAILABLE 而非 fail closed）。
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
@@ -611,7 +611,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     delete deps.pushPull;
     deps.cwd = root;
     deps.env = {
-      HUNTER_REMOTE_SYNC_URL: "https://platform.example.test",
+      HUNTER_REMOTE_SYNC_URL: "https://harness.hunter-z.com",
       HUNTER_REMOTE_SYNC_TOKEN: "env-token"
     };
     deps.fetch = vi.fn(async (input: unknown) => {

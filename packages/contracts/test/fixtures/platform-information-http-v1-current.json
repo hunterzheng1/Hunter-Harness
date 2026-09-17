@@ -6,13 +6,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope_by_view": {
-        "branch_monitor": "platform:read",
-        "branch_files": "files:read",
-        "project_materials": "files:read",
-        "project_knowledge": "knowledge:read"
-      }
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationListHttpQuery",
     "normalizer_id": "normalizePlatformInformationListHttpQuery",
@@ -48,8 +42,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "platform:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationListHttpQuery",
     "normalizer_id": "normalizePlatformInformationListHttpQuery",
@@ -85,13 +78,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope_by_view": {
-        "branch_monitor": "platform:read",
-        "branch_files": "files:read",
-        "project_materials": "files:read",
-        "project_knowledge": "knowledge:read"
-      }
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationExportCreateHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -136,13 +123,7 @@
     "request_placement": "path_only",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope_by_view": {
-        "branch_monitor": "platform:read",
-        "branch_files": "files:read",
-        "project_materials": "files:read",
-        "project_knowledge": "knowledge:read"
-      }
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": null,
     "success_status": 200,
@@ -185,13 +166,7 @@
     "request_placement": "path_only",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope_by_view": {
-        "branch_monitor": "platform:read",
-        "branch_files": "files:read",
-        "project_materials": "files:read",
-        "project_knowledge": "knowledge:read"
-      }
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": null,
     "success_status": 200,
@@ -228,8 +203,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RestoreBranchFilesIntent",
     "success_status": 200,
@@ -266,8 +240,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationConfirmRestoreHttpRequest",
     "validator_id": "validatePlatformInformationConfirmRestoreHttpRequest",
@@ -304,8 +277,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "knowledge:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationRetryExtractionHttpRequest",
     "success_status": 200,
@@ -348,13 +320,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope_by_view": {
-        "branch_monitor": "platform:read",
-        "branch_files": "files:read",
-        "project_materials": "files:read",
-        "project_knowledge": "knowledge:read"
-      }
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "PlatformInformationListHttpQuery",
     "normalizer_id": "normalizePlatformInformationListHttpQuery",

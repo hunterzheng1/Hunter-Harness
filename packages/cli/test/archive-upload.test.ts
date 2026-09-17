@@ -49,7 +49,7 @@ describe("hunter-harness archive upload", () => {
     });
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
-      "server_url: https://platform.example.test\ntoken: archive-token\n",
+      "server_url: https://harness.hunter-z.com\ntoken: archive-token\n",
       "utf8"
     );
   });

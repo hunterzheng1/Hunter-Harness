@@ -47,7 +47,7 @@ describe("hunter-harness knowledge query", () => {
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
-      "server_url: https://platform.example.test\ntoken: knowledge-token\nproject_id: prj_knowledge\n",
+      "server_url: https://harness.hunter-z.com\ntoken: knowledge-token\nproject_id: prj_knowledge\n",
       "utf8"
     );
   });

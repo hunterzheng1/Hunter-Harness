@@ -10,7 +10,6 @@ import {
   rollbackLatestCommittedUpdate
 } from "@hunter-harness/core";
 
-import { readLastServerUrl } from "../config/last-server.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import { runConnect } from "./connect.js";
 import { runArchiveUpload } from "./archive-upload.js";
@@ -21,6 +20,9 @@ import {
   formatWorkflowVersionLine,
   readWorkflowFamilyManifest
 } from "../workflow-data/resolve.js";
+
+/** 新用户默认平台地址：固定为生产地址，回车即采用，手动输入以输入为准。 */
+const DEFAULT_PLATFORM_URL = "https://harness.hunter-z.com";
 
 const graphemeSegmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
 
@@ -211,20 +213,11 @@ export async function runPlatformConnectionMenu(
     if (choice !== "" && choice !== "1") return 2;
   }
 
-  // 默认地址：重新绑定时用当前凭据的地址，否则用最近一次成功连接的地址；
-  // 直接回车采用默认值，有输入则以输入为准。
-  const rememberedUrl = await readLastServerUrl(dependencies.env);
-  const defaultUrl = creds?.server_url ?? rememberedUrl;
+  // 平台地址默认值固定为生产地址；直接回车采用默认值，有输入则以输入为准。
   const entered = (await dependencies.prompt(
-    defaultUrl === undefined
-      ? "平台地址（远端使用 https://...；本机可用 http://127.0.0.1:端口）："
-      : `平台地址 [${defaultUrl}]（回车使用默认地址，或输入新地址）：`
+    `平台地址 [${DEFAULT_PLATFORM_URL}]（回车使用默认地址，或输入新地址）：`
   )).trim();
-  const url = entered === "" ? (defaultUrl ?? "") : entered;
-  if (url === "") {
-    dependencies.stdout("已取消（未输入地址）。\n");
-    return 0;
-  }
+  const url = entered === "" ? DEFAULT_PLATFORM_URL : entered;
   return runConnect(url, {
     ...(options.json === undefined ? {} : { json: options.json }),
     ...(options.nonInteractive === undefined ? {} : { nonInteractive: options.nonInteractive }),

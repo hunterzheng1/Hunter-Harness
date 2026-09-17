@@ -6,8 +6,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "knowledge:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "KnowledgeQueryHttpRequest",
     "idempotency_header": "Idempotency-Key",

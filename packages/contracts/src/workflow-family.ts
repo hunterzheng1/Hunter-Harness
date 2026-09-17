@@ -39,7 +39,7 @@ export const workflowFamilyVersionProfileSchema = z.object({
 export const workflowFamilyVersionSchema = z.object({
   family_slug: registrySlugSchema,
   version: registrySemverSchema,
-  profiles: z.array(workflowFamilyVersionProfileSchema).min(1),
+  profiles: z.array(workflowFamilyVersionProfileSchema),
   artifacts: z.array(workflowFamilyBundleArtifactSchema),
   changeNote: z.string().nullable(),
   created_at: z.iso.datetime()
@@ -70,7 +70,7 @@ export const workflowFamilySchema = z.object({
   description: z.string().min(1).max(1000),
   tags: z.array(registrySlugSchema).default([]),
   latest_version: registrySemverSchema.nullable(),
-  required_profiles: z.array(registrySlugSchema).min(1),
+  required_profiles: z.array(registrySlugSchema),
   revision: z.number().int().positive(),
   npmReleases: z.array(npmReleaseRecordSchema).optional().default([]),
   created_at: z.iso.datetime(),
@@ -82,7 +82,7 @@ export const workflowFamilyMutationSchema = z.object({
   displayName: z.string().min(1).max(120),
   description: z.string().min(1).max(1000),
   tags: z.array(registrySlugSchema).default([]),
-  required_profiles: z.array(registrySlugSchema).min(1)
+  required_profiles: z.array(registrySlugSchema).optional().default(["general"])
 }).strict();
 
 export const publishWorkflowFamilyRequestSchema = z.object({

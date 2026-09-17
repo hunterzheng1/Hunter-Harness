@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runPlatformConnectionMenu } from "../src/commands/project-menu.js";
 import type { CommandDependencies } from "../src/commands/configure.js";
-import { readLastServerUrl, writeLastServerUrl } from "../src/config/last-server.js";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -19,26 +18,24 @@ const KEY_INFO = {
   kind: "project-key",
   actor_id: "actor_owner",
   project_id: "prj_demo",
-  project_display_name: "示例项目",
-  scopes: ["push"]
+  project_display_name: "示例项目"
 };
+
+const DEFAULT_PLATFORM_URL = "https://harness.hunter-z.com";
 
 describe("platform connection menu server url default", () => {
   let root: string;
-  let stateRoot: string;
   let stdout: string[];
   let env: Record<string, string>;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-menu-"));
-    stateRoot = await mkdtemp(join(tmpdir(), "hunter-menu-state-"));
     stdout = [];
-    env = { HUNTER_HARNESS_USER_STATE_ROOT: stateRoot };
+    env = {};
   });
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
-    await rm(stateRoot, { recursive: true, force: true });
   });
 
   function dependencies(
@@ -64,25 +61,22 @@ describe("platform connection menu server url default", () => {
     return deps;
   }
 
-  it("offers the remembered url as default and empty input accepts it", async () => {
-    await writeLastServerUrl("https://harness.hunter-z.com", env);
+  it("offers the fixed production url as default and empty input accepts it", async () => {
     const fetchMock = vi.fn(async () => json(KEY_INFO));
     const deps = dependencies(["1", ""], fetchMock as unknown as typeof fetch);
 
     const code = await runPlatformConnectionMenu({}, deps);
     expect(code).toBe(0);
     expect(deps.questions.some((q) =>
-      q.includes("平台地址 [https://harness.hunter-z.com]")
+      q.includes(`平台地址 [${DEFAULT_PLATFORM_URL}]`)
     )).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://harness.hunter-z.com/api/v1/auth/key-info",
+      `${DEFAULT_PLATFORM_URL}/api/v1/auth/key-info`,
       expect.anything()
     );
-    await expect(readLastServerUrl(env)).resolves.toBe("https://harness.hunter-z.com");
   });
 
-  it("typed input overrides the remembered default and becomes the new default", async () => {
-    await writeLastServerUrl("https://old.example.com", env);
+  it("typed input overrides the default url", async () => {
     const fetchMock = vi.fn(async () => json(KEY_INFO));
     const deps = dependencies(["1", "https://new.example.com"], fetchMock as unknown as typeof fetch);
 
@@ -92,11 +86,9 @@ describe("platform connection menu server url default", () => {
       "https://new.example.com/api/v1/auth/key-info",
       expect.anything()
     );
-    await expect(readLastServerUrl(env)).resolves.toBe("https://new.example.com");
   });
 
-  it("rebind defaults to the existing credential url over the remembered one", async () => {
-    await writeLastServerUrl("https://remembered.example.com", env);
+  it("rebind uses the same fixed default instead of the existing credential url", async () => {
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
@@ -104,28 +96,35 @@ describe("platform connection menu server url default", () => {
       "utf8"
     );
     const fetchMock = vi.fn(async () => json(KEY_INFO));
-    // 已绑定状态：1 = 重新绑定 → 地址提示回车取默认（应为现有凭据地址）
+    // 已绑定状态：1 = 重新绑定 → 地址提示回车取固定默认值（不读现有凭据地址）
     const deps = dependencies(["1", ""], fetchMock as unknown as typeof fetch);
 
     const code = await runPlatformConnectionMenu({}, deps);
     expect(code).toBe(0);
     expect(deps.questions.some((q) =>
-      q.includes("平台地址 [https://existing.example.com]")
+      q.includes(`平台地址 [${DEFAULT_PLATFORM_URL}]`)
     )).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://existing.example.com/api/v1/auth/key-info",
+      `${DEFAULT_PLATFORM_URL}/api/v1/auth/key-info`,
       expect.anything()
     );
   });
 
-  it("keeps cancel-on-empty behavior when no default exists", async () => {
+  it("rebind default also ignores a credential file written with CRLF endings", async () => {
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://existing.example.com\r\ntoken: hh_old_key\r\n",
+      "utf8"
+    );
     const fetchMock = vi.fn(async () => json(KEY_INFO));
     const deps = dependencies(["1", ""], fetchMock as unknown as typeof fetch);
 
     const code = await runPlatformConnectionMenu({}, deps);
     expect(code).toBe(0);
-    expect(deps.questions.some((q) => q.includes("平台地址 ["))).toBe(false);
-    expect(stdout.join("")).toContain("已取消（未输入地址）");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_PLATFORM_URL}/api/v1/auth/key-info`,
+      expect.anything()
+    );
   });
 });

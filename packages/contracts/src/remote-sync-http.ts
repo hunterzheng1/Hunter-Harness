@@ -18,13 +18,9 @@ import {
 import { remoteContentUploadHttpRefSchema } from "./remote-content-upload-http.js";
 
 /** HTTP v1 keeps the same server-authority model as the other project APIs. */
-const remoteSyncHttpScopeValues = ["files:read", "files:write"] as const;
-export const remoteSyncHttpScopeSchema = z.enum(remoteSyncHttpScopeValues);
-
 export const remoteSyncHttpAuthSchema = z.object({
   actor_source: z.literal("authenticated_principal"),
-  project_allowlist_source: z.literal("server_authority"),
-  project_key_scope: remoteSyncHttpScopeSchema
+  project_allowlist_source: z.literal("server_authority")
 }).strict();
 
 export const remoteSyncHttpRequestIdSchema = z.uuid();
@@ -345,13 +341,11 @@ const remoteUnavailable = Object.freeze(["REMOTE_UNAVAILABLE"] as const);
 
 const readAuth = Object.freeze({
   actor_source: "authenticated_principal" as const,
-  project_allowlist_source: "server_authority" as const,
-  project_key_scope: "files:read" as const
+  project_allowlist_source: "server_authority" as const
 });
 const writeAuth = Object.freeze({
   actor_source: "authenticated_principal" as const,
-  project_allowlist_source: "server_authority" as const,
-  project_key_scope: "files:write" as const
+  project_allowlist_source: "server_authority" as const
 });
 
 const operation = <const T extends object>(
@@ -558,7 +552,6 @@ export const REMOTE_SYNC_HTTP_OPERATIONS = Object.freeze({
   })
 });
 
-export type RemoteSyncHttpScope = z.infer<typeof remoteSyncHttpScopeSchema>;
 export type RemoteSyncHttpAuth = z.infer<typeof remoteSyncHttpAuthSchema>;
 export type RemoteSyncHttpRequestHeaders = z.infer<typeof remoteSyncHttpRequestHeadersSchema>;
 export type RemoteSyncLeaseAcquireHttpRequest = z.infer<typeof remoteSyncLeaseAcquireHttpRequestSchema>;

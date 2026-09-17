@@ -3682,7 +3682,7 @@ class ArchiveCorePushTests(unittest.TestCase):
             _write(archive / "spec" / "design.md", "# 设计\n")
             _write(
                 root / ".harness" / "credentials.local.yaml",
-                "server_url: https://platform.example.test\ntoken: token\n",
+                "server_url: https://harness.hunter-z.com\ntoken: token\n",
             )
             completed = subprocess.CompletedProcess(
                 [],
@@ -3719,7 +3719,7 @@ class ArchiveCorePushTests(unittest.TestCase):
             )
             _write(
                 root / ".harness" / "credentials.local.yaml",
-                "server_url: https://platform.example.test\ntoken: token\n",
+                "server_url: https://harness.hunter-z.com\ntoken: token\n",
             )
             completed = subprocess.CompletedProcess(
                 [],

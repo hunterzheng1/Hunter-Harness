@@ -27,12 +27,12 @@ describe("resolveInitConfig (v1.0)", () => {
           adapter: "claude-code",
           profile: "java",
           codebuddy_surface: "ide",
-          server_url: "https://platform.example.test"
+          server_url: "https://harness.hunter-z.com"
         })
       },
       warnings
     );
-    expect(config.server_url).toBe("https://platform.example.test");
+    expect(config.server_url).toBe("https://harness.hunter-z.com");
     expect(warnings.filter((w) => w.startsWith("DEPRECATION:"))).toHaveLength(4);
   });
 
@@ -41,10 +41,10 @@ describe("resolveInitConfig (v1.0)", () => {
     const warnings: string[] = [];
     const config = await resolveInitConfig(
       root,
-      { config: await writeConfig(root, { server_url: "https://platform.example.test" }) },
+      { config: await writeConfig(root, { server_url: "https://harness.hunter-z.com" }) },
       warnings
     );
-    expect(config.server_url).toBe("https://platform.example.test");
+    expect(config.server_url).toBe("https://harness.hunter-z.com");
     expect(warnings).toEqual([]);
   });
 

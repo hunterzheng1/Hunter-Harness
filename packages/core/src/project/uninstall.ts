@@ -28,7 +28,7 @@ export interface UninstallOptions {
   keepData?: boolean;
   /** 同时清理用户级目录（状态根、~/.hunter-harness、全局 skills 投影）。 */
   global?: boolean;
-  /** 用户级状态根（含 last-server.json 与 recovery/），由 CLI 解析后传入。 */
+  /** 用户级状态根（recovery/ 及历史 last-server 残留），由 CLI 解析后传入。 */
   userStateRoot?: string;
   userHome?: string;
 }
@@ -474,7 +474,7 @@ export async function uninstallHarness(options: UninstallOptions): Promise<Unins
     if (options.userStateRoot !== undefined) {
       const info = await statOrNull(options.userStateRoot);
       if (info !== null && info.isDirectory()) {
-        await deleteDir(ctx, options.userStateRoot, "用户级 harness 状态（last-server/recovery）");
+        await deleteDir(ctx, options.userStateRoot, "用户级 harness 状态（recovery 与历史 last-server 残留）");
       }
     }
     if (userHome !== undefined) {

@@ -11,7 +11,6 @@ import {
   REMOTE_CONTENT_UPLOAD_HTTP_ERROR_CODES,
   REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS,
   remoteContentUploadHttpRecordHash,
-  remoteContentUploadHttpScopeSchema,
   validateRemoteContentUploadHttpRequestDescriptor,
   validateRemoteContentUploadHttpErrorEnvelope,
   validateRemoteContentUploadHttpResult,
@@ -108,10 +107,7 @@ describe("remote content upload HTTP v1 contract", () => {
     }
   });
 
-  it("freezes one binary upload plus scoped ambiguity lookup under server authority", () => {
-    expect(remoteContentUploadHttpScopeSchema.options).toEqual([
-      "archive:read", "archive:write", "files:read", "files:write"
-    ]);
+  it("freezes bounded binary upload and ambiguity lookup under server authority", () => {
     expect([
       REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES,
       REMOTE_CONTENT_UPLOAD_HTTP_MAX_CHUNK_BYTES,
@@ -127,8 +123,7 @@ describe("remote content upload HTTP v1 contract", () => {
       body_transport: "single_bounded_stream",
       auth: {
         actor_source: "authenticated_principal",
-        project_allowlist_source: "server_authority",
-        project_key_scope: "archive:write"
+        project_allowlist_source: "server_authority"
       },
       request_descriptor_schema: "RemoteContentUploadHttpRequestDescriptor",
       success_status: 201,
@@ -154,22 +149,19 @@ describe("remote content upload HTTP v1 contract", () => {
       request_placement: "path_and_headers",
       request_descriptor_schema: "RemoteContentUploadHttpStatusDescriptor",
       success_status: 200,
-      success_schema: "RemoteContentUploadHttpStatus",
-      auth: { project_key_scope: "archive:read" }
+      success_schema: "RemoteContentUploadHttpStatus"
     });
     expect(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS.upload_remote_sync_file).toMatchObject({
       method: "POST",
       path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload",
       operation_id: "stageRemoteSyncFileUpload",
       request_media_type: "application/octet-stream",
-      auth: { project_key_scope: "files:write" },
       request_descriptor_schema: "RemoteContentUploadHttpRequestDescriptor"
     });
     expect(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS.remote_sync_file_status).toMatchObject({
       method: "GET",
       path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload/status",
       operation_id: "getRemoteSyncFileUploadStatus",
-      auth: { project_key_scope: "files:read" },
       request_descriptor_schema: "RemoteContentUploadHttpStatusDescriptor"
     });
     expect(JSON.stringify(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS)).not.toMatch(

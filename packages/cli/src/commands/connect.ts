@@ -11,7 +11,6 @@ import {
   writeLocalCredentials
 } from "@hunter-harness/core";
 
-import { writeLastServerUrl } from "../config/last-server.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import type { CommandDependencies } from "./configure.js";
@@ -30,7 +29,6 @@ interface KeyInfo {
   actor_id?: string;
   project_id?: string;
   project_display_name?: string;
-  scopes?: string[];
   label?: string;
 }
 
@@ -233,8 +231,6 @@ export async function runConnect(
     if (info.project_id !== undefined) {
       await bindProjectIdInProjectYaml(dependencies.cwd, info.project_id);
     }
-    // 记住本次成功连接的地址，作为下次绑定提示的默认值（失败静默，不影响连接）
-    await writeLastServerUrl(serverUrl, dependencies.env);
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
       return fail("CREDENTIALS_INVALID", error.message, 3);
@@ -246,12 +242,10 @@ export async function runConnect(
   const safeProjectDisplayName = info.project_display_name === undefined
     ? undefined
     : sanitizeTerminalText(info.project_display_name);
-  const safeScopes = info.scopes?.map(sanitizeTerminalText);
   const summaryLines = [
     "已连接 " + serverUrl,
     "凭据类型：" + safeKind +
       (safeProjectDisplayName === undefined ? "" : "（项目 " + safeProjectDisplayName + "）"),
-    ...(safeScopes === undefined ? [] : ["权限范围：" + safeScopes.join(", ")]),
     "已写入 .harness/credentials.local.yaml（已加入 .gitignore）。"
   ];
   if (options.json === true) {
@@ -269,7 +263,6 @@ export async function runConnect(
         ...(info.project_display_name === undefined
           ? {}
           : { project_display_name: info.project_display_name }),
-        ...(info.scopes === undefined ? {} : { scopes: info.scopes.join(",") }),
         ...(localProjectId !== null &&
           keyProjectId !== undefined &&
           localProjectId !== keyProjectId

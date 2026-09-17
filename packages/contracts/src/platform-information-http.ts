@@ -2,7 +2,6 @@ import { z } from "zod";
 
 import type {
   knowledgeExtractionRetryIntentSchema,
-  platformInformationViewSchema,
 } from "./platform-information.js";
 import {
   restoreBranchFilesConfirmationIntentSchema,
@@ -18,13 +17,6 @@ const cursorSchema = z
 const projectIdSchema = z.string().regex(/^prj_[A-Za-z0-9_-]{1,156}$/u);
 const idSchema = z.string().min(1).max(160);
 const hashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
-
-export const platformInformationProjectKeyScopeSchema = z.enum([
-  "platform:read",
-  "files:read",
-  "knowledge:read",
-  "knowledge:write",
-]);
 
 /** Public query fields only. Actor, project allowlist, view policy and sort are injected by Server authority. */
 export const platformInformationListHttpQuerySchema = z
@@ -220,17 +212,6 @@ const retryErrors = Object.freeze({
 const listAuth = Object.freeze({
   actor_source: "authenticated_principal" as const,
   project_allowlist_source: "server_authority" as const,
-  project_key_scope_by_view: Object.freeze({
-    branch_monitor: "platform:read" as const,
-    branch_files: "files:read" as const,
-    project_materials: "files:read" as const,
-    project_knowledge: "knowledge:read" as const,
-  }) satisfies Readonly<
-    Record<
-      z.infer<typeof platformInformationViewSchema>,
-      "files:read" | "knowledge:read" | "platform:read"
-    >
-  >,
 });
 
 function operation<const T extends object>(
@@ -266,7 +247,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope: "platform:read" as const,
     }),
     request_schema: "PlatformInformationListHttpQuery" as const,
     normalizer_id: "normalizePlatformInformationListHttpQuery" as const,
@@ -282,7 +262,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope_by_view: listAuth.project_key_scope_by_view,
     }),
     request_schema: "PlatformInformationExportCreateHttpRequest" as const,
     idempotency_header: "Idempotency-Key" as const,
@@ -299,7 +278,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope_by_view: listAuth.project_key_scope_by_view,
     }),
     request_schema: null,
     success_status: 200 as const,
@@ -340,7 +318,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope: "files:read" as const,
     }),
     request_schema: "RestoreBranchFilesIntent" as const,
     success_status: 200 as const,
@@ -355,7 +332,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope: "files:read" as const,
     }),
     request_schema: "PlatformInformationConfirmRestoreHttpRequest" as const,
     validator_id: "validatePlatformInformationConfirmRestoreHttpRequest" as const,
@@ -371,7 +347,6 @@ export const PLATFORM_INFORMATION_HTTP_OPERATIONS = Object.freeze({
     auth: Object.freeze({
       actor_source: "authenticated_principal" as const,
       project_allowlist_source: "server_authority" as const,
-      project_key_scope: "knowledge:write" as const,
     }),
     request_schema: "PlatformInformationRetryExtractionHttpRequest" as const,
     success_status: 200 as const,

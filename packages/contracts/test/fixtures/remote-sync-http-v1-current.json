@@ -6,8 +6,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncLeaseAcquireHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -48,8 +47,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncLeaseRenewHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -93,8 +91,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncLeaseReleaseHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -138,8 +135,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncSnapshotHttpRequest",
     "success_status": 200,
@@ -174,8 +170,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncContentStreamHttpRequest",
     "success_status": 200,
@@ -226,8 +221,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncPushPrepareHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -278,8 +272,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncPushCommitHttpRequest",
     "idempotency_header": "Idempotency-Key",
@@ -327,8 +320,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncPushStatusHttpRequest",
     "success_status": 200,
@@ -363,8 +355,7 @@
     "request_placement": "path_and_query",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:write"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncPushReceiptHttpRequest",
     "success_status": 200,
@@ -399,8 +390,7 @@
     "request_placement": "path_and_json_body",
     "auth": {
       "actor_source": "authenticated_principal",
-      "project_allowlist_source": "server_authority",
-      "project_key_scope": "files:read"
+      "project_allowlist_source": "server_authority"
     },
     "request_schema": "RemoteSyncPullHttpRequest",
     "idempotency_header": "Idempotency-Key",

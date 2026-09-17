@@ -44,19 +44,18 @@ describe("hunter-harness connect", () => {
       kind: "project-key",
       actor_id: "actor_owner",
       project_id: "prj_demo",
-      project_display_name: "示例项目",
-      scopes: ["push", "knowledge:read", "files:read"]
+      project_display_name: "示例项目"
     }));
 
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { json: true },
       dependencies(fetchMock as unknown as typeof fetch)
     );
     expect(code).toBe(0);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://platform.example.test/api/v1/auth/key-info",
+      "https://harness.hunter-z.com/api/v1/auth/key-info",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer hh_test_key" })
       })
@@ -66,7 +65,7 @@ describe("hunter-harness connect", () => {
       await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8")
     ) as { token: string; server_url: string; project_display_name: string; actor_id: string };
     expect(credentials.token).toBe("hh_test_key");
-    expect(credentials.server_url).toBe("https://platform.example.test");
+    expect(credentials.server_url).toBe("https://harness.hunter-z.com");
     expect(credentials.project_display_name).toBe("示例项目");
     expect(credentials.actor_id).toBe("actor_owner");
 
@@ -85,7 +84,7 @@ describe("hunter-harness connect", () => {
   it("rejects an invalid key without writing credentials", async () => {
     const fetchMock = vi.fn(async () => json({ error: { code: "TOKEN_INVALID" } }, 401));
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       {},
       dependencies(fetchMock as unknown as typeof fetch)
     );
@@ -100,8 +99,7 @@ describe("hunter-harness connect", () => {
     const fetchMock = vi.fn(async () => json({
       kind: "project-key",
       actor_id: "actor_owner",
-      project_id: "prj_local",
-      scopes: ["push"]
+      project_id: "prj_local"
     }));
 
     const code = await runConnect(
@@ -121,18 +119,17 @@ describe("hunter-harness connect", () => {
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
-      "project_display_name: 旧项目名称\nproject_id: prj_old\nserver_url: https://platform.example.test\ntoken: old-token\n",
+      "project_display_name: 旧项目名称\nproject_id: prj_old\nserver_url: https://harness.hunter-z.com\ntoken: old-token\n",
       "utf8"
     );
     const fetchMock = vi.fn(async () => json({
       kind: "project-key",
       actor_id: "actor_owner",
-      project_id: "prj_new",
-      scopes: ["push"]
+      project_id: "prj_new"
     }));
 
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { key: "hh_new_key", nonInteractive: true, rebind: true },
       dependencies(fetchMock as unknown as typeof fetch)
     );
@@ -151,11 +148,10 @@ describe("hunter-harness connect", () => {
       actor_id: "actor_owner",
       project_id: "prj_demo",
       project_display_name: "安全名称\u001b[31m\n伪造行",
-      scopes: ["push\n伪造权限"]
     }));
 
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { key: "hh_test_key" },
       dependencies(fetchMock as unknown as typeof fetch)
     );
@@ -166,7 +162,6 @@ describe("hunter-harness connect", () => {
     expect(output.split("\n")).not.toContain("伪造行");
     expect(output).toContain("安全名称 伪造行");
     expect(output).toContain("project-key 伪造类型");
-    expect(output).toContain("push 伪造权限");
   });
 
   it("requires https for non-loopback hosts", async () => {
@@ -181,7 +176,7 @@ describe("hunter-harness connect", () => {
 
   it("requires --key in non-interactive mode", async () => {
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { nonInteractive: true },
       dependencies(vi.fn() as unknown as typeof fetch)
     );
@@ -208,11 +203,10 @@ describe("hunter-harness connect", () => {
     const fetchMock = vi.fn(async () => json({
       kind: "project-key",
       actor_id: "actor_owner",
-      project_id: "prj_new",
-      scopes: ["push"]
+      project_id: "prj_new"
     }));
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { key: "hh_test_key", nonInteractive: true, yes: true },
       dependencies(fetchMock as unknown as typeof fetch)
     );
@@ -241,11 +235,10 @@ describe("hunter-harness connect", () => {
     const fetchMock = vi.fn(async () => json({
       kind: "project-key",
       actor_id: "actor_owner",
-      project_id: "prj_new",
-      scopes: ["push"]
+      project_id: "prj_new"
     }));
     const code = await runConnect(
-      "https://platform.example.test",
+      "https://harness.hunter-z.com",
       { key: "hh_test_key", nonInteractive: true, rebind: true },
       dependencies(fetchMock as unknown as typeof fetch)
     );

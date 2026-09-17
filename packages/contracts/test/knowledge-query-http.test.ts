@@ -68,8 +68,7 @@ describe("Knowledge Query HTTP v1 shared contract", () => {
     expect(KNOWLEDGE_QUERY_HTTP_OPERATIONS).toEqual(frozen);
     expect(KNOWLEDGE_QUERY_HTTP_OPERATIONS.query.auth).toEqual({
       actor_source: "authenticated_principal",
-      project_allowlist_source: "server_authority",
-      project_key_scope: "knowledge:read"
+      project_allowlist_source: "server_authority"
     });
     expect(KNOWLEDGE_QUERY_HTTP_OPERATIONS.query.idempotency_header).toBe("Idempotency-Key");
     expect(KNOWLEDGE_QUERY_HTTP_OPERATIONS.query.success_status).toBe(201);

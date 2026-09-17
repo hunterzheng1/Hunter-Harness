@@ -375,8 +375,7 @@ const forbidden = Object.freeze(["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_S
 const invalid = Object.freeze(["KNOWLEDGE_QUERY_INVALID"] as const);
 const queryAuth = Object.freeze({
   actor_source: "authenticated_principal" as const,
-  project_allowlist_source: "server_authority" as const,
-  project_key_scope: "knowledge:read" as const
+  project_allowlist_source: "server_authority" as const
 });
 
 const queryOperation = Object.freeze({

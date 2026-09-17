@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 
 import { uninstallHarness, type UninstallReport } from "@hunter-harness/core";
 
-import { resolveUserStateRoot } from "../config/last-server.js";
+import { resolveUserStateRoot } from "../config/user-state.js";
 import type { CommandDependencies } from "./configure.js";
 
 export interface UninstallCommandOptions {

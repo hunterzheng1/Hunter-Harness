@@ -36,7 +36,6 @@ describe("stage 13 platform information HTTP contract", () => {
       expect(operation.request_id_header).toBe("X-Request-Id");
       expect(operation.errors[401]).toEqual(["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"]);
     }
-    expect(PLATFORM_INFORMATION_HTTP_OPERATIONS.list.auth.project_key_scope_by_view.branch_monitor).toBe("platform:read");
     expect(PLATFORM_INFORMATION_HTTP_OPERATIONS.confirm_restore).toMatchObject({ validator_id: "validatePlatformInformationConfirmRestoreHttpRequest" });
     expect(validatePlatformInformationConfirmRestoreHttpRequest(JSON.stringify({ preview_receipt: {}, confirmation_intent: {} }), { project_id: "prj_demo", client_id: "platform_console" })).toEqual({ ok: false, reason_code: "BRANCH_FILES_PULL_CONFIRMATION_INVALID" });
   });
