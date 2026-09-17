@@ -440,7 +440,7 @@ function validTransactionRecord(value: unknown): value is PlanFinalizationTransa
   if (!committedState && (hasPublication || value.event_outbox_id !== null)) return false;
   if (value.plan_hash === null !== (value.manifest_hash === null) ||
       value.plan_hash === null !== (value.filesystem_binding === null) ||
-      value.filesystem_binding !== null && value.ownership_paths.length !== 8 ||
+      value.filesystem_binding !== null && value.ownership_paths.length !== 6 ||
       value.filesystem_binding === null && value.ownership_paths.length !== 0) return false;
   if (value.filesystem_binding !== null) {
     const binding = value.filesystem_binding as Record<string, unknown>;

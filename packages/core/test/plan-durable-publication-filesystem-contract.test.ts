@@ -25,13 +25,13 @@ function publicationPlan(firstPayloadBytes = 0, additionalPayloadBytes: readonly
   const payloads = paths.map((path, index) => {
     const requestedBytes = index === 0 ? firstPayloadBytes : additionalPayloadBytes[index - 1] ?? 0;
     const serialized_content = requestedBytes > 0 ? "x".repeat(requestedBytes) :
-      index < 4 ? `# ${path}\n` : `{"path":"${path}"}\n`;
+      index < 2 ? `# ${path}\n` : `{"path":"${path}"}\n`;
     const bytes = [...Buffer.from(serialized_content, "utf8")];
     return {
       path,
-      artifact_type: index < 4 ? ["design", "plan", "test_scenarios", "implementation_detail"][index] : path.slice(5, -5),
-      format: index < 4 ? "markdown" : "json",
-      classification: index < 4 ? (index === 3 ? "compatibility_derived" : "human_truth") : "machine_derived",
+      artifact_type: index < 2 ? ["design", "plan"][index] : path.slice(5, -5),
+      format: index < 2 ? "markdown" : "json",
+      classification: index < 2 ? "human_truth" : "machine_derived",
       serialized_content,
       bytes,
       byte_length: bytes.length,
@@ -87,14 +87,12 @@ function makeAuthority() {
 }
 
 describe("Stage12-Plan durable publication filesystem contract", () => {
-  it("keeps the host-selected target root separate from the exact eight Plan paths", () => {
+  it("keeps the host-selected target root separate from the exact six Plan paths", () => {
     const paths = planDurablePublicationTargetPaths("change-contract");
 
     expect(paths).toEqual([
       "plans/change-contract-design.md",
       "plans/change-contract-plan.md",
-      "plans/change-contract-test-scenarios.md",
-      "plans/change-contract-implementation-detail.md",
       "meta/plan-profile.json",
       "meta/worktree.json",
       "meta/implementation-checkpoints.json",

@@ -35,7 +35,7 @@ function plan(): PlanArtifactPublicationPlan {
       path,
       artifact_type: path.endsWith(".md") ? "plan_document" : "plan_meta",
       format: path.endsWith(".md") ? "markdown" : "json",
-      classification: index < 4 ? "human_truth" : "machine_derived",
+      classification: index < 2 ? "human_truth" : "machine_derived",
       serialized_content: content,
       bytes: Object.freeze(bytes),
       byte_length: bytes.length,
@@ -102,7 +102,7 @@ describe("FS plan durable publication port", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("prepares, applies and reads back the exact eight targets with a valid journal", async () => {
+  it("prepares, applies and reads back the exact six targets with a valid journal", async () => {
     const port = createFsPlanPublicationPort({ projectRoot: root, projectId: PROJECT_ID });
     const prepared = await port.prepare(request(root));
     expect(prepared).toMatchObject({ operation_id: OPERATION_ID, state: "prepared" });
@@ -124,7 +124,7 @@ describe("FS plan durable publication port", () => {
     const readback = await port.readback(OPERATION_ID);
     expect(readback.journal_committed).toBe(true);
     expect(readback.live_manifest_hash).toBe(plan().manifest_hash);
-    expect(Object.keys(readback.payload_hashes)).toHaveLength(8);
+    expect(Object.keys(readback.payload_hashes)).toHaveLength(6);
   });
 
   it("is idempotent on replayed prepare/apply and rejects tampered staging", async () => {

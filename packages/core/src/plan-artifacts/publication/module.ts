@@ -139,8 +139,17 @@ function list(title: string, values: readonly string[]): string {
   return `## ${title}\n\n${values.length === 0 ? "- None." : sorted(values).map((value) => `- ${markdown(value)}`).join("\n")}\n`;
 }
 
-function frontmatter(type: string, hash: string): string {
-  return `---\nschema_version: 2\nartifact_type: ${type}\ncontent_hash: ${hash}\ngenerated: true\n---\n`;
+/**
+ * 两件套合并文档的 frontmatter：主产物保持 artifact_type/content_hash 原语义，
+ * 被并入的产物（design←execution detail、plan←test scenarios）以 included_*
+ * 键记录身份，agent 阅读与机器 grep 都能感知合并来源。
+ */
+function frontmatter(type: string, hash: string,
+  included?: { readonly type: string; readonly hash: string }): string {
+  return `---\nschema_version: 2\nartifact_type: ${type}\ncontent_hash: ${hash}\n` +
+    (included === undefined ? "" :
+      `included_artifact_type: ${included.type}\nincluded_content_hash: ${included.hash}\n`) +
+    "generated: true\n---\n";
 }
 
 /** 哈希引用 → 人类可读标签的查找表，由 design 真相源构建。 */
@@ -211,7 +220,8 @@ function renderOwnershipRefs(refs: readonly string[], lookup: RefLookup): string
     `  - ${labeledRef(ref, lookup.ownership.get(ref))}`)].join("\n");
 }
 
-function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): string {
+function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"],
+  detail: TrustedPlanArtifactSet["detail"]): string {
   const value = artifact.content;
   const scopeLabels = new Map(value.approved_scopes.map((item) => [item.scope_ref, item.text]));
   const scopeRefs = (refs: readonly string[]): string =>
@@ -220,7 +230,8 @@ function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): stri
       const label = scopeLabels.get(ref);
       return label === undefined ? refSpan(ref) : `${markdown(label)} (${refSpan(ref)})`;
     }).join(", ");
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Design\n\n` +
+  return `${frontmatter(artifact.artifact_type, artifact.content_hash,
+    { type: detail.artifact_type, hash: detail.content_hash })}\n# Design\n\n` +
     `## Goal\n\n${markdown(value.goal)}\n\n## User-visible outcome\n\n${markdown(value.user_visible_outcome)}\n\n` +
     list("In scope", value.in_scope) + "\n" + list("Out of scope", value.out_of_scope) + "\n" +
     `## Behavior contract\n\n${markdown(value.behavior_contract)}\n\n` + list("Constraints", value.constraints) + "\n" +
@@ -241,7 +252,8 @@ function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): stri
       compareCodepoint(left.ownership_ref, right.ownership_ref)).map((item) =>
       `- ${markdown(item.ownership_ref)}: ${markdown(item.path)}\n` +
       `  - Evidence refs: ${item.evidence_refs.length === 0 ? "None" : sorted(item.evidence_refs).map(refSpan).join(", ")}\n` +
-      `  - Approved scopes: ${scopeRefs(item.approved_scope_refs)}`).join("\n")}\n`;
+      `  - Approved scopes: ${scopeRefs(item.approved_scope_refs)}`).join("\n")}\n` +
+    `\n---\n\n${detailBody(detail)}`;
 }
 
 /**
@@ -253,7 +265,7 @@ function appendixEntry(id: string, lines: readonly string[]): string {
 }
 
 function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
-  lookup: RefLookup): string {
+  scenarios: TrustedPlanArtifactSet["human"]["test_scenarios"], lookup: RefLookup): string {
   const bodies: string[] = [];
   const appendix: string[] = [];
   for (const task of artifact.content.tasks) {
@@ -271,10 +283,12 @@ function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
     ].filter((line) => line !== ""));
     if (entry !== "") appendix.push(entry);
   }
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Plan\n\n## Change key\n\n` +
+  return `${frontmatter(artifact.artifact_type, artifact.content_hash,
+      { type: scenarios.artifact_type, hash: scenarios.content_hash })}\n# Plan\n\n## Change key\n\n` +
     `${artifact.content.change_key}\n\n## Tasks\n\n${bodies.join("\n\n")}\n` +
     (appendix.length === 0 ? "" :
-      `\n## 引用附录\n\n各任务的引用与证据绑定，正文仅保留执行要素。\n\n${appendix.join("\n\n")}\n`);
+      `\n## 引用附录（任务）\n\n各任务的引用与证据绑定，正文仅保留执行要素。\n\n${appendix.join("\n\n")}\n`) +
+    `\n---\n\n${renderScenarios(scenarios, lookup)}`;
 }
 
 function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenarios"],
@@ -301,17 +315,20 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
     ].filter((line) => line !== ""));
     if (entry !== "") appendix.push(entry);
   }
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Test Scenarios\n\n` +
+  // 正文由 plan.md 合并承载：场景产物身份并入 plan 的 included_* frontmatter，
+  // 这里只产出 `# Test Scenarios` 起的场景节。
+  return `# Test Scenarios\n\n` +
     bodies.join("\n\n") +
     `\n\n## Coverage\n\n${artifact.content.coverage.map((item) =>
       `- ${item.coverage_dimension}: ${item.applicability}; scenarios=${item.scenario_refs.join(",") || "none"}` +
       (item.not_applicable_reason === undefined ? "" : `; reason=${item.not_applicable_reason}`)).join("\n")}\n` +
     (appendix.length === 0 ? "" :
-      `\n## 引用附录\n\n各场景的证据/任务/需求引用与可执行测试映射。\n\n${appendix.join("\n\n")}\n`);
+      `\n## 引用附录（场景）\n\n各场景的证据/任务/需求引用与可执行测试映射。\n\n${appendix.join("\n\n")}\n`);
 }
 
-function renderCompatibility(artifact: TrustedPlanArtifactSet["detail"]): string {
-  return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Implementation Detail\n\n` +
+/** 执行参考正文（无 frontmatter）：作为 `# Implementation Detail` 节并入 design.md。 */
+function detailBody(artifact: TrustedPlanArtifactSet["detail"]): string {
+  return `# Implementation Detail\n\n` +
     Object.entries(artifact.content).map(([key, value]) =>
       `## ${key.replaceAll("_", " ")}\n\n${typeof value === "string" ? value : `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``}`
     ).join("\n\n") + "\n";
@@ -328,10 +345,10 @@ function payload(path: string, artifact: ArtifactIdentity, format: PlanPublicati
 
 function paths(changeKey: string): readonly string[] {
   return deepFreeze([
+    // 两件套（11-M3）：design.md 并入执行参考节（原 implementation-detail.md），
+    // plan.md 并入测试场景节（原 test-scenarios.md）；JSON 真相源产物不变。
     `plans/${changeKey}-design.md`,
     `plans/${changeKey}-plan.md`,
-    `plans/${changeKey}-test-scenarios.md`,
-    `plans/${changeKey}-implementation-detail.md`,
     // 不是 meta/gate-policy.json：那个文件的权威写者是 Python 的 classify
     // （schemaVersion:1 + requiredGateDag，run/test 门禁靠它开门）。这里发布的是
     // 派生视图，占用同一个文件名会在阶段 8 把它原子覆盖掉，之后 gate begin 直接
@@ -390,19 +407,20 @@ export function planArtifactPublication(input: unknown,
   const value = parsed.trusted;
   let payloads: PlanPublicationPayload[];
   try { const lookup = buildRefLookup(value.human.design); payloads = [
-    payload(targetPaths[0] as string, value.human.design, "markdown", "human_truth", renderDesign(value.human.design)),
-    payload(targetPaths[1] as string, value.human.plan, "markdown", "human_truth", renderPlan(value.human.plan, lookup)),
-    payload(targetPaths[2] as string, value.human.test_scenarios, "markdown", "human_truth",
-      renderScenarios(value.human.test_scenarios, lookup)),
-    payload(targetPaths[3] as string, value.detail, "markdown", "compatibility_derived",
-      renderCompatibility(value.detail)),
-    payload(targetPaths[4] as string, value.machine.gate_policy, "json", "machine_derived",
+    // 合并渲染：design.md 吸收 execution detail，plan.md 吸收 test scenarios。
+    // 主产物的 artifact_type/semantic_content_hash 记录文件身份；被并入产物的哈希
+    // 由 frontmatter 的 included_content_hash 与 artifact_derivation_receipt_refs 双重绑定。
+    payload(targetPaths[0] as string, value.human.design, "markdown", "human_truth",
+      renderDesign(value.human.design, value.detail)),
+    payload(targetPaths[1] as string, value.human.plan, "markdown", "human_truth",
+      renderPlan(value.human.plan, value.human.test_scenarios, lookup)),
+    payload(targetPaths[2] as string, value.machine.gate_policy, "json", "machine_derived",
       canonicalJson(value.machine.gate_policy) + "\n"),
-    payload(targetPaths[5] as string, value.machine.worktree, "json", "machine_derived",
+    payload(targetPaths[3] as string, value.machine.worktree, "json", "machine_derived",
       canonicalJson(value.machine.worktree) + "\n"),
-    payload(targetPaths[6] as string, value.machine.implementation_checkpoints, "json", "machine_derived",
+    payload(targetPaths[4] as string, value.machine.implementation_checkpoints, "json", "machine_derived",
       canonicalJson(value.machine.implementation_checkpoints) + "\n"),
-    payload(targetPaths[7] as string, value.machine.scenario_manifest, "json", "machine_derived",
+    payload(targetPaths[5] as string, value.machine.scenario_manifest, "json", "machine_derived",
       canonicalJson(value.machine.scenario_manifest) + "\n")
   ]; } catch { return deepFreeze({ ok: false, reason_code: "PLAN_ARTIFACT_PUBLICATION_INPUT_INVALID" }); }
   if (payloads.reduce((total, item) => total + item.byte_length, 0) > MAX_PUBLICATION_BYTES) {

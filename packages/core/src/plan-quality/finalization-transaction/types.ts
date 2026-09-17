@@ -17,7 +17,8 @@ export const PLAN_FINALIZATION_TRANSACTION_SCHEMA_VERSION = 1 as const;
 export const PLAN_FINALIZATION_TRANSACTION_RECORD_KIND = "plan_finalization_transaction" as const;
 export const PLAN_FINALIZATION_EVENT_OUTBOX_SCHEMA_VERSION = 1 as const;
 export const PLAN_FINALIZATION_EVENT_OUTBOX_RECORD_KIND = "plan_finalization_event_outbox" as const;
-export const PLAN_FINALIZATION_CANONICAL_PAYLOAD_COUNT = 8 as const;
+// 11-M3 两件套：2 人类产物（design/plan 合并文档）+ 4 机器派生产物。
+export const PLAN_FINALIZATION_CANONICAL_PAYLOAD_COUNT = 6 as const;
 
 export type PlanFinalizationEventCommitStatus =
   | "publication_committed_event_pending"

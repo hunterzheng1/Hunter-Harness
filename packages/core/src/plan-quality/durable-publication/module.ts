@@ -15,9 +15,10 @@ const SHA = /^sha256:[a-f0-9]{64}$/u;
 const ID = /^[a-z][a-z0-9_.:-]{0,159}$/u;
 const RECEIPT_ID = /^plan_durable_publication_receipt:[a-f0-9]{64}$/u;
 const DURABLE_EVENT_REF = /^(?:plan_event:[a-f0-9]{64}|audit_event:sha256:[a-f0-9]{64})$/u;
+// 11-M3 两件套：design.md 并入执行参考节、plan.md 并入测试场景节，
+// 因此磁盘发布目标为 2 人类产物 + 4 机器派生产物。
 const PATHS = (changeKey: string): readonly string[] => [
   "plans/" + changeKey + "-design.md", "plans/" + changeKey + "-plan.md",
-  "plans/" + changeKey + "-test-scenarios.md", "plans/" + changeKey + "-implementation-detail.md",
   "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
 ];
 function canonicalOwnershipPath(value: unknown): value is string {
@@ -124,7 +125,7 @@ function validPlan(value: unknown): value is PlanDurablePublicationCommitInput["
       !text(value.approval_receipt_ref, 512) || !Array.isArray(value.artifact_derivation_receipt_refs) ||
       value.artifact_derivation_receipt_refs.length !== 3 || value.artifact_derivation_receipt_refs.some((item) => typeof item !== "string" || !SHA.test(item)) ||
        !Array.isArray(value.ownership_paths) || value.ownership_paths.some((item) => !canonicalOwnershipPath(item)) ||
-      !Array.isArray(value.payloads) || value.payloads.length !== 8) return false;
+      !Array.isArray(value.payloads) || value.payloads.length !== 6) return false;
   const paths = PATHS(value.change_key);
   const payloads = value.payloads as readonly Record<string, unknown>[];
   if (payloads.some((item) => !record(item) || !exact(item, ["path", "artifact_type", "format", "classification", "serialized_content",
@@ -139,7 +140,7 @@ function validPlan(value: unknown): value is PlanDurablePublicationCommitInput["
    if (!Array.isArray(value.manifest.artifact_derivation_receipt_refs) || value.manifest.artifact_derivation_receipt_refs.length !== 3 ||
        value.manifest.artifact_derivation_receipt_refs.some((item) => typeof item !== "string" || !SHA.test(item)) ||
        !Array.isArray(value.manifest.ownership_paths) || value.manifest.ownership_paths.some((item) => !canonicalOwnershipPath(item)) ||
-       !Array.isArray(value.manifest.entries) || value.manifest.entries.length !== 8 ||
+       !Array.isArray(value.manifest.entries) || value.manifest.entries.length !== 6 ||
       value.manifest.entries.some((item) => !payloadDescriptor(item)) ||
       hash(value.manifest.entries) !== hash(payloads.map((item) => Object.fromEntries(Object.entries(item)
         .filter(([key]) => key !== "serialized_content" && key !== "bytes")))) ||

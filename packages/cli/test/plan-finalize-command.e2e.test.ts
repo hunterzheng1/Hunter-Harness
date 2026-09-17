@@ -378,7 +378,7 @@ describe("hunter-harness plan finalize (e2e)", () => {
   it("v2 发布之后 Python 门禁仍然开得了门", async () => {
     // 这条是本轮的真正验收：TS 的 e2e 从不调 Python，Python 的 v2 夹具是手写假产物，
     // 于是"发布覆盖门禁文件"这类碰撞可以无声进入默认路径。这里跑真实链路——
-    // classify 写策略 → v2 finalize 发布八 target → gate begin --phase run。
+    // classify 写策略 → v2 finalize 发布六 target → gate begin --phase run。
     const changeDir = join(root, ".harness", "changes", CHANGE_KEY);
     const { fileURLToPath } = await import("node:url");
     const scriptsDir = fileURLToPath(new URL("../../../harness/scripts/", import.meta.url));
@@ -394,7 +394,7 @@ describe("hunter-harness plan finalize (e2e)", () => {
       { cwd: root, encoding: "utf8" });
     expect(classify.status, classify.stderr).toBe(0);
 
-    // 阶段 8：v2 finalize 发布八 target
+    // 阶段 8：v2 finalize 发布六 target
     const outputs: string[] = [];
     expect(await runPlanFinalize({ input: inputPath }, {
       cwd: root,

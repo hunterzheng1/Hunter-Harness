@@ -12,9 +12,9 @@ import {
 
 const changeKey = "change-12-quality";
 const projectId = "project-demo";
+// 11-M3 两件套：2 人类产物（design/plan 为合并文档）+ 4 机器派生产物。
 const paths = [
   "plans/change-12-quality-design.md", "plans/change-12-quality-plan.md",
-  "plans/change-12-quality-test-scenarios.md", "plans/change-12-quality-implementation-detail.md",
   "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
 ];
 function hash(value: unknown): string {
@@ -27,9 +27,9 @@ function plan() {
   const payloads = paths.map((path, index) => {
     const serialized_content = "payload-" + index + "\n";
     const bytes = [...Buffer.from(serialized_content)];
-    const descriptor = { path, artifact_type: index < 4 ? ["design", "plan", "test_scenarios", "implementation_detail"][index] : "machine",
+    const descriptor = { path, artifact_type: index < 2 ? ["design", "plan"][index] : "machine",
       format: path.endsWith(".md") ? "markdown" as const : "json" as const,
-      classification: index < 3 ? "human_truth" as const : index === 3 ? "compatibility_derived" as const : "machine_derived" as const,
+      classification: index < 2 ? "human_truth" as const : "machine_derived" as const,
       byte_length: bytes.length, serialized_sha256: rawHash(serialized_content), semantic_content_hash: hash("semantic-" + index) };
     return { ...descriptor, serialized_content, bytes };
   });
@@ -114,7 +114,7 @@ describe("Stage12-M4T durable publication contract", () => {
       publication_intent_id: value.publication_intent_id, generation: 1 });
     expect((port.calls[0] as Record<string, unknown>)).not.toHaveProperty("event");
     expect((port.calls[0] as Record<string, unknown>)).not.toHaveProperty("events");
-    expect((port.calls[0] as { plan: { payloads: readonly unknown[] } }).plan.payloads).toHaveLength(8);
+    expect((port.calls[0] as { plan: { payloads: readonly unknown[] } }).plan.payloads).toHaveLength(6);
   });
 
   it("resolves an unknown commit with lookup using the exact same identity", async () => {
@@ -245,7 +245,7 @@ describe("Stage12-M4T durable publication contract", () => {
     const module = createDurablePlanPublicationModule(portFor());
     const currentFixture = JSON.parse(await readFile(new URL("./fixtures/durable-publication-v1-current.json", import.meta.url), "utf8")) as Record<string, unknown>;
     const legacyFixture = JSON.parse(await readFile(new URL("./fixtures/durable-publication-v1-finalization-legacy.json", import.meta.url), "utf8")) as Record<string, unknown>;
-    expect(currentFixture.payload_count).toBe(8);
+    expect(currentFixture.payload_count).toBe(6);
     expect(legacyFixture.legacy_readiness).toBe("read_only");
     expect(module.readReceipt({ schema_version: 1, status: "succeeded", finalizer_action: "publish" }))
       .toEqual({ ok: true, mode: "legacy_read_only", source_schema_version: 1 });

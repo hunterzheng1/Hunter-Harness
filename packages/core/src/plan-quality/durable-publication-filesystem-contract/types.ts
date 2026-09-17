@@ -11,7 +11,8 @@ export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_RECORD_KIND =
   "plan_durable_publication_filesystem" as const;
 export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_AUTHORITY_KIND =
   "plan_durable_publication_filesystem_authority" as const;
-export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_PAYLOAD_COUNT = 8 as const;
+// 11-M3 两件套：2 人类产物（design/plan 合并文档）+ 4 机器派生产物。
+export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_PAYLOAD_COUNT = 6 as const;
 
 export type PlanDurablePublicationFilesystemSha256 = PlanDurablePublicationSha256;
 
@@ -56,7 +57,7 @@ export interface PlanDurablePublicationFilesystemBounds {
   readonly max_payload_bytes: 2_000_000;
   readonly max_total_payload_bytes: 8_000_000;
   readonly max_journal_bytes: 65_536;
-  readonly exact_target_count: 8;
+  readonly exact_target_count: 6;
 }
 
 export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_BOUNDS: PlanDurablePublicationFilesystemBounds = Object.freeze({
@@ -73,7 +74,7 @@ export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_BOUNDS: PlanDurablePublicationF
   max_payload_bytes: 2_000_000,
   max_total_payload_bytes: 8_000_000,
   max_journal_bytes: 65_536,
-  exact_target_count: 8
+  exact_target_count: 6
 });
 
 export interface PlanDurablePublicationFilesystemRootIdentity {
@@ -114,7 +115,7 @@ export type PlanDurablePublicationFilesystemSafetyPolicy = {
   readonly atomic_replace: "atomic_replace_set_required";
   readonly fsync: "file_and_parent_directory_required";
   readonly symlink_policy: "reject_symlink_and_reparse_point";
-  readonly target_allowlist: "exact_eight_plan_targets";
+  readonly target_allowlist: "exact_six_plan_targets";
 };
 
 export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_SAFETY_POLICY: PlanDurablePublicationFilesystemSafetyPolicy = Object.freeze({
@@ -122,7 +123,7 @@ export const PLAN_DURABLE_PUBLICATION_FILESYSTEM_SAFETY_POLICY: PlanDurablePubli
   atomic_replace: "atomic_replace_set_required",
   fsync: "file_and_parent_directory_required",
   symlink_policy: "reject_symlink_and_reparse_point",
-  target_allowlist: "exact_eight_plan_targets"
+  target_allowlist: "exact_six_plan_targets"
 });
 
 export interface PlanDurablePublicationFilesystemStagingIdentity {

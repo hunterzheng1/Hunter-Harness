@@ -137,7 +137,7 @@ describe("HP-18：plan publish 编排收口（P3）", () => {
     await fs.writeFile(inputPath, JSON.stringify(input));
   }
 
-  it("首发：一条命令完成 evidence-pack → finalize，八 target 落盘", async () => {
+  it("首发：一条命令完成 evidence-pack → finalize，六 target 落盘", async () => {
     await writeInput(naturalInput());
 
     const out: string[] = [];

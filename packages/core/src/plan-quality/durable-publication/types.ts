@@ -4,7 +4,8 @@ import type {
 } from "../../plan-artifacts/publication/types.js";
 
 export const PLAN_DURABLE_PUBLICATION_SCHEMA_VERSION = 1 as const;
-export const PLAN_DURABLE_PUBLICATION_PAYLOAD_COUNT = 8 as const;
+// 11-M3 两件套：2 人类产物（design/plan 合并文档）+ 4 机器派生产物。
+export const PLAN_DURABLE_PUBLICATION_PAYLOAD_COUNT = 6 as const;
 
 export type PlanDurablePublicationSha256 = `sha256:${string}`;
 

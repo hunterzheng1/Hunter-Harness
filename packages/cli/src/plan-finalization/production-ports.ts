@@ -19,23 +19,23 @@ const sha256 = (value: string): PlanDurablePublicationSha256 =>
 
 const canonicalHash = (value: unknown): PlanDurablePublicationSha256 => sha256(canonicalJson(value));
 
-/** 发布路径权威：ownership 必须恰为八 target 精确集合（T0-2）。 */
+/** 发布路径权威：ownership 必须恰为六 target 精确集合（11-M3 两件套）。 */
 export function createPlanPublicationPathAuthority(): PlanPublicationPathAuthorityPort {
   return Object.freeze({
     verify(input: { change_key: string; paths: readonly string[] }): boolean {
-      return input.paths.length === 8 && planDurablePublicationTargetPaths(input.change_key)
+      return input.paths.length === 6 && planDurablePublicationTargetPaths(input.change_key)
         .every((path, index) => input.paths[index] === path);
     }
   });
 }
 
 /** 生产 renderer：从 finalization evidence 的 quality_verification_input 取出可信产物集，
- * 委托冻结的 planArtifactPublication（纯 Module），路径权威为八 target 精确集合。
+ * 委托冻结的 planArtifactPublication（纯 Module），路径权威为六 target 精确集合。
  *
  * 语义接缝说明（已记录偏离）：planArtifactPublication 的 plan.ownership_paths 携带
  * 任务级产品归属（affected_paths），而 finalization-transaction 与 FS 契约把
- * ownership_paths 定义为"本次发布拥有的八 target 精确集合"。适配器在 plan 层重写为
- * 八 target（manifest 内容不动，manifest_hash 稳定；plan_hash 由事务层一致推导）。 */
+ * ownership_paths 定义为"本次发布拥有的六 target 精确集合"。适配器在 plan 层重写为
+ * 六 target（manifest 内容不动，manifest_hash 稳定；plan_hash 由事务层一致推导）。 */
 export function createPlanFinalizationRenderer(): PlanFinalizationRendererPort {
   const authority = createPlanPublicationPathAuthority();
   return Object.freeze({
@@ -51,7 +51,7 @@ export function createPlanFinalizationRenderer(): PlanFinalizationRendererPort {
       if (!result.ok || result.mode !== "current") {
         throw new Error(result.ok ? "PLAN_ARTIFACT_PUBLICATION_LEGACY_READ_ONLY" : result.reason_code);
       }
-      // 事务层 plan 归一化：ownership（plan 与 manifest 同步）= 排序后的八 target 精确集合；
+      // 事务层 plan 归一化：ownership（plan 与 manifest 同步）= 排序后的六 target 精确集合；
       // manifest_hash 与 publication_intent_id 随之重算（契约要求三层一致）。
       const targetPaths = [...planDurablePublicationTargetPaths(input.context.change_key)]
         .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));

@@ -42,17 +42,17 @@ function authority() {
 }
 
 function plan() {
+  // 11-M3 两件套：2 人类产物（design/plan 为合并文档）+ 4 机器派生产物。
   const paths = [
     `plans/${changeKey}-design.md`, `plans/${changeKey}-plan.md`,
-    `plans/${changeKey}-test-scenarios.md`, `plans/${changeKey}-implementation-detail.md`,
     "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
   ];
   const payloads = paths.map((path, index) => {
     const serialized_content = `${path}\n`;
     const bytes = [...Buffer.from(serialized_content, "utf8")];
-    return { path, artifact_type: index < 4 ? ["design", "plan", "test_scenarios", "implementation_detail"][index] : "machine",
+    return { path, artifact_type: index < 2 ? ["design", "plan"][index] : "machine",
       format: path.endsWith(".md") ? "markdown" as const : "json" as const,
-      classification: index < 4 ? index === 3 ? "compatibility_derived" as const : "human_truth" as const : "machine_derived" as const,
+      classification: index < 2 ? "human_truth" as const : "machine_derived" as const,
       serialized_content, bytes, byte_length: bytes.length, serialized_sha256: rawHash(serialized_content), semantic_content_hash: hash(`semantic-${index}`) };
   });
   const entries = payloads.map((item) => Object.fromEntries(Object.entries(item)

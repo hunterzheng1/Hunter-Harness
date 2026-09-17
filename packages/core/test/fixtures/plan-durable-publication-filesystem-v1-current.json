@@ -13,12 +13,10 @@
       "schema_version": 1,
       "change_key": "change-contract",
       "target_root": "host-selected/plan-root",
-      "target_set_hash": "sha256:579cbe93946e80c9b86af1b28e0f2b0fb6f8f3774e47cc52f76449fa666688e4",
+      "target_set_hash": "sha256:446a958d58267108169b38b37f9ee1bdf0affd0e7164b0b64624ff3c529a23f1",
       "ownership_paths": [
         "plans/change-contract-design.md",
         "plans/change-contract-plan.md",
-        "plans/change-contract-test-scenarios.md",
-        "plans/change-contract-implementation-detail.md",
         "meta/plan-profile.json",
         "meta/worktree.json",
         "meta/implementation-checkpoints.json",
@@ -48,8 +46,6 @@
     "ownership_paths": [
       "plans/change-contract-design.md",
       "plans/change-contract-plan.md",
-      "plans/change-contract-test-scenarios.md",
-      "plans/change-contract-implementation-detail.md",
       "meta/plan-profile.json",
       "meta/worktree.json",
       "meta/implementation-checkpoints.json",
@@ -58,20 +54,18 @@
     "expected_payload_hashes": {
       "plans/change-contract-design.md": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "plans/change-contract-plan.md": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "plans/change-contract-test-scenarios.md": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "plans/change-contract-implementation-detail.md": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "meta/plan-profile.json": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
       "meta/worktree.json": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
       "meta/implementation-checkpoints.json": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
       "meta/scenario-manifest.json": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     },
-    "expected_readback_hash": "sha256:b07424d24881f7dbb899d54e0474cbef93ecfcce5126c64518e8ab1eb6054f79"
+    "expected_readback_hash": "sha256:1b150afc1a5b96fa4a5d24b735ddc3ad650b5bdc8b92b04d0297e21dcfac9818"
   },
   "staging": {
     "schema_version": 1,
     "staging_id": "plan_stage:9999999999999999999999999999999999999999999999999999999999999999",
     "staging_root_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
-    "target_set_hash": "sha256:579cbe93946e80c9b86af1b28e0f2b0fb6f8f3774e47cc52f76449fa666688e4",
+    "target_set_hash": "sha256:446a958d58267108169b38b37f9ee1bdf0affd0e7164b0b64624ff3c529a23f1",
     "state": "verified"
   },
   "recovery": {
@@ -84,7 +78,7 @@
     "atomic_replace": "atomic_replace_set_required",
     "fsync": "file_and_parent_directory_required",
     "symlink_policy": "reject_symlink_and_reparse_point",
-    "target_allowlist": "exact_eight_plan_targets"
+    "target_allowlist": "exact_six_plan_targets"
   },
   "state": "committed",
   "commit_ambiguity": "resolved_committed",

@@ -304,7 +304,7 @@ export function createFsPlanPublicationPort(options: FsPlanPublicationPortOption
           atomic_replace: "atomic_replace_set_required",
           fsync: "file_and_parent_directory_required",
           symlink_policy: "reject_symlink_and_reparse_point",
-          target_allowlist: "exact_eight_plan_targets"
+          target_allowlist: "exact_six_plan_targets"
         }),
         state: "prepared",
         commit_ambiguity: "not_ambiguous",

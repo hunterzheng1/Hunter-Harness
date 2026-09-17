@@ -178,11 +178,10 @@ function timestamp(value: unknown): value is string {
 }
 
 function expectedPaths(changeKey: string): readonly string[] {
+  // 11-M3 两件套：design.md/plan.md 分别为合并文档，四份人类产物不再各自落盘。
   return [
     `plans/${changeKey}-design.md`,
     `plans/${changeKey}-plan.md`,
-    `plans/${changeKey}-test-scenarios.md`,
-    `plans/${changeKey}-implementation-detail.md`,
     "meta/plan-profile.json",
     "meta/worktree.json",
     "meta/implementation-checkpoints.json",

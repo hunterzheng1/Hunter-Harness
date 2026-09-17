@@ -138,7 +138,7 @@ function legacyV1(value: ReturnType<typeof trusted>) {
 const authority = { verify: () => true };
 
 describe("Stage11-M4A artifact publication payload contract", () => {
-  it("renders exact eight canonical payloads without turning human truth into raw JSON", async () => {
+  it("renders exact six canonical payloads (two merged human docs) without turning human truth into raw JSON", async () => {
     const expected = JSON.parse(await readFile(new URL(
       "./fixtures/plan-artifact-publication-v1-current.json", import.meta.url), "utf8"));
     const result = planArtifactPublication({ schema_version: 1, change_key: "change-11-publication",
@@ -150,8 +150,10 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     expect(result.plan.payloads[0]?.serialized_content).toContain("# Design\n\n## Goal");
     expect(result.plan.payloads[0]?.serialized_content).not.toContain('"goal":');
     expect(result.plan.payloads[0]?.serialized_content).toContain("三份\\[人类\\]\\*真相源\\*机械渲染");
+    // 11-M3 两件套：design.md 含执行参考节；plan.md 含任务节与场景节。
+    expect(result.plan.payloads[0]?.serialized_content).toContain("# Implementation Detail");
     expect(result.plan.payloads[1]?.serialized_content).toContain("## Tasks");
-    expect(result.plan.payloads[2]?.serialized_content).toContain("## Coverage");
+    expect(result.plan.payloads[1]?.serialized_content).toContain("## Coverage");
     for (const item of result.plan.payloads) {
       expect(item.byte_length).toBe(Buffer.byteLength(item.serialized_content));
       expect(item.bytes).toEqual([...Buffer.from(item.serialized_content)]);
@@ -214,7 +216,9 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     if (!result.ok) return;
     const design = result.plan.payloads[0]?.serialized_content ?? "";
     const plan = result.plan.payloads[1]?.serialized_content ?? "";
-    const scenarios = result.plan.payloads[2]?.serialized_content ?? "";
+    // 11-M3 两件套：场景节并入 plan.md，断言仍针对合并文档中的场景部分。
+    const scenarios = plan.includes("# Test Scenarios")
+      ? "# Test Scenarios" + plan.slice(plan.indexOf("# Test Scenarios") + 16) : "";
 
     for (const requirement of value.human.design.content.requirements) {
       const full = requirement.requirement_id;
@@ -247,7 +251,7 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     expect(planTasks).not.toContain("- 决策引用:");
     expect(planTasks).not.toContain("- 证据引用:");
     expect(planTasks).not.toContain("- 归属文件:");
-    const planAppendix = plan.split("\n## 引用附录\n\n")[1] ?? "";
+    const planAppendix = plan.split("\n## 引用附录（任务）\n\n")[1] ?? "";
     expect(planAppendix).toContain("### task:module");
     expect(planAppendix).toContain("- 需求引用:");
     expect(scenarios).toContain("## 引用附录");
@@ -255,7 +259,7 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     expect(scenarioBodies).toContain("- 优先级:");
     expect(scenarioBodies).not.toContain("- 关联任务:");
     expect(scenarioBodies).not.toContain("- 验证命令:");
-    const scenarioAppendix = scenarios.split("\n## 引用附录\n\n")[1] ?? "";
+    const scenarioAppendix = scenarios.split("\n## 引用附录（场景）\n\n")[1] ?? "";
     expect(scenarioAppendix).toContain("### scenario:normal");
     expect(scenarioAppendix).toContain("- 关联任务:");
     expect(scenarioAppendix).toContain("- 可执行测试 ID:");
