@@ -1,0 +1,210 @@
+# Harness 流程全面调研与中立评估报告
+
+> 日期：2026-09-17
+>
+> 性质：调研与评估报告（advisory）。本文档**不是实施合同**；其中任何建议若被采纳，须按
+> [统一优化实施路线](../roadmap/README.md) 的既有流程立项、评审、实施。
+>
+> 范围：harness 全流程（Plan → Execute → Review → Submit → Archive + 轻任务入口 +
+> 知识/同步/地图支撑环）的结构、环节划分、执行顺序、反馈机制；并抛开当前实现架构
+> 给出理想形态参照。
+
+## 0. 执行摘要
+
+当前 harness 是一条**以脚本为门禁权威、以 LLM skill 提示词为编排层**的五阶段变更流水线，
+外加轻任务入口与平台知识闭环。总体判断：
+
+- **业界领先、应予保留的部分**：确定性门禁（非 LLM 裁决）、证据链/账本身份绑定、
+  fail-closed、原子发布、worktree 集成事务。与 Anthropic「LLM 门禁只作兜底」、OpenAI
+  「护栏分层」的公开最佳实践一致，且在同类方案中做得更彻底。
+- **主要结构性短板**：编排靠「LLM 读约 1.3 万行 skill 文档并自觉执行」（提示词即控制流）；
+  执行无并行波次；评审非增量；知识回流不在 plan 输入侧闭环；可观测性偏内部记账、缺
+  决策级度量。
+- **最高杠杆的三个动作**：(1) 编排从 skill 提示词下沉为声明式状态机 + 单一 driver；
+  (2) plan 四件套收敛为两件套并让 Execute 支持依赖图并行；(3) 知识查询成为 plan 的
+  必走输入而非可选建议。
+
+## 1. 调研方法与范围
+
+| 维度 | 内容 |
+|---|---|
+| 内部材料 | `harness/README.md`（13 skills 全量流程）、plan/execute/review/submit/archive/task 六个 SKILL.md、[统一优化实施路线](../roadmap/README.md) 及 14 份阶段文档、43 份决策记录、[精简分析](simplification-analysis-2026-09.md)、[审核整改任务书](../roadmap/proposals/review-remediation-execution-2026-09-12.md) |
+| 外部来源 | Anthropic《Building effective agents》、Anthropic Claude Code 最佳实践、OpenAI《A practical guide to building agents》、GitHub Spec Kit、AWS Kiro Specs、HumanLayer 12-Factor Agents、SWE-agent（arXiv 2405.15793） |
+| 分析视角 | 流程结构、环节划分、执行顺序、反馈机制；另按「理想形态」独立推演（§5），不受现有实现约束 |
+
+## 2. 业界调研发现
+
+### 2.1 代表性方案对比
+
+| 方案 | 形态 | 阶段划分 | 真相源 | 门禁权威 | 人机边界 | 强项 | 对本项目的参照弱点 |
+|---|---|---|---|---|---|---|---|
+| GitHub Spec Kit | CLI 脚手架 + 模板 | Constitution→Specify→Plan→Tasks→Implement，含 Clarify/Analyze 检查点 | Markdown 规格 + constitution.md | 无硬门禁（分析器只做一致性检查） | 每个检查点人工 review | 宪法机制显式化不可变原则；Clarify 强制消歧 | 无验证证据链；无审计能力 |
+| AWS Kiro | IDE 内 spec | Requirements→Design→Tasks 三件套，EARS 验收语法；任务依赖图**波次并行** | 三份 Markdown | 任务状态机 + 检查点回滚 | 每阶段可编辑确认 | **执行并行化（Wave）是本项目缺的能力**；三档 Spec 匹配任务复杂度 | 无独立验证/评审阶段；无哈希绑定 |
+| Claude Code 最佳实践 | 使用范式 | Explore→Plan→Implement→Commit；计划模式只读隔离 | CLAUDE.md + 计划文档 | **Hooks（确定性脚本）强制**，文档仅建议 | 子代理做新鲜上下文对抗评审；要求「出示证据」 | 上下文稀缺资源管理；两层验证环 | 无跨会话持久状态机 |
+| OpenAI agents 指南 | 架构指南 | 单 agent→多 agent 渐进；护栏分层 | — | 确定性规则优先，LLM 护栏兜底 | 失败率/人工升级率作护栏 KPI | 护栏分层模型清晰 | 无流程级状态机 |
+| 12-Factor Agents | 工程原则 | 无固定阶段 | **事件日志统一状态** | 控制流归代码、不归提示词 | 人可介入任何点 | 「拥有自己的控制流」「工具即结构化输出」直接命中本项目编排层问题 | 原则非实现 |
+| SWE-agent | 自治 agent + ACI | 无显式阶段（ReAct 循环） | 仓库状态 | 无流程门禁 | 全自动 | ACI 证明接口设计显著影响成功率 | 面向 benchmark，无合规需求 |
+| 本项目 harness | 流程脚手架 + 脚本门禁 | Plan→Execute→Review→Submit→Archive（可裁剪）+ 轻任务单命令 | 结构化 JSON（plan-evidence-input）→ 8 target 哈希绑定 | **Python/TS 脚本全确定**，LLM 只做提案 | 每阶段 blocking 确认；三人格对抗评审 + 双评估器 | 证据链完整度、身份绑定、fail-closed 对比组最强 | 编排脆弱、串行、评审非增量、人读层冗余 |
+
+### 2.2 跨方案收敛出的共性原则（评估基准）
+
+1. **真相源单一且机器可读**：文档降级为渲染视图。
+2. **确定性门禁优先，LLM 只做提案与兜底**：Anthropic/OpenAI/Claude Code 三方一致；本项目已做到，是核心资产。
+3. **控制流属于代码，不属于提示词**：12-Factor 核心原则；本项目编排层当前违背此原则。
+4. **验证闭环 + 独立第二意见**：Claude Code「自验证 + 子代理对抗评审」与本项目「ledger + 三人格评审」同构。
+5. **任务复杂度分档**：Kiro 三种 Spec 对应本项目 fast/standard/full；本项目是唯一由实际 diff 信号而非声明裁决档位的方案。
+6. **检查点与可恢复**：Kiro rewind、Claude Code rewind、本项目 journal/lease/recover——本项目恢复语义最完备。
+
+## 3. 整体流程评估
+
+### 3.1 流程结构（事实陈述）
+
+```
+需求 → [完整流程] Plan(材料+知识查询+门禁+evidence-pack) → Execute(收据链+账本+worktree+租约)
+       → Review(三人格对抗+双评估器+fixback+ledger) → Submit(复用账本+精确暂存+集成事务)
+       → Archive(确定性ZIP+发布门禁+知识候选) → 平台知识库
+     → [轻任务] harness_task.py begin/finish（分类裁决档位，full 信号拒绝并转 Plan）
+```
+
+### 3.2 总体优势（应予保留）
+
+1. **v2 证据包架构**：单一结构化输入 → 8 个哈希绑定 target，Markdown 仅为人读层。
+2. **账本身份绑定**（diffHash/ownershipHash/productTreeHash + 跨账本引用 + can-reuse 纯函数）。
+3. **Review 角色分离**：三人格 + 双独立评估器 + `blockingFor` 精确阻断 + 哨兵反钳制。
+4. **轻/重双入口**：fast/standard/full 由 diff 信号裁决，比「用户自选档位」更防误用。
+5. **恢复语义**：integration journal、change lease、`status --json` 统一恢复视图。
+
+### 3.3 整体问题清单
+
+| # | 问题 | 证据 | 影响 | 优先级 |
+|---|---|---|---|---|
+| F1 | **编排层是提示词**：13 个 skill 文档合计约 1.3 万行，控制流靠 LLM 读文档自觉执行；大量篇幅是防 LLM 犯错的负向规则 | skill 文档「No Script Trust」式禁令密集；[精简分析](simplification-analysis-2026-09.md) §10.2 | 编排可靠性取决于模型遵嘱度；跨宿主行为漂移风险 | **P0** |
+| F2 | **Execute 严格串行**，无依赖图/波次 | execute SKILL 全流程无并行概念；Kiro Wave 已证明可行 | 大 change 周期长 | P1 |
+| F3 | **评审全量而非增量** | [审核整改任务书](../roadmap/proposals/review-remediation-execution-2026-09-12.md) §9.2 列为缺失 | token 成本高；大 diff 下评审质量稀释 | P1 |
+| F4 | **知识回流不进 plan 输入闭环**：`harness_knowledge.py query` 仅「建议」，失败仅警告 | plan SKILL 检索步骤无强制；roadmap 06/07 仍有知识调用收口问题 | 经验复用率取决于模型自觉 | P1 |
+| F5 | **plan 四件套重叠度高**，roadmap 09 已决议收敛为两件套未实施 | [精简分析](simplification-analysis-2026-09.md) §6.4-3 | 渲染 token 膨胀；四处一致性维护 | P2 |
+| F6 | **可观测性面向记账而非决策**：缺周期时长、门禁首过率、评审发现密度、自动度等决策级度量呈现；AI 采用度测量学仍开放 | roadmap 10；`harness_efficiency.py` 有数据无消费场景 | 改进靠感觉 | P2 |
+| F7 | **巨型脚本单点**：`harness_archive.py` 曾达 11,717 行；Python 48k+ 行、skill 文档 13.5k 行 | [精简分析](simplification-analysis-2026-09.md) §0 | 演进成本高 | P2 |
+| F8 | **轻任务分档裁决边角语义仍在收敛**：R1–R5（分类滞后、abandoned 误提交、CI 收据绑定 HEAD 树等） | [审核整改任务书](../roadmap/proposals/review-remediation-execution-2026-09-12.md) §2 | 信任成本；已有专项在修 | P1（跟踪既有专项） |
+| F9 | **submit/archive 能力矩阵复杂**：36 种 runtimeState × 双 executionEnvironment | submit/archive SKILL 与 submission-reference | 排障与学习成本高 | P2 |
+
+## 4. 逐环节分析
+
+### 4.1 Plan
+
+- **设计目标**：一次结构化记录、机器先验后渲染、冻结执行边界。
+- **当前表现**：evidence-pack→finalize 8 target 原子发布 + 哈希漂移检测；材料读取预算、改动地图钩子、派生渲染均已工程化。
+- **差距**：四件套冗余（F5）；无显式需求消歧阶段（Spec Kit Clarify / Kiro Analyze 均有专职步）；知识查询非强制（F4）；人工修订需编辑整份 JSON，无增量修订语法。
+- **建议**：
+  - [P1] 增加 **Clarify 前置步**：evidence-pack 校验前做确定性静态检查（空 objective、scenario/task 悬空引用、验收条件不可测）+ 一次 LLM 歧义扫描，输出强制确认清单。依据：Spec Kit Clarify、Kiro Analyze Requirements。
+  - [P2] 实施 roadmap 09：**四件套→两件套**（design+execution、plan+scenarios 合并），JSON 真相源不动。依据：精简分析 §6.4-3。
+  - [P1] 知识查询升级为 **plan gate 可配置要求**（fast 豁免，standard/full 必查并写入 `knowledge_refs`）。依据：F4；OpenAI 护栏分层。
+  - [P3] evidence-input 支持**补丁式修订**（`plan publish --patch`）。
+
+### 4.2 Execute
+
+- **设计目标**：测试先行、账本记账、逐场景验收、严格顺序。
+- **当前表现**：收据链（context→gate）、profile 解析验证命令、diffHash/ownershipHash 绑定、worktree 决策静态化、change lease。
+- **差距**：无并行（F2）；失败→修复→重跑无结构化重试策略与断路器；修复回流校准 manifest 是手动步骤。
+- **建议**：
+  - [P1] **场景级依赖图 + 波次执行**：scenario-manifest 已有引用闭包，扩展为显式 DAG 按拓扑层并发派发（worktree-per-wave 或复用轻任务 WI-3.3 的 write-scope 冲突检测）。依据：Kiro Wave；审核整改任务书 §9.1。
+  - [P2] **失败断路器**：同场景连续 2 次同类失败即暂停升级。依据：OpenAI 指南「护栏失败升级人工」。
+  - [P2] manifest 校准自动化（编辑动作后 hook 式触发）。
+
+### 4.3 Review
+
+- **设计目标**：三人格对抗覆盖 + 双评估器兜底 + 精确阻断 + 结构化修复。
+- **当前表现**：finding schema、carryover 继承、增量账本复用、`blockingFor` 白点机制，形式化程度高于业界同类。
+- **差距**：全量评审（F3，O2 已立项未实施）；三人格与双评估器覆盖面重叠的边际收益未量化；scenario→finding→fixback 闭环状态缺可查询视图。
+- **建议**：
+  - [P1] 落地 O2 **增量评审**：以本轮 diff + 受影响接口/调用者构建输入，finding 绑定源内容哈希。依据：审核整改任务书 §9.2 验收标准。
+  - [P2] 评审收益度量（各 persona/evaluator 独立发现数、确认率、阻断率），为裁剪冗余角色提供数据。依据：roadmap 10。
+  - [P3] `harness_review.py status --change <cn>` 输出三链 join 表。
+
+### 4.4 Submit
+
+- **设计目标**：账本复用、精确暂存、worktree 集成事务可恢复。
+- **当前表现**：integration worktree + journal + protection refs + 结构化 abandon/recover，恢复语义为各环节中最强。
+- **差距**：record-quirk 依赖人工写签名；R4/R5 所涉 CI 证据绑定影响 submit 前置可信度（专项在修）。
+- **建议**：
+  - [P2] record-quirk 增加**失败指纹自动建议**（人工确认后写入），不改变门禁语义。
+  - [P1] 跟踪 R4/R5 修复落地。依据：审核整改任务书 §7/§8。
+
+### 4.5 Archive
+
+- **设计目标**：事实封存、发布资格裁决、确定性 ZIP、平台 ingest。
+- **当前表现**：四种结局建模、发布门禁 fail-closed、outbox 重试、知识候选生成。
+- **差距**：知识候选 `build_plan_candidates` 反解析 plans/*.md——Markdown 降级为视图后形成「从渲染物反向解析」的反向依赖（[精简分析](simplification-analysis-2026-09.md) §6.2）；复用端在 plan 非强制（F4）。
+- **建议**：
+  - [P1] 知识候选改从 **JSON 真相源直接生成**，废弃 Markdown 反解析，释放渲染层自由度（四件套收敛的前提）。
+  - [P2] 归档时生成**任务级复盘卡**（周期、attempt 数、门禁首过率、评审统计）喂平台知识库。依据：12-Factor「错误压缩进上下文」。
+
+### 4.6 支撑环（入口 / 知识 / 同步 / 地图）
+
+- **入口分层（task vs plan）**：设计正确且业界独有；风险在裁决语义边角（F8，专项在修）。建议 [P2]：档位裁决信号开放 `harness_task.py classify --dry-run`，让升档可解释。
+- **知识闭环**：建议 [P1] 查询结果结构化注入 plan evidence（同 F4）。
+- **sync / codebase-map**：定位合理；建议 [P3] codebase-map 产物作为 Clarify 步自动输入。
+
+## 5. 理想形态重构（抛开现有架构）
+
+### 5.1 目标形态：声明式变更状态机（Change-as-State-Machine）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  change.yaml（唯一声明：goal/acceptance/tier floor/scope/deps）│
+└──────────────────────────┬──────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Pipeline Engine（唯一编排权威，非 LLM）                       │
+│  - 声明式阶段图（可裁剪、可插拔）                                 │
+│  - 每阶段 = {输入契约, 执行器, 验证器, 证据产出, 转移条件}        │
+│  - LLM 只是某些阶段的「执行器实现」，与脚本执行器同接口           │
+└───────┬─────────┬─────────┬─────────┬─────────┬─────────────┘
+        ▼         ▼         ▼         ▼         ▼
+      Plan     Execute    Review    Submit    Archive
+   (Clarify内嵌) (DAG并行)  (增量)   (事务)   (知识直采)
+        │         │         │         │         │
+        └─────────┴──── Evidence Store（内容寻址 + 签名收据）────┘
+                           │
+              Observability（度量 / 回放 / 模拟）
+```
+
+### 5.2 七条原则与现状映射
+
+| # | 理想原则 | 现状差距 | 迁移可行性 |
+|---|---|---|---|
+| I1 | **控制流归引擎**，提示词只描述「怎么做事」（12-Factor §8） | F1：skill 文档即控制流 | 高：脚本命令已是结构化 JSON I/O，加 engine 调用层即可 |
+| I2 | **声明即真相**：一份声明驱动全流程，阶段产物全部派生 | 已接近（plan-evidence-input），Execute 之后无继续驱动 | 高 |
+| I3 | **执行器同构**：LLM、脚本、人工统一 {输入→输出+证据} 接口 | 职责靠文档约定区分 | 中：需定义 executor 契约 |
+| I4 | **证据为内容寻址的签名收据**（可离线验证、可跨组织传递） | 已哈希绑定未签名；CI 收据可信来源在修（R5） | 中：现有 receipt 加签名层 |
+| I5 | **增量与并行是默认** | F2/F3 | 中：scenario 元数据已有依赖信息 |
+| I6 | **知识飞轮闭环在 plan 输入侧** | F4 | 高：平台查询已就绪，只差接线 |
+| I7 | **可观测性即一等产物**：可回放事件流 + 决策级指标面板 | F6 | 中：事件流已有，缺聚合呈现 |
+
+### 5.3 分阶段迁移路径（不推翻现有资产）
+
+| 阶段 | 内容 | 对应问题 | 风险 |
+|---|---|---|---|
+| 短期（1–2 迭代） | Clarify 前置步；知识查询门禁化；知识候选 JSON 直采；跟踪 R1–R5 专项收尾 | F4、F8、知识反解析 | 低，局部增强 |
+| 中期（1 季度） | Execute DAG 波次；增量评审落地（O2）；四件套→两件套 | F2、F3、F5 | 中：调度器是新组件，先在 fast/standard 档试点 |
+| 长期（按需） | 编排引擎化（skill 文档退化为阶段操作手册，新 entrypoint 与 skill 双轨过渡）；收据签名层；决策级度量面板 | F1、F6 | 高：须保护现有契约测试锚点 |
+
+## 6. 建议优先级汇总
+
+| 优先级 | 建议 | 依据 | 预期收益 |
+|---|---|---|---|
+| **P0** | 编排引擎化立项（长期项启动设计） | F1；12-Factor §8；Claude Code「hooks 强制、文档建议」 | 消除最大可靠性变量；跨宿主一致性 |
+| **P1** | Clarify 前置 + 歧义确认 | Spec Kit Clarify / Kiro Analyze | 减少「做错需求」返工 |
+| **P1** | 知识查询门禁化 + 注入 plan evidence | F4；OpenAI 护栏分层 | 经验复用从「靠自觉」到「被保证」 |
+| **P1** | 知识候选 JSON 直采，废弃 Markdown 反解析 | 精简分析 §6.2 | 解锁渲染层自由；为四件套收敛铺路 |
+| **P1** | Execute 场景 DAG 波次并行 | F2；Kiro Wave；WI-3.3 现成冲突检测 | 大 change 周期显著缩短 |
+| **P1** | 增量评审（跟踪 O2 专项） | F3；审核整改任务书 §9.2 | 评审 token 与质量双赢 |
+| **P1** | R1–R5 专项落地跟踪 | 审核整改任务书 | 轻任务路径可信度 |
+| **P2** | 四件套→两件套 | roadmap 09；精简分析 §6.4-3 | 渲染/阅读 token 下降 |
+| **P2** | 失败断路器、quirk 指纹建议、档位裁决可解释 | §4.2/§4.4/§4.6 | 减少无效 attempt 与人工摩擦 |
+| **P2** | 决策级度量面板 | F6；roadmap 10 | 后续优化有数据依据 |
+| **P3** | plan 补丁式修订、review 闭环状态表、codebase-map 进 Clarify | §4.1/§4.3/§4.6 | 易用性 |
+
+**一句话结论**：当前 harness 在「证据与门禁」维度的工程化程度已超过本次调研的全部公开参照系；
+真正拉开差距的是**编排层的实现介质**（提示词 vs 状态机）与**执行/评审的并行与增量能力**；
+前者决定可靠性上限，后者决定吞吐上限。

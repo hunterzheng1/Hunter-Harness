@@ -1,7 +1,7 @@
 # 评估基础设施负载竞态（AutoLoop 全量测试误报根因）
 
 > 状态：RESOLVED（2026-09-04 当天修复并压测验证；2026-09-05 登记归档）
-> 来源：2026-09-03/04 精简执行轮（docs/simplification-analysis-2026-09.md §8.3）。
+> 来源：2026-09-03/04 精简执行轮（docs/research/simplification-analysis-2026-09.md §8.3）。
 > AutoLoop 会话以全量 Python 安全档测试为护栏，环境噪声此前被误判为"代码回归"，
 > 是全量测试偶发红的根因。本文档把四个竞态的修复登记为正式 issue 记录。
 

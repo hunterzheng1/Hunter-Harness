@@ -367,15 +367,15 @@ CLI 作为稳定通用入口，原生工具或 MCP 按真实需要接入；不�
 
 ## 附录：现状依据与证据边界
 
-- [风险档位与验证要求](../../harness/contracts/workflow-policy.json)：`riskTiers.fast/standard/full`。
-- [阶段计划约束](../../harness/scripts/harness_context.py)：`configure_phase_plan`。
-- [阶段门禁](../../harness/scripts/harness_gate.py)：`PHASE_GATE_RULES`、`phase_gate_rule`。
-- [Plan 操作协议](../../harness/harness-plan/SKILL.md)：bootstrap、单阶段行为、发布输入与交接。
+- [风险档位与验证要求](../../../harness/contracts/workflow-policy.json)：`riskTiers.fast/standard/full`。
+- [阶段计划约束](../../../harness/scripts/harness_context.py)：`configure_phase_plan`。
+- [阶段门禁](../../../harness/scripts/harness_gate.py)：`PHASE_GATE_RULES`、`phase_gate_rule`。
+- [Plan 操作协议](../../../harness/harness-plan/SKILL.md)：bootstrap、单阶段行为、发布输入与交接。
 - [Plan 发布编排](../../packages/cli/src/commands/plan-publish.ts)：自动基线与 attempt、内部 stdout 捕获。
-- [执行与验证协议](../../harness/harness-execute/SKILL.md)：测试执行、门禁、租约与重试。
-- [效率统计](../../harness/scripts/harness_efficiency.py)：`build_efficiency_summary`。
-- [知识候选生成](../../harness/scripts/harness_knowledge_candidates.py)：`build_plan_candidates`。
-- [前轮精简与负结果](../simplification-analysis-2026-09.md)：已落地删除、渐进加载验证。
-- [既有实施路线](README.md)：本草案不自动覆盖其合同。
+- [执行与验证协议](../../../harness/harness-execute/SKILL.md)：测试执行、门禁、租约与重试。
+- [效率统计](../../../harness/scripts/harness_efficiency.py)：`build_efficiency_summary`。
+- [知识候选生成](../../../harness/scripts/harness_knowledge_candidates.py)：`build_plan_candidates`。
+- [前轮精简与负结果](../../research/simplification-analysis-2026-09.md)：已落地删除、渐进加载验证。
+- [既有实施路线](../README.md)：本草案不自动覆盖其合同。
 
 本轮进行了代码、协议、历史结论与文档核对。没有进行新架构实现、用户任务对照实验或平台全量复审。文中的目标体验、职责划分、功能取舍和试点门槛均为建议，不能引用为已实现能力。

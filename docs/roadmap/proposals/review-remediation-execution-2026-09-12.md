@@ -118,7 +118,7 @@
 
 ## 9. O2：完成任务依赖、写入冲突与增量评审
 
-对应 [批次 3 主体](batch3/design-evidence-driven-delivery-2026-09-09.md) 尚缺的任务依赖与增量评审范围。
+对应 [批次 3 主体](../batches/batch3/design-evidence-driven-delivery-2026-09-09.md) 尚缺的任务依赖与增量评审范围。
 
 ### 9.1 编排与冲突
 
@@ -230,7 +230,7 @@ O5 的测量方法和原始基线在 A 开始准备；最终比较在候选稳�
 
 ```text
 请在 Hunter-Harness 项目中完整实施：
-docs/harness-improvement-roadmap/review-remediation-execution-2026-09-12.md
+docs/roadmap/proposals/review-remediation-execution-2026-09-12.md
 
 先读取仓库当前规则、这份任务书、它引用的产品方案及相关批次合同，核对 HEAD 和工作区。审核基线为 2ea3561，但以当前源码为准。
 
@@ -263,13 +263,13 @@ docs/harness-improvement-roadmap/review-remediation-execution-2026-09-12.md
 
 ## 附录：代码与规格入口
 
-- [轻任务运行时](../../harness/scripts/harness_task.py)
-- [验证账本与 CI 导入](../../harness/scripts/harness_ledger.py)
-- [门禁](../../harness/scripts/harness_gate.py)
+- [轻任务运行时](../../../harness/scripts/harness_task.py)
+- [验证账本与 CI 导入](../../../harness/scripts/harness_ledger.py)
+- [门禁](../../../harness/scripts/harness_gate.py)
 - [CI 工作流](../../.github/workflows/check.yml)
 - [CI 收据生成](../../scripts/ci/generate-evidence-receipt.mjs)
-- [轻任务操作协议](../../harness/harness-task/reference.md)
-- [局部失效设计](batch3/design-wi3-1-partial-invalidation-2026-09-12.md)
-- [CI 导入设计](batch3/design-wi3-2-evidence-import-2026-09-12.md)
-- [试点数据](batch0/pilot-g3-2026-09-07.md)
-- [基线方法](batch0-baseline-and-method.md)
+- [轻任务操作协议](../../../harness/harness-task/reference.md)
+- [局部失效设计](../batches/batch3/design-wi3-1-partial-invalidation-2026-09-12.md)
+- [CI 导入设计](../batches/batch3/design-wi3-2-evidence-import-2026-09-12.md)
+- [试点数据](../batches/batch0/pilot-g3-2026-09-07.md)
+- [基线方法](../batches/batch0-baseline-and-method.md)

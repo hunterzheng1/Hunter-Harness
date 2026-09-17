@@ -5,7 +5,7 @@
 本脚本只读：不写任何文件、不改判据阈值、不宣告"达标可删"。样本不足时输出
 ``indeterminate``，由人决定是否继续积累 dogfood 样本。
 
-三条判据（docs/harness-improvement-roadmap/14-migration-rollout-and-acceptance.md）：
+三条判据（docs/roadmap/stages/14-migration-rollout-and-acceptance.md）：
 
 1. ``finalize_first_try``：v2 finalize 首次成功率。连续 10 次 finalize 中
    首次 attempt 即 ``publication_committed_event_complete`` 的比例 >= 8/10。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WI-E3（O4）：Python asset-outbox——租约/退避/journal/死信/容量 红测。
 
-设计：docs/harness-improvement-roadmap/batch3/design-o3-o4-outcome-assets-2026-09-14.md §7。
+设计：docs/roadmap/batches/batch3/design-o3-o4-outcome-assets-2026-09-14.md §7。
 存储：.harness/state/local/asset-outbox/{records,journal}/；journal 先行写
 （write-ahead），记录覆写失败时 journal 条目保持 ambiguous。
 """

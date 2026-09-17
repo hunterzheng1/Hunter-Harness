@@ -19,4 +19,4 @@
 | submit-archive-phase-issues-2026-08-31 | hunter-harness 0.4.12 / workflow-harness 0.4.12 |
 | tdd-batch-verification-discipline-2026-09-02 | 纪律固化进 harness-execute 文档（随 bundle 发布） |
 
-归档时间：2026-09-05（源自 docs/simplification-analysis-2026-09.md §5 的仓库冗余清理建议）。
+归档时间：2026-09-05（源自 docs/research/simplification-analysis-2026-09.md §5 的仓库冗余清理建议）。

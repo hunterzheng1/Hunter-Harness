@@ -1,6 +1,6 @@
 // WI-3.2 步骤④：CI 证据收据生成器（check.yml 末尾步骤调用）。
 // 产出 ci-evidence-receipt.json，字段契约见
-// docs/harness-improvement-roadmap/batch3/design-wi3-2-evidence-import-2026-09-12.md §3.1。
+// docs/roadmap/batches/batch3/design-wi3-2-evidence-import-2026-09-12.md §3.1。
 // receiptHash 与 harness_ledger._ci_receipt_hash 同口径：
 // 除 receiptHash 外全字段，sort_keys + 紧凑分隔符 + UTF-8 的 sha256。
 // 注意：headTree 的 "sha256:" 前缀沿用 harness_ledger.product_tree_hash 的

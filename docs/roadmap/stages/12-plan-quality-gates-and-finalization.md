@@ -237,7 +237,7 @@ PlanEvent = {
 
 开始接线前必须冻结：root/identity authority、八个 current target 与 legacy `plan-finalization.json` 的迁移策略、FS commit 与 `artifact_published/phase_ended` 的原子性（含 outbox/reconcile 状态）、`run_id/change_key/branch_name/attempt` 的拥有者，以及 missing event、ambiguous FS、pending receipt 的公开恢复语义。不得从旧 Python finalizer、已有 monitor read adapter 或 branch snapshot 猜测这些字段。
 
-**T0 冻结提案已起草并获 owner 签字**：`docs/harness-improvement-roadmap/12-m3-t0-freeze-proposal.md`（2026-08-08 起草、同日批准）。
+**T0 冻结提案已起草并获 owner 签字**：`docs/roadmap/proposals/12-m3-t0-freeze-proposal.md`（2026-08-08 起草、同日批准）。
 
 **接线进度（2026-08-08，工作项 1/2/3 已落地）**：
 

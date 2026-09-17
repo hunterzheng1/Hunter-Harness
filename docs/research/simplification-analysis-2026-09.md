@@ -171,7 +171,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 | `harness_orchestration.py` | 344 | 零引用 | ✅ 已删 |
 | `harness_headless.py` | 37 | 零引用 | ✅ 已删 |
 | `harness_test_cleanup.py` | 175 | 仅测试引用 | ✅ 已删 |
-| `harness_sync.py` | 407 | roadmap 自证：`docs/harness-improvement-roadmap/04-sync-maintenance.md:28` "没有生产调用方"；sync skill 走 TS 且明确不写 sync runtime | ✅ 已删 |
+| `harness_sync.py` | 407 | roadmap 自证：`docs/roadmap/stages/04-sync-maintenance.md:28` "没有生产调用方"；sync skill 走 TS 且明确不写 sync runtime | ✅ 已删 |
 | `harness_check_gate.py` | 113 | 与根 `scripts/check-gate.mjs` 功能重复；实际 pre-push 钩子用 .mjs 版 | ✅ 已删 |
 | `harness_adoption_metrics.py` | — | roadmap 14 一次性验收度量工具（半死，验收后可退役） | 保留（§4.3 管辖） |
 
@@ -197,8 +197,8 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 | `resources/skills/` | 6 月英文旧版 skill 镜像，含已删除的 harness-run/harness-test/harness-package 等，与 `harness/` 中文版严重漂移 |
 | `requirements/` | 2026-06 历史需求输入文档，与当前代码无接线，可归档 |
 | `dev/`（仅 `dev/null` 一个被跟踪文件） | 整目录可删 |
-| `docs/harness-improvement-roadmap/` | 现役路线图档案；已 RESOLVED 批次的旧 issue 文档可精简归档 | → ✅ 已归档（2026-09-05，`aa3c864`：10 份已修复 issue 文档移入 `archive/`，登记 §8.3 竞态 issue） |
-| `CHANGELOG.md`、`CONTEXT.md`、`program.md`、`scripts/`、`docs/adr/` | 现役，保留 |
+| `docs/roadmap/` | 现役路线图档案；已 RESOLVED 批次的旧 issue 文档可精简归档 | → ✅ 已归档（2026-09-05，`aa3c864`：10 份已修复 issue 文档移入 `archive/`，登记 §8.3 竞态 issue） |
+| `CHANGELOG.md`、`CONTEXT.md`、`program.md`、`scripts/`、`docs/decisions/` | 现役，保留 |
 | `tests/` vs `harness/scripts/tests/` | **不是重复**：前者 Vitest 测 TS/CLI 与仓库脚本，后者 unittest 测 Python harness；两套工具链不同，都保留 |
 
 ---
@@ -303,7 +303,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 - §4.3 只读兼容层（plan-finalization / product-candidate-ci / adoption_metrics）——受 roadmap 14 管辖，未动；
 - ~~§6.4-2/3（引用清单折叠、四件套收敛）——渲染层增强，未动~~ → §6.4-2 折叠已落地（`1b08c44`，§10.1）；四件套收敛（§6.4-3）仍未动；
-- §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；→ ✅ 已登记（2026-09-05，`aa3c864`：`docs/harness-improvement-roadmap/evaluator-infra-load-races-2026-09-04.md`）；
+- §8.3 的 4 个基础设施修复已提交但建议后续在 roadmap 中登记为正式 issue 归档；→ ✅ 已登记（2026-09-05，`aa3c864`：`docs/roadmap/issues/evaluator-infra-load-races-2026-09-04.md`）；
 - ~~平台侧全部条目（§2/§3/附录 B）——待平台仓库单独执行。~~ → 已执行，见 §9。
 
 ---
@@ -383,7 +383,7 @@ harness_events_sync.py（本地 best-effort 钩子，whitelist 字段后 POST）
 
 | 项 | 内容 | 提交 |
 |---|---|---|
-| §5 收尾 + §8.3 登记（harness `aa3c864`） | 10 份已修复阶段 issue 文档（2026-08-30/31、09-02，均含修复状态与版本号）移入 `docs/harness-improvement-roadmap/archive/`，archive/README.md 记录归档标准与清单，主 README 补归档惯例；新增 `evaluator-infra-load-races-2026-09-04.md` 正式登记 §8.3 四个竞态（caee9e7/73aa530）与 flake 判别模式。`plan-v2-dogfood-findings-2026-08-17`（无修复状态标记）与两份 freeze proposal 保留主目录 | harness `aa3c864` |
+| §5 收尾 + §8.3 登记（harness `aa3c864`） | 10 份已修复阶段 issue 文档（2026-08-30/31、09-02，均含修复状态与版本号）移入 `docs/roadmap/archive/`，archive/README.md 记录归档标准与清单，主 README 补归档惯例；新增 `evaluator-infra-load-races-2026-09-04.md` 正式登记 §8.3 四个竞态（caee9e7/73aa530）与 flake 判别模式。`plan-v2-dogfood-findings-2026-08-17`（无修复状态标记）与两份 freeze proposal 保留主目录 | harness `aa3c864` |
 | §9.3 web 侧 flake（platform `b664be1`） | `external-skill-detail.test.tsx` 文件级 120s（jsdom 下 15 用例 × beforeEach 完整启动 fastify server）；`project-information-panels.test.tsx` 仅对刻意渲染 500 行的 bounded-rendering 用例单独放宽 120s。2 CPU hog 满负载下两文件 31/31 通过 | platform `b664be1` |
 
 **§9.3 已知负载 flake 清单（PDA / export-local-cas / remote-content-upload-pg / external-skill-detail / bounded-rendering）至此全部清零。** 同日第三笔（platform `b073337`）：§9.4 的 `hunter-vitest-*` 残留根 EBUSY 竞态收敛（owner 标记 + PID 存活检测 + 耐心重试，端到端验证死 PID 立即清扫/活 PID 保留/自身根正常删除）。**至此分析文档内全部可执行项与开放尾巴均已关闭；剩余仅 §4.3 与 §6.4-3（roadmap 14 管辖）。**

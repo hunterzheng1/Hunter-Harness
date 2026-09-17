@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Python asset-outbox（WI-E3，O4 异步资产闭环）。
 
-设计：docs/harness-improvement-roadmap/batch3/design-o3-o4-outcome-assets-2026-09-14.md §7。
+设计：docs/roadmap/batches/batch3/design-o3-o4-outcome-assets-2026-09-14.md §7。
 模式对齐 TS 侧 archive-outbox v2（packages/core/src/archive-outbox/v2-types.ts）：
 四动词 claim/ack/nack/reap、capability 只落 hash、迁移 journal、指数退避、死信。
 
