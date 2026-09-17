@@ -170,6 +170,7 @@ SCENARIO_OWNER_PHASE_ORDER = ("plan", "execute", "review", "submit")
 #
 # 键的含义：
 #   plan_handoff      begin 时校验 plan 已 finalize（只有进入实现的第一个阶段需要）
+#   knowledge_gate    close 时校验知识查询收据锚点（09-M4；standard/full 档，fast 豁免）
 #   test_guard        begin 建测试基线快照、close 比对（改测试的阶段才需要）
 #   scenario_coverage close 时跑 C9 场景覆盖
 #   ledger_blocking   close 时 ledger 校验失败是否阻断（否则只进 payload）
@@ -177,7 +178,7 @@ SCENARIO_OWNER_PHASE_ORDER = ("plan", "execute", "review", "submit")
 #   head_may_advance  capsule 校验允许 HEAD 前移（会产生 commit 的阶段）
 #   projection_drift  close 时 projection receipt 变化即硬失败（外发边界）
 PHASE_GATE_RULES: dict[str, frozenset[str]] = {
-    "plan": frozenset(),
+    "plan": frozenset({"knowledge_gate"}),
     "execute": frozenset({
         "plan_handoff", "test_guard", "scenario_coverage",
         "ledger_blocking", "head_may_advance",
@@ -3829,6 +3830,49 @@ def cmd_close(args: argparse.Namespace) -> int:
                     extra={k: v for k, v in coverage.items() if k not in {"ok", "message", "code"}},
                 )
 
+    # 09-M4: knowledge-query gate — standard/full tier plan closes must carry a
+    # verifiable remote query receipt anchor. Default fail-closed; only the
+    # dedicated knowledgeGateMode=warn downgrades to a gate warning (independent
+    # of the global lenient severity mode).
+    knowledge_gate_result: dict[str, Any] | None = None
+    if phase_gate_rule(args.phase, "knowledge_gate"):
+        knowledge_gate_result = hpf.validate_knowledge_query_gate(project, change_dir)
+        if not knowledge_gate_result.get("ok"):
+            if knowledge_gate_result.get("mode") == "warn":
+                gate_warnings.append(record_gate_warning(
+                    change_dir,
+                    phase=args.phase,
+                    site="knowledge-gate",
+                    code=str(knowledge_gate_result.get("code", "KNOWLEDGE_GATE_FAILED")),
+                    message=str(knowledge_gate_result.get("message", "knowledge query gate failed")),
+                ))
+            else:
+                persist_close_failure(
+                    change_dir,
+                    args.phase,
+                    run_id,
+                    capsule,
+                    status="KNOWLEDGE_GATE_FAILED",
+                    error=knowledge_gate_result,
+                )
+                record_gate_blocked(
+                    change_dir,
+                    phase=args.phase,
+                    code=str(knowledge_gate_result.get("code", "KNOWLEDGE_GATE_FAILED")),
+                    message=str(knowledge_gate_result.get("message", "knowledge query gate blocked close")),
+                    run_id=run_id,
+                )
+                return emit_error(
+                    str(knowledge_gate_result.get("code", "KNOWLEDGE_GATE_FAILED")),
+                    str(knowledge_gate_result.get("message", "knowledge query gate blocked close")),
+                    as_json=as_json,
+                    extra={
+                        k: v
+                        for k, v in knowledge_gate_result.items()
+                        if k not in {"ok", "code", "message"}
+                    },
+                )
+
     close_status = args.status
     close_code = "PHASE_CLOSED"
     if ledger_result.get("code") == "LEDGER_OK_DEGRADED":
@@ -4088,6 +4132,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         "executionRoot": str(execution_root),
         "skillsRoot": capsule.get("skillsRoot") if capsule else None,
         "ledger": ledger_result,
+        "knowledgeGate": knowledge_gate_result,
         "testGuard": guard_result,
         "event": event_result,
         "lease": release,

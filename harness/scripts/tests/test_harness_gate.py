@@ -3267,8 +3267,9 @@ class PhaseGateRuleTableTests(unittest.TestCase):
     def test_every_declared_rule_is_one_the_code_reads(self) -> None:
         """表里写了但没人读的开关是死规则，比缺规则更难发现。"""
         known = {
-            "plan_handoff", "test_guard", "scenario_coverage", "ledger_blocking",
-            "review_outputs", "head_may_advance", "projection_drift",
+            "plan_handoff", "knowledge_gate", "test_guard", "scenario_coverage",
+            "ledger_blocking", "review_outputs", "head_may_advance",
+            "projection_drift",
         }
         declared = set().union(*gate.PHASE_GATE_RULES.values())
         self.assertEqual(declared, known)
@@ -3277,6 +3278,7 @@ class PhaseGateRuleTableTests(unittest.TestCase):
         """逐条对齐重构前的内联条件，确认这是行为保持的改写。"""
         expected = {
             "plan_handoff": {"execute"},
+            "knowledge_gate": {"plan"},
             "test_guard": {"execute"},
             "scenario_coverage": {"execute"},
             "ledger_blocking": {"execute"},
@@ -3298,7 +3300,10 @@ class PhaseGateRuleTableTests(unittest.TestCase):
 
     def test_an_unknown_phase_enables_nothing(self) -> None:
         """未知阶段 fail-safe：不启用任何能力，而不是意外命中某一项。"""
-        for rule in ("plan_handoff", "test_guard", "ledger_blocking", "review_outputs"):
+        for rule in (
+            "plan_handoff", "knowledge_gate", "test_guard", "ledger_blocking",
+            "review_outputs",
+        ):
             self.assertFalse(gate.phase_gate_rule("teleport", rule), rule)
             self.assertFalse(gate.phase_gate_rule(None, rule), rule)
 

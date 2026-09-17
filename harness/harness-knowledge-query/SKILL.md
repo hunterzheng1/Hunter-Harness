@@ -46,6 +46,18 @@ powershell.exe -Command "npx hunter-harness knowledge query '<用户需求原文
 4. 把命中内容作为历史线索；涉及当前行为时仍以当前代码和验证结果为准。
 5. 若命令返回远端不可达、未绑定或未认证，记录明确 issue 后继续，不重试本地方案。
 
+## 留证与 plan 门禁（09-M4）
+
+standard/full 档 change 的 plan 关门会校验知识查询收据锚点（fail-closed；fast 档豁免并记录跳过原因）：
+
+1. 保存查询的完整 JSON 输出：`npx hunter-harness knowledge query '<查询词>' --limit 10 --json > knowledge-query.json`（必须 `--json`；转述或截断的文本不是证据）。
+2. 写入锚点：`python <skills-root>/scripts/harness_plan_finalize.py record-knowledge-receipt --change-dir ".harness/changes/<cn>" --payload-file knowledge-query.json --json`。
+3. 锚点 `.harness/changes/<cn>/meta/knowledge-query-receipt.json` 按 `query_id` 幂等 upsert：同一条查询重录是重放，不占新预算；锚点只能由该命令写入，不得手拼。
+
+门禁校验（只读）：收据结构与身份（`query_id` 绑定 `receipt.query_hash`、`receipt_id` 形态）、`project_id` 与 `.harness/project.yaml` 绑定一致（跨项目收据拒绝）、查询数 ≤2、第二条必须是 `reason_code=directed_evidence_followup` 的定向追查。当前 CLI 每次查询均为 `initial_intent`——定向追查入口开放前，每个 change 只记录一条查询。
+
+查询失败留下的 `remote_knowledge_unavailable` 失败收据也是有效留证；strict（默认）下「全部查询失败」阻断关门，配置 `knowledgeGateMode=warn`（项目 `.harness/config/gate-policy.json`、change `meta/gate-policy.json`，或 env `HUNTER_HARNESS_KNOWLEDGE_GATE_MODE`，env 优先）可降级为警告。0 命中同样满足门禁：查的是「执行并留证」，不是「必须命中」。
+
 ## Output Contract
 
 必须说明：

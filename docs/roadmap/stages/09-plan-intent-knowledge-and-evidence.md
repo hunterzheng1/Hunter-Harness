@@ -239,7 +239,7 @@ PlanningContext = {
 
 ### 09-M4：知识查询门禁化
 
-状态：待实施。立项于 2026-09-17，采纳决策见 [D2](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+状态：已关闭（2026-09-17 实施完成）。立项于 2026-09-17，采纳决策见 [D2](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
 
 现状张力与本工作包的化解：`harness-plan` SKILL 阶段 1 现行规则为「条件触发，不每次必查」，依据是 2026-09 审查实测「无条件查询的自然语言原文 8/8 零命中」。该实测只覆盖*原文直查*——把用户需求整段原文直接作为查询词。本工作包门禁化的是另一件事：基于阶段 09 已冻结的 `IntentContract` 结构化线索（目标、领域词、模块线索、约束）构造查询，并锚定 `KnowledgeQueryReceipt`、把结果引用写入 `knowledge_refs`。8/8 零命中否定的是原文直查的收益，不构成对结构化必查的否定；门禁的对象是「执行并留证」，不是「必须命中」。
 
@@ -254,6 +254,8 @@ PlanningContext = {
 - 聚焦测试：fast 档豁免并记录跳过原因；standard/full 缺收据 fail-closed、有合法收据放行、伪造或跨项目收据拒绝；查询失败留下失败收据并按配置放行或阻断；第二次定向查询仍受阶段 09 预算约束。
 - 依赖的 fixture：09-M2 查询 contract fixture、合法/伪造/跨项目收据样例、各档位 profile fixture。
 - 汇合门禁：门禁判定只读机器字段（receipt 身份、档位、配置），中文文案仅展示；SKILL 文档、CLI 提示与脚本行为三者一致；fast 档零行为变化。
+- 实施记录：锚点 `.harness/changes/<cn>/meta/knowledge-query-receipt.json`（`{"schema_version":1,"queries":[...]}`）的唯一写入口是 `harness_plan_finalize.py record-knowledge-receipt`（按 `query_id` 幂等 upsert；预算 ≤2 条，第二槽位须 `reason_code=directed_evidence_followup`，失败尝试 `remote_knowledge_unavailable` 允许入档但仍占一条额度）。门禁校验 Module 为 `harness_plan_finalize.validate_knowledge_query_gate`（档位解析 v2 plan-profile 的 `content.tier` 优先、回退 `meta/gate-policy.json`，缺失/未知按 fast 处理）。接线 Adapter：`harness_gate.py close --phase plan`（`PHASE_GATE_RULES["plan"]={"knowledge_gate"}`；strict 阻断落 `closeStatus=KNOWLEDGE_GATE_FAILED` 并记 gate.blocked，warn 降级为 site=`knowledge-gate` 的 gate warning；判定并入 close payload 的 `knowledgeGate` 字段）与 `verify_plan`（只读附挂 `knowledgeGate`，不翻转 `ok`）。降级链：`HUNTER_HARNESS_KNOWLEDGE_GATE_MODE` > change `meta/gate-policy.json` 的 `knowledgeGateMode` > 项目 `.harness/config/gate-policy.json` > strict。项目身份绑定与 CLI `readLocalProjectId` 同口径解析 `.harness/project.yaml`；跨项目收据与 `query_id`↔`query_hash` 身份不符的伪造收据一律拒绝。「全部查询失败」strict 阻断、warn 放行；混合失败+成功放行。
+- 完成证据：`harness/scripts/tests/test_harness_knowledge_gate.py` 45/45（mode 解析链、tier 解析、record 幂等/预算/理由约束、validator 矩阵、verify 只读接线、close 端到端 strict/warn/fast/合法收据）；回归 `test_harness_gate` 131/131 + `test_harness_plan_finalize` 22/22、`test_harness_integration` 66/66。
 
 ## 停止条件和回退
 
