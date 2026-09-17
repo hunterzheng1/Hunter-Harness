@@ -30,6 +30,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_change as hc  # noqa: E402
+import harness_clarify as hcl  # noqa: E402
 import harness_context as hctx  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_ledger as hl  # noqa: E402
@@ -171,6 +172,7 @@ SCENARIO_OWNER_PHASE_ORDER = ("plan", "execute", "review", "submit")
 # 键的含义：
 #   plan_handoff      begin 时校验 plan 已 finalize（只有进入实现的第一个阶段需要）
 #   knowledge_gate    close 时校验知识查询收据锚点（09-M4；standard/full 档，fast 豁免）
+#   clarify_gate      close 时校验需求澄清闭环（10-M3；standard/full 档，fast 豁免）
 #   test_guard        begin 建测试基线快照、close 比对（改测试的阶段才需要）
 #   scenario_coverage close 时跑 C9 场景覆盖
 #   ledger_blocking   close 时 ledger 校验失败是否阻断（否则只进 payload）
@@ -178,7 +180,7 @@ SCENARIO_OWNER_PHASE_ORDER = ("plan", "execute", "review", "submit")
 #   head_may_advance  capsule 校验允许 HEAD 前移（会产生 commit 的阶段）
 #   projection_drift  close 时 projection receipt 变化即硬失败（外发边界）
 PHASE_GATE_RULES: dict[str, frozenset[str]] = {
-    "plan": frozenset({"knowledge_gate"}),
+    "plan": frozenset({"knowledge_gate", "clarify_gate"}),
     "execute": frozenset({
         "plan_handoff", "test_guard", "scenario_coverage",
         "ledger_blocking", "head_may_advance",
@@ -3873,6 +3875,41 @@ def cmd_close(args: argparse.Namespace) -> int:
                     },
                 )
 
+    # 10-M3: clarify gate — standard/full tier plan closes must have the
+    # requirement-ambiguity clarification closed (static checks re-run against
+    # the current plan-evidence-input; confirmation checklist fully answered).
+    # Default fail-closed; clarifyGateMode=off is the documented rollback and
+    # keeps the report as historical evidence.
+    clarify_gate_result: dict[str, Any] | None = None
+    if phase_gate_rule(args.phase, "clarify_gate"):
+        clarify_gate_result = hcl.validate_clarify_gate(project, change_dir)
+        if not clarify_gate_result.get("ok"):
+            persist_close_failure(
+                change_dir,
+                args.phase,
+                run_id,
+                capsule,
+                status="CLARIFY_GATE_FAILED",
+                error=clarify_gate_result,
+            )
+            record_gate_blocked(
+                change_dir,
+                phase=args.phase,
+                code=str(clarify_gate_result.get("code", "CLARIFY_GATE_FAILED")),
+                message=str(clarify_gate_result.get("message", "clarify gate blocked close")),
+                run_id=run_id,
+            )
+            return emit_error(
+                str(clarify_gate_result.get("code", "CLARIFY_GATE_FAILED")),
+                str(clarify_gate_result.get("message", "clarify gate blocked close")),
+                as_json=as_json,
+                extra={
+                    k: v
+                    for k, v in clarify_gate_result.items()
+                    if k not in {"ok", "code", "message"}
+                },
+            )
+
     close_status = args.status
     close_code = "PHASE_CLOSED"
     if ledger_result.get("code") == "LEDGER_OK_DEGRADED":
@@ -4133,6 +4170,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         "skillsRoot": capsule.get("skillsRoot") if capsule else None,
         "ledger": ledger_result,
         "knowledgeGate": knowledge_gate_result,
+        "clarifyGate": clarify_gate_result,
         "testGuard": guard_result,
         "event": event_result,
         "lease": release,

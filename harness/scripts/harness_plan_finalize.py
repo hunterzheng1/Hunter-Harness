@@ -29,6 +29,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import harness_clarify as hcl  # noqa: E402
 import harness_events  # noqa: E402
 import harness_paths as hp  # noqa: E402
 
@@ -711,7 +712,11 @@ def verify_plan(
         # v2 finalizer 证据路径（canonical 事实源是 transactions + journals）
         v2_result = _verify_plan_v2(change_dir)
         if v2_result is not None:
-            return _with_knowledge_gate_verdict(change_dir, v2_result, project)
+            return _with_clarify_verdict(
+                change_dir,
+                _with_knowledge_gate_verdict(change_dir, v2_result, project),
+                project,
+            )
         return _result_error("RECEIPT_MISSING", f"receipt not found: {receipt_path}")
 
     try:
@@ -964,7 +969,7 @@ def verify_plan(
             f"plan phase.end status is {phase_end_status!r}, expected 'OK'",
         )
 
-    return _with_knowledge_gate_verdict(
+    verified = _with_knowledge_gate_verdict(
         change_dir,
         {
             "ok": True,
@@ -984,6 +989,7 @@ def verify_plan(
         },
         project,
     )
+    return _with_clarify_verdict(change_dir, verified, project)
 
 
 
@@ -1485,6 +1491,24 @@ def _with_knowledge_gate_verdict(
     )
     enriched = dict(result)
     enriched["knowledgeGate"] = verdict
+    return enriched
+
+
+def _with_clarify_verdict(
+    change_dir: Path, result: dict[str, Any], project: Path | None = None
+) -> dict[str, Any]:
+    """把需求澄清门禁判定附到 verify 结果上（只读，不改 ok，10-M3）。
+
+    与知识查询门禁同一约定：阻断点唯一（plan 关门），verify 只交判定事实。
+    """
+    if not result.get("ok"):
+        return result
+    verdict = hcl.validate_clarify_gate(
+        Path(project) if project is not None else _project_for_change(change_dir),
+        change_dir,
+    )
+    enriched = dict(result)
+    enriched["clarifyGate"] = verdict
     return enriched
 
 

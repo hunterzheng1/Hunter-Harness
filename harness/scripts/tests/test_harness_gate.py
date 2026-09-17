@@ -3267,9 +3267,9 @@ class PhaseGateRuleTableTests(unittest.TestCase):
     def test_every_declared_rule_is_one_the_code_reads(self) -> None:
         """表里写了但没人读的开关是死规则，比缺规则更难发现。"""
         known = {
-            "plan_handoff", "knowledge_gate", "test_guard", "scenario_coverage",
-            "ledger_blocking", "review_outputs", "head_may_advance",
-            "projection_drift",
+            "plan_handoff", "knowledge_gate", "clarify_gate", "test_guard",
+            "scenario_coverage", "ledger_blocking", "review_outputs",
+            "head_may_advance", "projection_drift",
         }
         declared = set().union(*gate.PHASE_GATE_RULES.values())
         self.assertEqual(declared, known)
@@ -3279,6 +3279,7 @@ class PhaseGateRuleTableTests(unittest.TestCase):
         expected = {
             "plan_handoff": {"execute"},
             "knowledge_gate": {"plan"},
+            "clarify_gate": {"plan"},
             "test_guard": {"execute"},
             "scenario_coverage": {"execute"},
             "ledger_blocking": {"execute"},

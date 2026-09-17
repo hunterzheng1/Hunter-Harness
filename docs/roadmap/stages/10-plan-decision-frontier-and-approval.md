@@ -211,7 +211,7 @@ Plan 不直接覆盖规则、架构或领域文档。规则候选和可执行架
 
 ### 10-M3：需求歧义 Clarify 前置步
 
-状态：待实施。立项于 2026-09-17，采纳决策见 [D1](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+状态：已关闭（2026-09-17 实施完成）。立项于 2026-09-17，采纳决策见 [D1](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
 
 边界声明：阶段 10 既有决策树面向*设计决策*（fact / engineering_default / product_decision / risk_decision），在已有意图与证据之上收敛实现方案；10-M3 面向*需求歧义*，在 evidence-pack 校验与 finalize 之前执行，回答「需求本身是否有唯一可执行解释」。两者不共享节点语义：静态检查不通过或确认清单未闭环时，不进入决策树与审批流程。
 
