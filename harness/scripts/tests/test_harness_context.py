@@ -1883,6 +1883,12 @@ class BootstrapExecuteTests(unittest.TestCase):
         # 测试基线 guard 已由 gate begin 内部建立
         self.assertTrue(result["testBaseline"]["ok"])
         self.assertEqual(result["testBaseline"]["code"], "SNAPSHOT_CAPTURED")
+        # 16-M2：信封携带 waveDispatch（本夹具无 manifest → advisory 降级，不阻断）
+        self.assertIn("waveDispatch", result)
+        self.assertFalse(result["waveDispatch"]["available"])
+        self.assertEqual(
+            result["waveDispatch"]["reason"], "scenario-manifest-missing"
+        )
 
         starts = [
             e for e in self._events(change_dir)
@@ -2169,6 +2175,204 @@ class BootstrapScenarioWavesTest(unittest.TestCase):
             unreadable = CONTEXT._bootstrap_scenario_waves(unreadable_dir)
             self.assertFalse(unreadable["available"])
             self.assertEqual(unreadable["reason"], "scenario-manifest-unreadable")
+
+
+class ExecuteWaveDispatchTests(unittest.TestCase):
+    """16-M2：波次派发计划（完成集派生 + _bootstrap_wave_dispatch + execute-wave 命令）。"""
+
+    def _change_dir(self, tmp: str, manifest: dict | None) -> Path:
+        change_dir = Path(tmp) / "chg"
+        meta = change_dir / "meta"
+        meta.mkdir(parents=True)
+        if manifest is not None:
+            (meta / "scenario-manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+        return change_dir
+
+    def _write_ledger(self, change_dir: Path, validations: dict) -> None:
+        evidence = change_dir / "evidence"
+        evidence.mkdir(parents=True, exist_ok=True)
+        (evidence / "verification-ledger.json").write_text(
+            json.dumps({"schema_version": 2, "validations": validations}),
+            encoding="utf-8",
+        )
+
+    def test_derive_completed_scenarios_status_filter_and_dual_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = self._change_dir(tmp, None)
+            self.assertEqual(CONTEXT._derive_completed_scenarios(change_dir), set())
+            self._write_ledger(
+                change_dir,
+                {
+                    # v2 收据路径：OK 时取 coverage.passed
+                    "unitTests": {
+                        "status": "OK",
+                        "scenarioIds": ["UT-001"],
+                        "scenarioCoverage": {"passed": ["UT-001", "UT-002"]},
+                    },
+                    # 非 OK 条目不贡献完成集
+                    "lint": {"status": "FAIL", "scenarioIds": ["UT-009"]},
+                    # legacy 路径：OK + 无 coverage 时退回 scenarioIds（大小写不敏感）
+                    "legacyGate": {"status": "ok", "scenarioIds": ["UT-003"]},
+                    # 非 dict 条目容错
+                    "broken": "not-a-dict",
+                },
+            )
+            self.assertEqual(
+                CONTEXT._derive_completed_scenarios(change_dir),
+                {"UT-001", "UT-002", "UT-003"},
+            )
+
+    def test_derive_completed_scenarios_tolerates_malformed_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = self._change_dir(tmp, None)
+            evidence = change_dir / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "verification-ledger.json").write_text(
+                "{not json", encoding="utf-8"
+            )
+            self.assertEqual(CONTEXT._derive_completed_scenarios(change_dir), set())
+            # validations 非 dict/list 也容错
+            (evidence / "verification-ledger.json").write_text(
+                json.dumps({"schema_version": 2, "validations": "oops"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(CONTEXT._derive_completed_scenarios(change_dir), set())
+
+    def test_wave_dispatch_progression_via_ledger(self) -> None:
+        manifest = {
+            "schemaVersion": 2,
+            "scenarios": [
+                {"id": "UT-001", "priority": "P0", "ownerPhase": "execute"},
+                {
+                    "id": "UT-002",
+                    "priority": "P1",
+                    "ownerPhase": "execute",
+                    "dependsOn": ["UT-001"],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = self._change_dir(tmp, manifest)
+            first = CONTEXT._bootstrap_wave_dispatch(change_dir)
+            self.assertTrue(first["available"])
+            self.assertEqual(
+                [s["id"] for s in first["runnableNow"][0]["scenarios"]],
+                ["UT-001"],
+            )
+            self.assertEqual(first["blocked"][0]["id"], "UT-002")
+
+            self._write_ledger(
+                change_dir,
+                {
+                    "unitTests": {
+                        "status": "OK",
+                        "scenarioCoverage": {"passed": ["UT-001"]},
+                    }
+                },
+            )
+            second = CONTEXT._bootstrap_wave_dispatch(change_dir)
+            self.assertEqual(second["completed"], ["UT-001"])
+            self.assertEqual(
+                [s["id"] for s in second["runnableNow"][0]["scenarios"]],
+                ["UT-002"],
+            )
+            self.assertEqual(second["blocked"], [])
+            self.assertFalse(second["complete"])
+
+    def test_wave_dispatch_degrades_without_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dispatch = CONTEXT._bootstrap_wave_dispatch(self._change_dir(tmp, None))
+            self.assertFalse(dispatch["available"])
+            self.assertEqual(dispatch["reason"], "scenario-manifest-missing")
+            self.assertEqual(dispatch["runnableNow"], [])
+            self.assertEqual(dispatch["blocked"], [])
+            self.assertFalse(dispatch["complete"])
+
+    def test_execute_wave_command_split_local_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "demo")  # split-local：stateOwnership.runtimeRoot
+            contract_root = project / ".harness" / "changes" / "demo"
+            state_root = project / ".harness" / "state" / "changes" / "demo"
+            (state_root / "evidence").mkdir(parents=True)
+            # manifest 在 contract 根（plan 发布的耐用品）
+            (contract_root / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "scenarios": [
+                            {"id": "UT-001", "ownerPhase": "execute"},
+                            {
+                                "id": "UT-002",
+                                "ownerPhase": "execute",
+                                "dependsOn": ["UT-001"],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            # ledger 在 state 根（split-local 运行态）
+            (state_root / "evidence" / "verification-ledger.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "validations": {
+                            "unitTests": {
+                                "status": "OK",
+                                "scenarioCoverage": {"passed": ["UT-001"]},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = CONTEXT.execute_wave_dispatch(project, "demo")
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "EXECUTE_WAVE_DISPATCH")
+            dispatch = result["dispatch"]
+            self.assertTrue(dispatch["available"])
+            self.assertEqual(dispatch["completed"], ["UT-001"])
+            self.assertEqual(
+                [s["id"] for s in dispatch["runnableNow"][0]["scenarios"]],
+                ["UT-002"],
+            )
+            self.assertTrue(result["nextAction"])
+
+    def test_execute_wave_command_missing_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".harness" / "changes").mkdir(parents=True)
+            result = CONTEXT.execute_wave_dispatch(project, "ghost")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "CHANGE_NOT_FOUND")
+
+    def test_execute_wave_command_phase_parameter_defers_later_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "demo2")
+            contract_root = project / ".harness" / "changes" / "demo2"
+            (contract_root / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "scenarios": [
+                            {"id": "UT-001", "ownerPhase": "execute"},
+                            {"id": "RV-001", "ownerPhase": "review"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = CONTEXT.execute_wave_dispatch(project, "demo2")
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["dispatch"]["deferred"], ["RV-001"])
+            # review 视角下不再 deferred
+            review = CONTEXT.execute_wave_dispatch(project, "demo2", phase="review")
+            self.assertEqual(review["dispatch"]["deferred"], [])
+            self.assertEqual(review["dispatch"]["phase"], "review")
 
 
 if __name__ == "__main__":

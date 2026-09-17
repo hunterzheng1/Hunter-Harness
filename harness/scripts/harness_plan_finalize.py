@@ -470,6 +470,179 @@ def compute_scenario_waves(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+_WAVE_DISPATCH_PHASE_RANKS = {"plan": 0, "execute": 1, "review": 2, "submit": 3}
+
+
+def _wave_dispatch_field(scenario: dict[str, Any], *names: str) -> Any:
+    """按候选键名读取场景字段：同语义键在 v2 投影与 legacy 形状间有 camel/snake 两种拼写。"""
+    for name in names:
+        if name in scenario:
+            return scenario[name]
+    return None
+
+
+def _wave_dispatch_owner_rank(scenario: dict[str, Any]) -> int:
+    """ownerPhase 归一为派发序（镜像 gate 语义：run/test 别名 → execute，未知/缺失视为当期应做）。"""
+    normalized = hp.resolve_phase_name(
+        _wave_dispatch_field(scenario, "ownerPhase", "owner_phase")
+    )
+    if normalized not in VALID_OWNER_PHASES:
+        return _WAVE_DISPATCH_PHASE_RANKS["execute"]
+    return _WAVE_DISPATCH_PHASE_RANKS[normalized]
+
+
+def _wave_dispatch_detail(
+    scenario_id: str, wave: int, scenario: dict[str, Any]
+) -> dict[str, Any]:
+    """单个可派发场景的展示投影（只带非空字段，保持输出紧凑）。"""
+    detail: dict[str, Any] = {"id": scenario_id, "wave": wave}
+    priority = _wave_dispatch_field(scenario, "priority")
+    if isinstance(priority, str) and priority.strip():
+        detail["priority"] = priority.strip()
+    evidence = _wave_dispatch_field(
+        scenario, "requiredEvidenceKind", "required_evidence_kind"
+    )
+    if isinstance(evidence, str) and evidence.strip():
+        detail["requiredEvidenceKind"] = evidence.strip()
+    for output_key, names in (
+        ("testFile", ("testFile", "test_file")),
+        ("executableTestId", ("executableTestId", "executable_test_id")),
+    ):
+        value = _wave_dispatch_field(scenario, *names)
+        if isinstance(value, str) and value.strip():
+            detail[output_key] = value.strip()
+    return detail
+
+
+def compute_wave_dispatch(
+    scenarios: list[dict[str, Any]],
+    completed_ids: Any = None,
+    *,
+    phase: str = "execute",
+) -> dict[str, Any]:
+    """16-M2：从场景清单与已完成集合派生当前波次派发计划（纯派生，零副作用）。
+
+    入参为 legacy 形状的场景区列表（同 ``compute_scenario_waves``），外加已完成
+    场景 id 集合（由调用方从 ledger 派生）。返回::
+
+        {"available": True, "phase": "execute", "total": N,
+         "runnableNow": [{"wave": i, "scenarios": [{id, wave, ...}]}],
+         "blocked": [{"id", "wave", "pendingDeps"}],
+         "completed": [id, ...], "deferred": [id, ...],
+         "conflictGroups": [[id, ...]], "complete": bool}
+
+    - runnable：未完成 ∧ ownerPhase 归一后 ≤ ``phase`` ∧ ``dependsOn`` ⊆ completed；
+    - ``runnableNow`` 按波次升序分组，组内保持 manifest 声明序（输出确定性）；
+    - ``conflictGroups``：runnable 内共享同一 ``testFile`` 的场景组（≥2 个），
+      并行实现须串行或交同一执行者；
+    - ``deferred``：ownerPhase 晚于 ``phase`` 的场景，本阶段不派发；
+    - 依赖指向 deferred 或未完成场景 → ``blocked`` + ``pendingDeps``（fail-safe）；
+    - manifest 缺失/畸形/未知引用/成环沿用 ``compute_scenario_waves`` 降级码
+      （``available=False`` + ``reason``），调用方只做 advisory 降级。
+    """
+    ordered: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(
+            _wave_dispatch_field(scenario, "id", "scenario_id") or ""
+        ).strip()
+        if not scenario_id or scenario_id in seen:
+            continue
+        seen.add(scenario_id)
+        ordered.append((scenario_id, scenario))
+    normalized_phase = hp.resolve_phase_name(phase) or "execute"
+    phase_rank = _WAVE_DISPATCH_PHASE_RANKS.get(
+        normalized_phase, _WAVE_DISPATCH_PHASE_RANKS["execute"]
+    )
+    waves = compute_scenario_waves(scenarios)
+    if not waves.get("available"):
+        return {
+            "available": False,
+            "reason": waves.get("reason"),
+            "phase": normalized_phase,
+            "total": len(ordered),
+            "runnableNow": [],
+            "blocked": [],
+            "completed": [],
+            "deferred": [],
+            "conflictGroups": [],
+            "complete": False,
+        }
+    completed = {
+        str(item).strip()
+        for item in (
+            completed_ids
+            if isinstance(completed_ids, (list, tuple, set, frozenset))
+            else []
+        )
+        if str(item).strip()
+    }
+    wave_of = {
+        scenario_id: index
+        for index, group in enumerate(waves["waves"])
+        for scenario_id in group
+    }
+    runnable: list[tuple[int, dict[str, Any], str]] = []
+    blocked: list[dict[str, Any]] = []
+    done: list[str] = []
+    deferred: list[str] = []
+    for scenario_id, scenario in ordered:
+        if scenario_id in completed:
+            done.append(scenario_id)
+            continue
+        if _wave_dispatch_owner_rank(scenario) > phase_rank:
+            deferred.append(scenario_id)
+            continue
+        raw_deps = _wave_dispatch_field(scenario, "dependsOn", "depends_on")
+        pending = sorted(
+            {
+                str(dep).strip()
+                for dep in raw_deps
+                if str(dep).strip()
+            }
+            - completed
+            if isinstance(raw_deps, list)
+            else set()
+        )
+        wave = wave_of.get(scenario_id, 0)
+        if pending:
+            blocked.append(
+                {"id": scenario_id, "wave": wave, "pendingDeps": pending}
+            )
+            continue
+        detail = _wave_dispatch_detail(scenario_id, wave, scenario)
+        runnable.append(
+            (wave, detail, detail.get("testFile", ""))
+        )
+    by_wave: dict[int, list[dict[str, Any]]] = {}
+    by_test_file: dict[str, list[str]] = {}
+    for wave, detail, test_file in runnable:
+        by_wave.setdefault(wave, []).append(detail)
+        if test_file:
+            by_test_file.setdefault(test_file, [])
+            by_test_file[test_file].append(detail["id"])
+    conflict_groups = sorted(
+        (sorted(ids) for ids in by_test_file.values() if len(ids) > 1),
+        key=lambda group: group[0],
+    )
+    return {
+        "available": True,
+        "phase": normalized_phase,
+        "total": len(ordered),
+        "runnableNow": [
+            {"wave": wave, "scenarios": by_wave[wave]}
+            for wave in sorted(by_wave)
+        ],
+        "blocked": blocked,
+        "completed": done,
+        "deferred": deferred,
+        "conflictGroups": conflict_groups,
+        "complete": not runnable and not blocked,
+    }
+
+
 def unpack_v2_implementation_checkpoints(document: Any) -> dict[str, Any] | None:
     """v2 的 implementation_checkpoints artifact 包装体 → 门禁消费的形状。
 

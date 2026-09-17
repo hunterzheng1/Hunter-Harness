@@ -1536,6 +1536,7 @@ def bootstrap_execute(
         "testBaseline": test_guard,
         "plannedPhases": prepared.get("plannedPhases"),
         "scenarioWaves": _bootstrap_scenario_waves(change_dir),
+        "waveDispatch": _bootstrap_wave_dispatch(change_dir),
         "gateWarnings": gate_payload.get("gateWarnings"),
         "nextAction": (
             "TDD 编码与验证；完成后运行 "
@@ -1555,38 +1556,117 @@ def bootstrap_execute(
     }
 
 
+def _load_manifest_scenarios(
+    change_dir: Path,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """读取并解包 scenario-manifest 的场景区列表（16-M1/16-M2 共用读取路径）。
+
+    返回 ``(scenarios, None)`` 或 ``(None, reason)``；reason 沿用既有降级码
+    （missing/unreadable/unsupported/empty 或 unpack 错误码）。
+    """
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    if not manifest_path.is_file():
+        return None, "scenario-manifest-missing"
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, "scenario-manifest-unreadable"
+    if not isinstance(raw, dict):
+        return None, "scenario-manifest-unreadable"
+    unpacked = hpf.unpack_v2_scenario_manifest(raw)
+    if isinstance(unpacked, dict):
+        if not unpacked.get("ok"):
+            return None, str(
+                unpacked.get("code") or "scenario-manifest-unsupported"
+            )
+        manifest = unpacked.get("manifest")
+    elif isinstance(raw.get("scenarios"), list):
+        manifest = raw
+    else:
+        return None, "scenario-manifest-unsupported"
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list) or not scenarios:
+        return None, "scenario-manifest-empty"
+    return scenarios, None
+
+
 def _bootstrap_scenario_waves(change_dir: Path) -> dict[str, Any]:
     """16-M1：从 scenario-manifest 派生场景 DAG 拓扑波次（advisory，只读）。
 
     失败安全：manifest 缺失/畸形/依赖未解析或成环时返回 ``available=False`` +
     ``reason``，绝不阻断 bootstrap——波次是调度建议，不是门禁。
     """
-    manifest_path = change_dir / "meta" / "scenario-manifest.json"
-    if not manifest_path.is_file():
-        return {"available": False, "reason": "scenario-manifest-missing", "waves": []}
-    try:
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"available": False, "reason": "scenario-manifest-unreadable", "waves": []}
-    if not isinstance(raw, dict):
-        return {"available": False, "reason": "scenario-manifest-unreadable", "waves": []}
-    unpacked = hpf.unpack_v2_scenario_manifest(raw)
-    if isinstance(unpacked, dict):
-        if not unpacked.get("ok"):
-            return {
-                "available": False,
-                "reason": str(unpacked.get("code") or "scenario-manifest-unsupported"),
-                "waves": [],
-            }
-        manifest = unpacked.get("manifest")
-    elif isinstance(raw.get("scenarios"), list):
-        manifest = raw
-    else:
-        return {"available": False, "reason": "scenario-manifest-unsupported", "waves": []}
-    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
-    if not isinstance(scenarios, list) or not scenarios:
-        return {"available": False, "reason": "scenario-manifest-empty", "waves": []}
+    scenarios, reason = _load_manifest_scenarios(change_dir)
+    if scenarios is None:
+        return {"available": False, "reason": reason, "waves": []}
     return hpf.compute_scenario_waves(scenarios)
+
+
+def _derive_completed_scenarios(change_dir: Path) -> set[str]:
+    """16-M2：从 verification-ledger 派生已完成场景集（advisory 级信任，不重验收据）。
+
+    判定镜像 gate 场景覆盖语义：条目 ``status`` 为 OK 时取
+    ``scenarioCoverage.passed``（v2 收据路径），无 coverage 时退回
+    ``scenarioIds``（legacy 路径）；非 OK 条目不贡献完成集。门禁在 close 时
+    仍会 fail-closed 重验收据——本派生永不作门禁输入。
+    """
+    ledger_path = change_dir / "evidence" / "verification-ledger.json"
+    if not ledger_path.is_file():
+        return set()
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+    validations = ledger.get("validations") if isinstance(ledger, dict) else None
+    if isinstance(validations, dict):
+        entries: list[Any] = list(validations.values())
+    elif isinstance(validations, list):
+        entries = validations
+    else:
+        return set()
+    completed: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("status") or "").upper() != "OK":
+            continue
+        coverage = entry.get("scenarioCoverage")
+        passed = coverage.get("passed") if isinstance(coverage, dict) else None
+        ids = passed if isinstance(passed, list) else entry.get("scenarioIds")
+        if isinstance(ids, list):
+            completed.update(
+                text for text in (str(item).strip() for item in ids) if text
+            )
+    return completed
+
+
+def _bootstrap_wave_dispatch(
+    change_dir: Path,
+    *,
+    completed_root: Path | None = None,
+    phase: str = "execute",
+) -> dict[str, Any]:
+    """16-M2：波次派发计划（advisory，只读）。复用 16-M1 的 manifest 读取与降级语义。
+
+    ``completed_root``：ledger 读取根（split-local 状态下与 manifest 所在根
+    不同）；缺省与 manifest 同根。
+    """
+    scenarios, reason = _load_manifest_scenarios(change_dir)
+    if scenarios is None:
+        return {
+            "available": False,
+            "reason": reason,
+            "phase": hpaths.resolve_phase_name(phase) or "execute",
+            "total": 0,
+            "runnableNow": [],
+            "blocked": [],
+            "completed": [],
+            "deferred": [],
+            "conflictGroups": [],
+            "complete": False,
+        }
+    completed = _derive_completed_scenarios(completed_root or change_dir)
+    return hpf.compute_wave_dispatch(scenarios, completed, phase=phase)
 
 
 def _bootstrap_execute_failed(
@@ -2399,6 +2479,35 @@ def context_view(project: Path, change: str) -> dict[str, Any]:
     }
 
 
+def execute_wave_dispatch(
+    project: Path, change: str, *, phase: str = "execute"
+) -> dict[str, Any]:
+    """16-M2：execute 阶段中途重查波次派发计划（只读，零副作用）。
+
+    manifest 从 contract 根读取（与 bootstrap-execute 一致）；完成集从 state
+    根的 ledger 派生（split-local 状态下两根本不同）。advisory 降级不阻断。
+    """
+    project = Path(project).resolve()
+    try:
+        contract_root, _, state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
+    dispatch = _bootstrap_wave_dispatch(
+        contract_root, completed_root=state_root, phase=phase
+    )
+    return {
+        "ok": True,
+        "code": "EXECUTE_WAVE_DISPATCH",
+        "changeName": change,
+        "dispatch": dispatch,
+        "nextAction": (
+            "按 runnableNow 波次顺序派发；每波完成并写验收据后重跑本命令获取下一波"
+            if dispatch.get("available")
+            else "波次不可用，退回既有顺序执行（advisory 降级，不阻断）"
+        ),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_context.py")
     parser.add_argument("--json", action="store_true")
@@ -2440,6 +2549,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="NOTE",
         help="15-M3 断路器人工确认：附根因与修复说明后放行 EXECUTE_CIRCUIT_OPEN",
+    )
+    execute_wave = sub.add_parser(
+        "execute-wave",
+        help="16-M2：派生当前可并行派发的场景波次计划（只读 advisory，阶段中途重查）",
+    )
+    execute_wave.add_argument("--json", action="store_true")
+    execute_wave.add_argument("--project", required=True, type=Path)
+    execute_wave.add_argument("--change", "--change-dir", dest="change", required=True)
+    execute_wave.add_argument(
+        "--phase",
+        default="execute",
+        help="派发视角的阶段（ownerPhase 晚于它的场景列为 deferred）",
     )
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
@@ -2527,6 +2648,8 @@ def main(argv: list[str] | None = None) -> int:
             executor_model=args.executor_model,
             circuit_ack=args.circuit_ack,
         )
+    elif args.command == "execute-wave":
+        result = execute_wave_dispatch(args.project, args.change, phase=args.phase)
     elif args.command == "close":
         result = close_transition(
             args.project,

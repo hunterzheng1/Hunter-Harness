@@ -212,7 +212,7 @@ Interface 发生破坏性变化时，暂停依赖方并更新契约；不得让�
 | 13 | [Platform 信息架构](./stages/13-platform-information-architecture.md) | 分支文件、项目资料、项目知识和变更记录 | 实施中（13.1～13.5 查询契约、只读 Server Adapter、13.6a 分支监控 Query Adapter、13.6b Materials PG source/production composition、13.6c 导出内部 contract/stream/CAS/metadata 与 13.7 Web 工作台性能/可访问性已关闭；分支快照生产者、知识/变更持久源、导出 HTTP 生命周期与完整生产 API 接线待实施） |
 | 14 | [迁移、发布与整体验收](./stages/14-migration-rollout-and-acceptance.md) | 兼容迁移、效果指标、回滚和真实流程验证 | 待实施 |
 | 15 | [执行环与支撑环增强](./stages/15-execution-loop-enhancements.md) | 档位裁决可解释、quirk 指纹建议、失败断路器、review 三链状态表 | 已实施（15-M1～M4，2026-09-17；源自 2026-09-17 流程调研报告 P2/P3 执行环建议；DAG 波次与度量面板登记为后续） |
-| 16 | [Execute 场景 DAG 波次](./stages/16-scenario-dag-waves.md) | 场景级 depends_on 契约、引用/成环校验、拓扑波次派生（advisory） | 已实施（16-M1，2026-09-18；实际波次调度登记为 16-M2） |
+| 16 | [Execute 场景 DAG 波次](./stages/16-scenario-dag-waves.md) | 场景级 depends_on 契约、引用/成环校验、拓扑波次派生（advisory）、波次派发读模型（execute-wave） | 已实施（16-M1～M2，2026-09-18） |
 | 17 | [决策级度量面板](./stages/17-decision-metrics-panel.md) | 跨 change 效率聚合：周期时长、门禁首过率、评审发现密度、自动度 | 已实施（17-M1，2026-09-18） |
 
 ## 阶段与工作包切分规则

@@ -29,21 +29,36 @@
   - CLI：`SCENARIO_OPTIONAL_KEYS` 纳入 `depends_on`；模板 UT-003 示例；`collectInputProblems` 逐条校验（数组型/非空字符串/自引用，逐字段定位）+ 闭包校验（`引用了未声明的场景 X`、`场景依赖成环: A -> B -> A`，确定性 DFS）；归一化排序。`plan-publish` 包装信封把 evidence-pack 失败的 `problems` 提升到顶层（对齐 `recovery_action`/`guidance` 惯例，包装层不吞字段定位）。
   - Python：`_V2_SCENARIO_OPTIONAL_LIST_FIELD_MAP = (("depends_on", "dependsOn"),)` 透传列表字段；`parse_test_scenarios` 支持依赖列（占位符 `-`/`:`/`—`/`·` 过滤）；`compute_scenario_waves` Kahn 分层派生（波次内按 `scenario_id` 排序保确定性，未知引用/成环/空 manifest 降级）；`harness_context._bootstrap_scenario_waves` 注入 `scenarioWaves` advisory（降级透传 unpack 错误码）。
 
+## 工作包：16-M2 波次调度读模型与派发计划（execute-wave）
+
+- Module / Adapter：Python `harness_plan_finalize.py`（`compute_wave_dispatch` 纯函数）、`harness_context.py`（完成集派生 + `execute-wave` 只读子命令 + bootstrap-execute 信封 `waveDispatch` 块）、`harness/harness-execute/SKILL.md`（派发消费规程）。
+- 输入 Interface 及版本：legacy 形状 scenarios（含 `dependsOn`/`ownerPhase`/`testFile`/`executableTestId`/`priority`）+ 完成场景 id 集合（`verification-ledger.json` 的 `validations` 条目派生，advisory 级信任：条目 status==OK 时取 `scenarioCoverage.passed`，无 coverage 时退回 `scenarioIds`）。
+- 输出 Interface 及版本：`compute_wave_dispatch(scenarios, completed_ids, *, phase="execute")` → `{available, phase, total, runnableNow: [{wave, scenarios}], blocked: [{id, wave, pendingDeps}], completed, deferred, conflictGroups, complete, reason?}`；CLI `harness_context.py execute-wave --project . --change <cn> [--phase execute] --json`（只读零副作用）；bootstrap-execute 信封新增 `waveDispatch`（additive，16-M1 `scenarioWaves` 形状冻结不动）。
+- 判定语义：runnable = 未完成 ∧ ownerPhase 归一（`hp.resolve_phase_name`，run/test→execute，未知/缺失视为当期应做，镜像 gate `_scenario_owner_phase_rank` 语义）≤ phase ∧ `dependsOn` ⊆ completed；runnableNow 按波次升序分组、组内 manifest 声明序（确定性输出）；conflictGroups = runnable 内按 `testFile` 分组的 ≥2 共享文件组（并行实现须串行或交同一执行者）；deferred = ownerPhase 晚于 phase 的场景；依赖指向 deferred/未完成场景 → blocked + `pendingDeps`（fail-safe）；manifest 缺失/畸形/未知引用/成环沿用 16-M1 降级码（`available=False + reason`）。
+- 允许修改的路径：`harness/scripts/harness_plan_finalize.py`、`harness/scripts/harness_context.py`、`harness/scripts/tests/test_harness_plan_finalize.py`、`harness/scripts/tests/test_harness_context.py`、`harness/harness-execute/SKILL.md`、`docs/roadmap/stages/16-scenario-dag-waves.md`、`docs/roadmap/README.md`、`docs/research/2026-09-17-harness-flow-review.md`。
+- 禁止修改的共享区域：ledger/findings/fixback schema 与 gate close 门禁语义；runner 项目级单实例锁；16-M1 `scenarioWaves` 既有形状；TS core/CLI（本包纯 Python + 文档）。
+- 是否访问网络 / 调用模型 / 写文件：否 / 否 / 否（只读派生，不持久化波次状态，同 16-M1 哲学）。
+- 兼容与回滚方式：全部 additive；旧版本无 `execute-wave` 命令——SKILL.md 消费规程写明命令缺失或 `available=False` 时退回既有顺序执行；回滚 = 还原提交。
+- 聚焦测试：finalize 侧 `compute_wave_dispatch`（无依赖全 runnable / 链式推进 / 部分完成 / 全完成 / 未知引用与成环降级透传 / testFile 冲突分组 / blocked pendingDeps / ownerPhase 延后 deferred / run-test 别名归一 / 输出确定性）；context 侧完成集派生（ledger 缺失→空集、status 过滤、coverage.passed 与 scenarioIds 双路径、多 entry 并集、畸形容错）+ `_bootstrap_wave_dispatch` + `execute-wave` 端到端（split-local state 夹具）+ bootstrap 信封 `waveDispatch` 存在性。
+- 依赖的 fixture：合成 scenario-manifest + 合成 verification-ledger（`make_change` split-local state 夹具）。
+- 汇合门禁：`test_harness_plan_finalize.py` 与 `test_harness_context.py` 全绿，既有测试无回归。
+- 状态：已实施（2026-09-18 立项，同日落地）。
+
 ## 后续登记（已立项建议、不在本阶段当前工作包内）
 
-| 建议 | 报告依据 | 定位 |
-|---|---|---|
-| 16-M2 波次调度器（实际并行派发） | F2、§4.2、§2.3-B | 新组件；worktree-per-wave 或复用轻任务 WI-3.3 write-scope 冲突检测；首试点 standard 档；fast 档可随行 |
+（暂无——16-M2 已于 2026-09-18 立项转为工作包。）
 
 ## 验收条件
 
 - 16-M1 聚焦测试全绿，且 TS core/CLI 与 Python 既有测试无回归。
+- 16-M2 聚焦测试全绿：`execute-wave` 只读零副作用，advisory 降级路径不阻断。
 - canonical absence 保证旧输入零字节漂移；波次纯派生不持久化。
 - advisory 降级路径永不阻断 `bootstrap-execute`。
 
 ## 非目标
 
-- 不实现实际并行调度（16-M2 范围）。
+- 不做 worktree-per-wave 隔离生命周期；不引入场景级 claim/lease 持久化（波次状态纯派生）。
 - 不改变 task 级依赖与发布拓扑排序语义。
 - 不扩展 ledger、findings、fixback 持久化 schema。
-- 不让 `scenarioWaves` 成为门禁输入（advisory only）。
+- 不让 `scenarioWaves`/`waveDispatch` 成为门禁输入（advisory only），gate close 语义不变。
+- 不改变测试运行器项目级单实例锁——验证执行保持串行；并行只作用于同波次无冲突场景的实现/分析分派。

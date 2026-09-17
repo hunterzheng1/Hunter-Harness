@@ -705,6 +705,177 @@ class ScenarioDependencyContractTest(unittest.TestCase):
         self.assertEqual(empty["reason"], "scenario-manifest-empty")
 
 
+class WaveDispatchTests(unittest.TestCase):
+    """16-M2：compute_wave_dispatch 波次派发计划（纯派生，确定性输出）。"""
+
+    @staticmethod
+    def _chain() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "UT-001",
+                "priority": "P0",
+                "ownerPhase": "execute",
+                "requiredEvidenceKind": "ledger",
+                "testFile": "tests/test_a.py",
+                "executableTestId": "test_a",
+            },
+            {
+                "id": "UT-002",
+                "priority": "P1",
+                "ownerPhase": "execute",
+                "requiredEvidenceKind": "automated_test",
+                "dependsOn": ["UT-001"],
+            },
+            {
+                "id": "UT-003",
+                "priority": "P1",
+                "ownerPhase": "execute",
+                "requiredEvidenceKind": "automated_test",
+                "testFile": "tests/test_a.py",
+            },
+        ]
+
+    def test_no_completed_dispatches_first_wave_with_conflict_groups(self) -> None:
+        dispatch = finalizer.compute_wave_dispatch(self._chain(), set())
+        self.assertTrue(dispatch["available"])
+        self.assertEqual(dispatch["phase"], "execute")
+        self.assertEqual(dispatch["total"], 3)
+        self.assertEqual(
+            [group["wave"] for group in dispatch["runnableNow"]], [0]
+        )
+        self.assertEqual(
+            [s["id"] for s in dispatch["runnableNow"][0]["scenarios"]],
+            ["UT-001", "UT-003"],
+        )
+        # 同一波共享同一 testFile → 冲突组（并行实现须串行）
+        self.assertEqual(dispatch["conflictGroups"], [["UT-001", "UT-003"]])
+        self.assertEqual(
+            dispatch["blocked"],
+            [{"id": "UT-002", "wave": 1, "pendingDeps": ["UT-001"]}],
+        )
+        self.assertEqual(dispatch["completed"], [])
+        self.assertEqual(dispatch["deferred"], [])
+        self.assertFalse(dispatch["complete"])
+
+    def test_completion_advances_dispatch_across_waves(self) -> None:
+        scenarios = self._chain()
+        first = finalizer.compute_wave_dispatch(scenarios, {"UT-001"})
+        # UT-003（wave 0）与 UT-002（wave 1）同时就绪，按波次升序分组
+        self.assertEqual([group["wave"] for group in first["runnableNow"]], [0, 1])
+        self.assertEqual(
+            [s["id"] for g in first["runnableNow"] for s in g["scenarios"]],
+            ["UT-003", "UT-002"],
+        )
+        self.assertEqual(first["blocked"], [])
+        self.assertEqual(first["completed"], ["UT-001"])
+        self.assertEqual(first["conflictGroups"], [])
+
+        second = finalizer.compute_wave_dispatch(scenarios, {"UT-001", "UT-003"})
+        self.assertEqual(
+            [s["id"] for s in second["runnableNow"][0]["scenarios"]], ["UT-002"]
+        )
+
+        done = finalizer.compute_wave_dispatch(
+            scenarios, {"UT-001", "UT-002", "UT-003"}
+        )
+        self.assertTrue(done["complete"])
+        self.assertEqual(done["runnableNow"], [])
+        self.assertEqual(done["blocked"], [])
+
+    def test_owner_phase_after_dispatch_phase_is_deferred_and_blocks_dependents(
+        self,
+    ) -> None:
+        scenarios = [
+            {"id": "UT-001", "ownerPhase": "execute"},
+            {"id": "RV-001", "ownerPhase": "review"},
+            {"id": "UT-002", "ownerPhase": "execute", "dependsOn": ["RV-001"]},
+        ]
+        dispatch = finalizer.compute_wave_dispatch(scenarios, set())
+        self.assertEqual(dispatch["deferred"], ["RV-001"])
+        self.assertEqual(
+            [s["id"] for s in dispatch["runnableNow"][0]["scenarios"]], ["UT-001"]
+        )
+        # 依赖 deferred 场景 → fail-safe blocked
+        self.assertEqual(
+            dispatch["blocked"],
+            [{"id": "UT-002", "wave": 1, "pendingDeps": ["RV-001"]}],
+        )
+        # RV-001 未完成 → UT-002 保持 blocked，execute 视角未收尾
+        pending = finalizer.compute_wave_dispatch(scenarios, {"UT-001"})
+        self.assertFalse(pending["complete"])
+        # deferred 场景完成（review 阶段做完）后 UT-002 解锁；全部完成后 complete
+        unblocked = finalizer.compute_wave_dispatch(scenarios, {"UT-001", "RV-001"})
+        self.assertEqual(
+            [s["id"] for s in unblocked["runnableNow"][0]["scenarios"]],
+            ["UT-002"],
+        )
+        self.assertFalse(unblocked["complete"])
+        done = finalizer.compute_wave_dispatch(
+            scenarios, {"UT-001", "RV-001", "UT-002"}
+        )
+        self.assertTrue(done["complete"])
+
+    def test_run_and_test_aliases_dispatch_as_execute(self) -> None:
+        scenarios = [
+            {"id": "X", "owner_phase": "run"},
+            {"id": "Y", "ownerPhase": "test"},
+        ]
+        dispatch = finalizer.compute_wave_dispatch(scenarios, set())
+        self.assertEqual(dispatch["deferred"], [])
+        self.assertEqual(
+            [s["id"] for s in dispatch["runnableNow"][0]["scenarios"]], ["X", "Y"]
+        )
+        # 未知 ownerPhase 视为当期应做（镜像 gate 语义）
+        unknown = finalizer.compute_wave_dispatch(
+            [{"id": "Z", "ownerPhase": "bogus"}], set()
+        )
+        self.assertEqual(unknown["deferred"], [])
+
+    def test_dependency_problems_degrade_like_waves(self) -> None:
+        cycle = finalizer.compute_wave_dispatch(
+            [{"id": "A", "dependsOn": ["B"]}, {"id": "B", "dependsOn": ["A"]}],
+            set(),
+        )
+        self.assertFalse(cycle["available"])
+        self.assertEqual(cycle["reason"], "scenario-dependency-cycle")
+        self.assertEqual(cycle["runnableNow"], [])
+        self.assertEqual(cycle["blocked"], [])
+        self.assertFalse(cycle["complete"])
+
+        unresolved = finalizer.compute_wave_dispatch(
+            [{"id": "A", "dependsOn": ["ghost"]}], set()
+        )
+        self.assertFalse(unresolved["available"])
+        self.assertEqual(unresolved["reason"], "scenario-dependency-unresolved")
+        self.assertEqual(unresolved["total"], 1)
+
+        empty = finalizer.compute_wave_dispatch([], set())
+        self.assertFalse(empty["available"])
+        self.assertEqual(empty["reason"], "scenario-manifest-empty")
+
+    def test_unknown_completed_ids_ignored_and_output_deterministic(self) -> None:
+        scenarios = self._chain()
+        first = finalizer.compute_wave_dispatch(scenarios, {"ghost", "UT-001"})
+        second = finalizer.compute_wave_dispatch(scenarios, ["UT-001", "ghost"])
+        self.assertEqual(first["completed"], ["UT-001"])
+        self.assertEqual(
+            json.dumps(first, sort_keys=True),
+            json.dumps(second, sort_keys=True),
+        )
+        # 重复调用输出逐字节一致（json sort_keys 归一）
+        self.assertEqual(
+            json.dumps(first, sort_keys=True),
+            json.dumps(
+                finalizer.compute_wave_dispatch(scenarios, {"UT-001"}),
+                sort_keys=True,
+            ),
+        )
+        # 非集合入参容错
+        degraded = finalizer.compute_wave_dispatch(scenarios, "not-a-set")
+        self.assertTrue(degraded["available"])
+        self.assertEqual(degraded["completed"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
