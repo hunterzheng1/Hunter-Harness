@@ -91,7 +91,7 @@ function mergePatch(target: unknown, patch: unknown): unknown {
   const base: Record<string, unknown> = isRecord(target) ? { ...target } : {};
   for (const [key, value] of Object.entries(patch)) {
     if (value === null) {
-      delete base[key];
+      Reflect.deleteProperty(base, key);
     } else {
       base[key] = mergePatch(base[key], value);
     }
