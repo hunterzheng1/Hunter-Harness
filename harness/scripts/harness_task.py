@@ -1425,7 +1425,9 @@ def _generate_plan_md(
     消费方契约：
     - _business_goal_from_sources 读 `目标: <text>` 行（harness_archive.py:5447）
     - classify_risk 读 `风险等级: fast|standard|full`（harness_gate.py:1421）
-    - build_plan_candidates._tasks_from_plan 读 `## Tasks` + `### T1`
+    - harness_knowledge_candidates._TASK_FLOW_T1_OBJECTIVE 与下方 T1 目标文案
+      逐字节一致（06B-4 起任务候选从 meta/task.json 存在性直采，不再解析本
+      文件的 `## Tasks`；两处文案必须同步修改）
     """
     change = str(task.get("changeId") or change_dir.name)
     goal = str(task.get("goal") or "")

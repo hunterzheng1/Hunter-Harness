@@ -4803,7 +4803,7 @@ def write_archive_meta(work_dir: Path, summary: dict[str, Any]) -> Path:
 
 
 def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
-    """Generate candidates/knowledge.json from summary-data + plans/*.md.
+    """Generate candidates/knowledge.json from summary-data + plan 产物直采。
 
     Mirrors write_archive_meta: derived from the same summary, written before the
     after-manifest so its bytes are covered. The archive directory name is the
@@ -4811,7 +4811,8 @@ def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
 
     Sources (in merge order):
     1. Summary 三源 (reviewFindings / knownRisks / decisions)
-    2. Plans/*.md (design Requirements / Risks / Invariants, plan Tasks, test Scenarios)
+    2. meta/plan-evidence-input.json 直采（06B-4 起；缺失时回退 meta/task.json
+       的轻量任务流候选）
 
     Duplicates are deduplicated by candidate_id (summary 三源优先)。
     """
@@ -4829,13 +4830,22 @@ def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
     )
 
     # Merge plan-derived candidates (soft-fail: empty plans still produce a valid output).
-    plan_candidates = hkc.build_plan_candidates(
-        work_dir,
-        change_key=change_key,
-        archive_id=archive_id,
-        producer_version=producer_version,
-        created_at=created_at,
-    )
+    # Hostile meta/plan-evidence-input.json / meta/task.json → ValueError：拒绝直采，
+    # 只丢弃计划产物候选，summary 三源候选照常落盘，归档不中断。
+    try:
+        plan_candidates = hkc.build_plan_candidates(
+            work_dir,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            f"[harness-archive] 计划产物候选直采被拒绝，按空处理：{exc}",
+            file=sys.stderr,
+        )
+        plan_candidates = []
     existing_ids = {c["candidate_id"] for c in candidates}
     for candidate in plan_candidates:
         if candidate["candidate_id"] not in existing_ids:

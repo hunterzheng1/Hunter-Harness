@@ -482,7 +482,7 @@ Adapter 直接消费阶段 01 canonical serialized `ArchiveIngestReceipt`，不�
 
 ### 06B-4：知识候选 JSON 直采
 
-状态：待实施。立项于 2026-09-17，采纳决策见 [D3](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
+状态：已实施（2026-09-17），待独立验收。立项于 2026-09-17，采纳决策见 [D3](../../decisions/2026-09-17-adopt-flow-review-short-term.md)。
 
 现状锚点：`harness/scripts/harness_knowledge_candidates.py` 的 `build_plan_candidates`（约 898 行起）经 `_markdown_sections`、`_goal_from_design` 等解析器，从 `plans/<change>-design.md` / `-plan.md` / `-test-scenarios.md` 的 `## Goal`、`## Requirements`、`## Risks`、`## Invariants`、`## Tradeoffs`、`## Compatibility boundaries`、`## Tasks` 章节反解析候选；调用方为 `harness_archive.py` 与 `harness_task.py`。Markdown 已降级为渲染视图后，这形成「从渲染物反向解析」的反向依赖，并阻塞阶段 11 的四件套收敛（渲染层不能自由调整）。
 
@@ -511,6 +511,17 @@ Adapter 直接消费阶段 01 canonical serialized `ArchiveIngestReceipt`，不�
 | 任务摘要（task） | plan.md `## Tasks` | plan-evidence-input 任务/场景引用 | 同上 |
 
 各行的 JSON 字段映射表在实施时冻结并写入 Module 注释与聚焦测试；本表只固定「类别 → 来源替换」的边界，不预定义字段名。
+
+**实施完成证据（2026-09-17）**：
+
+- 字段映射冻结表写入 `harness_knowledge_candidates.py` 模块注释，与聚焦测试 `PlanEvidenceInputExtractionTest` 一一对应；JSON 直采的新 `build_plan_candidates` 顺序为 requirements → goal → risks → invariants → tradeoffs → compatibility → tasks → scenarios（与旧路径一致，保证去重优先级兼容）。旧反解析路径更名 `_build_plan_candidates_from_markdown` 并标注 DEAD CODE（回滚开关，验收后删除）。
+- 等价比对：`PlanEvidenceParityTest` 用同一批内容构造旧 md 夹具与等价 `plan-evidence-input.json`，断言旧路径产出的**全部**候选与直采输出逐字段相等（含 `candidate_id`/`content_hash`/`source_refs`），即候选 ID 与内容指纹稳定目标达成。
+- **登记差异 1（缺陷修复）**：旧 `_requirements_from_design` 的 kind 切片错误（`prefix[1:close_bracket]`）使 md 路径从未产出 requirement 候选（实证：Requirements 行 100% 被跳过）；直采修复该缺陷，相应地新增 requirement 候选。测试显式钉住旧路径「永不产出 requirement 候选」与新路径的正确产出，作为唯一允许的集合差异。
+- **登记差异 2（同源双写）**：`requirements` 键缺失时按 CLI `requirementsFrom` 推导，其 invariant 项与 `_invariant_candidates_pei` 从同一 `approval.content.invariants` 独立产出内容相同、`candidate_id` 不同的两条候选（kind 命名空间隔离）。与 CLI 渲染时代「Requirements 节 + Invariants 节」同源双写的预期一致，非回归。
+- **登记差异 3（历史遗留）**：旧路径 goal/task/scenario 不做 unescape（多行值残留 `<br>`），直采取 JSON 原值——属旧路径缺陷，不在本工作包修复范围。
+- hostile 语义：文件缺失 → 软失败 `[]`；`meta/task.json` 存在则回退产出 T1 任务候选；文件存在但 JSON 非法 / 顶层非对象 / 消费字段类型漂移 / 消费记录键集不符（缺键或意外键）/ 非法 `kind` → `ValueError`。`harness_archive.write_knowledge_candidates` 在合并处捕获 `(OSError, ValueError)` 并写 stderr warning，只丢弃计划产物候选、summary 三源候选照常落盘（集成测试 `test_hostile_plan_evidence_input_does_not_break_summary_candidates` 覆盖）。
+- 聚焦测试：`test_harness_knowledge_candidates.py` 53/53 通过（其中新增 22 条：映射 8、等价 3、hostile 7、来源选择 4）；`test_harness_archive.py` + `test_harness_task.py` 228/228 通过；harness Python 全量 discover 1706 个测试，唯一失败 `test_harness_performance_contract.test_web_runtime_is_not_owned_by_cli_repository`（README 缺 `hunter-platform` 字样）经 stash 复核为预置失败，与本工作包无交集。
+- 顺带修复：`test_harness_knowledge_candidates.py` 的 `if __name__ == "__main__": unittest.main()` 原位于文件中段，导致脚本直跑时其后全部用例被静默跳过（28/53）；已移至文件末尾。
 
 ## 操作进度与监控
 

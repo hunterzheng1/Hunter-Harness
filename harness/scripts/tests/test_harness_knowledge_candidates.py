@@ -332,8 +332,10 @@ class AssetMetadataTests(unittest.TestCase):
         self._assert_asset_defaults(candidates[0])
 
     def test_plan_derived_candidates_carry_asset_fields(self) -> None:
+        # 06B-4 起生产路径是 meta/plan-evidence-input.json 直采；
+        # 旧 plans/*.md 反解析路径的等价覆盖见 PlanDesignExtractionTest。
         candidates = hkc.build_plan_candidates(
-            _archive_dir_with_design(),
+            _archive_dir_with_plan_evidence_input(_minimal_plan_evidence_input()),
             change_key="simple-mode-adoption",
             archive_id="arc_test",
             producer_version="1",
@@ -532,9 +534,28 @@ class ArchiveWiringTests(unittest.TestCase):
             out = ha.write_knowledge_candidates(archive, {"changeName": "quiet-change"})
             self.assertEqual(json.loads(out.read_text(encoding="utf-8")), [])
 
+    def test_hostile_plan_evidence_input_does_not_break_summary_candidates(self) -> None:
+        # 06B-4：meta/plan-evidence-input.json 非法 → 拒绝直采并记 warning，
+        # 计划产物候选按空处理；summary 三源候选照常落盘，归档不中断。
+        import tempfile
 
-if __name__ == "__main__":
-    unittest.main()
+        import harness_archive as ha
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / ".harness" / "archive" / "usage-stats-cli-reporting"
+            (archive / "reports" / "final").mkdir(parents=True)
+            (archive / "meta").mkdir(parents=True)
+            (archive / "reports" / "final" / "summary-data.json").write_text(
+                json.dumps(SUMMARY, ensure_ascii=False), encoding="utf-8"
+            )
+            (archive / "meta" / "plan-evidence-input.json").write_text(
+                "{not json", encoding="utf-8"
+            )
+
+            out = ha.write_knowledge_candidates(archive, SUMMARY)
+            written = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(len(written), 4)
+            self.assertTrue(all("goal" not in item["keywords"] for item in written))
 
 
 DESIGN_MD = """# {change}-design
@@ -570,10 +591,14 @@ DESIGN_MD = """# {change}-design
 
 
 class PlanDesignExtractionTest(unittest.TestCase):
-    """build_plan_candidates 的 design 章节提取（审查报告 2026-09 补口）。"""
+    """旧 plans/*.md 反解析路径（dead code 回滚开关）的 design 章节提取。
+
+    06B-4 起生产路径从 meta/plan-evidence-input.json 直采；本组测试用 md 夹具
+    钉住回滚路径的输出，新旧路径的逐字段等价由 PlanEvidenceParityTest 保证。
+    """
 
     def _extract(self) -> list[dict]:
-        return hkc.build_plan_candidates(
+        return hkc._build_plan_candidates_from_markdown(
             _archive_dir_with_design(),
             change_key="simple-mode-adoption",
             archive_id="arc_test",
@@ -613,3 +638,447 @@ def _archive_dir_with_design() -> Path:
         DESIGN_MD.replace("{change}", "simple-mode-adoption"), encoding="utf-8"
     )
     return root
+
+
+# ---------------------------------------------------------------------------
+# 06B-4：meta/plan-evidence-input.json 直采（聚焦测试冻结字段映射表）
+# ---------------------------------------------------------------------------
+
+_PARITY_REQUIREMENT_TEXT = "git/diff 失败跳过规模判定、不阻断 propose"
+
+# 与 _parity_plan_evidence_input() 逐条等价的 md 三件套（单值列表天然满足
+# codepoint 排序，多值的 tasks/scenarios 两条路径都保序）。
+PARITY_DESIGN_MD = """# parity-change-design
+
+## Goal
+
+让用量上报在离线时也不丢失数据。
+
+## User-visible outcome
+
+离线期间的数据在恢复连接后自动补报。
+
+## Requirements
+
+- requirement:req-001 [failure_behavior]: git/diff 失败跳过规模判定、不阻断 propose
+
+## Risks
+
+- 遥测失败可能拖慢命令
+- Mitigation: 上报失败不阻断 commit
+
+## Invariants
+
+- 上报失败不影响主命令退出码
+
+## Tradeoffs
+
+- 否决独立入口，因为会制造第二入口
+
+## Compatibility boundaries
+
+- 旧 proposal 没有 auto-scale 字段时不受影响
+"""
+
+PARITY_PLAN_MD = """# parity-change-plan
+
+## Tasks
+
+### T1
+
+搭建项目骨架
+
+### T2
+
+实现加法与单元测试
+"""
+
+PARITY_TEST_SCENARIOS_MD = """# parity-change-test-scenarios
+
+## S1: 加法结果正确
+
+## S2: 除零给出明确错误
+"""
+
+
+def _parity_plan_evidence_input() -> dict:
+    """与 PARITY_*_MD 三件套逐条等价（外加 intent.goal，验证优先级）。"""
+    return {
+        "intent": {"goal": "intent 里的目标，应被 approval.content.goal 覆盖"},
+        "approval": {
+            "content": {
+                "goal": "让用量上报在离线时也不丢失数据。",
+                "user_visible_outcome": "离线期间的数据在恢复连接后自动补报。",
+                "risks": [
+                    {"risk": "遥测失败可能拖慢命令", "mitigation": "上报失败不阻断 commit"},
+                ],
+                "invariants": ["上报失败不影响主命令退出码"],
+                "key_alternatives": ["否决独立入口，因为会制造第二入口"],
+                "compatibility_boundaries": ["旧 proposal 没有 auto-scale 字段时不受影响"],
+            }
+        },
+        "structured_input": {
+            "requirements": [
+                {
+                    "requirement_id": "req-001",
+                    "kind": "failure_behavior",
+                    "text": _PARITY_REQUIREMENT_TEXT,
+                }
+            ],
+            "tasks": [
+                {"task_id": "T1", "objective": "搭建项目骨架"},
+                {"task_id": "T2", "objective": "实现加法与单元测试"},
+            ],
+            "scenarios": [
+                {"scenario_id": "S1", "title": "加法结果正确"},
+                {"scenario_id": "S2", "title": "除零给出明确错误"},
+            ],
+        },
+    }
+
+
+def _minimal_plan_evidence_input() -> dict:
+    return {
+        "approval": {
+            "content": {
+                "goal": "让离线用量不丢失。",
+                "risks": [{"risk": "遥测失败拖慢命令", "mitigation": "不阻断 commit"}],
+            }
+        },
+        "structured_input": {"tasks": [{"task_id": "T1", "objective": "搭建骨架"}]},
+    }
+
+
+def _archive_dir_with_plan_evidence_input(payload, *, raw: str | None = None) -> Path:
+    import tempfile
+    root = Path(tempfile.mkdtemp(prefix="hkc-pei-"))
+    meta = root / "meta"
+    meta.mkdir(parents=True)
+    text = raw if raw is not None else json.dumps(payload, ensure_ascii=False)
+    (meta / "plan-evidence-input.json").write_text(text, encoding="utf-8")
+    return root
+
+
+def _archive_dir_with_parity_markdown() -> Path:
+    import tempfile
+    root = Path(tempfile.mkdtemp(prefix="hkc-parity-md-"))
+    plans = root / "plans"
+    plans.mkdir(parents=True)
+    (plans / "parity-change-design.md").write_text(PARITY_DESIGN_MD, encoding="utf-8")
+    (plans / "parity-change-plan.md").write_text(PARITY_PLAN_MD, encoding="utf-8")
+    (plans / "parity-change-test-scenarios.md").write_text(
+        PARITY_TEST_SCENARIOS_MD, encoding="utf-8"
+    )
+    return root
+
+
+_PLAN_KWARGS = {
+    "archive_id": "arc_test",
+    "producer_version": "1",
+    "created_at": "2026-09-17T00:00:00.000Z",
+}
+
+
+def _direct_candidates(payload=None, *, change_key: str = "parity-change") -> list[dict]:
+    return hkc.build_plan_candidates(
+        _archive_dir_with_plan_evidence_input(
+            _parity_plan_evidence_input() if payload is None else payload
+        ),
+        change_key=change_key,
+        **_PLAN_KWARGS,
+    )
+
+
+class PlanEvidenceInputExtractionTest(unittest.TestCase):
+    """06B-4 冻结映射表：JSON 直采的各类别映射。"""
+
+    def test_goal_prefers_approval_content_and_appends_outcome(self) -> None:
+        candidates = _direct_candidates()
+        goals = [c for c in candidates if c["keywords"] == ["目标", "goal", "requirement"]]
+        self.assertEqual(len(goals), 1)
+        goal = goals[0]
+        self.assertEqual(goal["summary"], "让用量上报在离线时也不丢失数据。")
+        self.assertEqual(
+            goal["body"],
+            "目标：让用量上报在离线时也不丢失数据。\n"
+            "用户可见结果：离线期间的数据在恢复连接后自动补报。",
+        )
+        self.assertEqual(goal["entry_type"], "requirement")
+        self.assertEqual(goal["source_refs"], ["plans/parity-change-design.md"])
+
+    def test_goal_falls_back_to_intent(self) -> None:
+        candidates = _direct_candidates({"intent": {"goal": "意图目标"}})
+        self.assertEqual([c["summary"] for c in candidates], ["意图目标"])
+        self.assertEqual(candidates[0]["body"], "目标：意图目标")
+
+    def test_requirements_are_sorted_by_kind_then_id(self) -> None:
+        payload = {
+            "structured_input": {
+                "requirements": [
+                    {"requirement_id": "REQ-B", "kind": "failure_behavior", "text": "失败行为乙"},
+                    {"requirement_id": "REQ-C", "kind": "behavior", "text": "行为丙"},
+                    {"requirement_id": "REQ-D", "kind": "invariant", "text": "不变量丁"},
+                    {"requirement_id": "REQ-A", "kind": "behavior", "text": "行为甲"},
+                ]
+            }
+        }
+        candidates = _direct_candidates(payload)
+        self.assertEqual(
+            [(c["body"].splitlines()[0], c["summary"]) for c in candidates],
+            [
+                ("需求类型：behavior", "行为甲"),
+                ("需求类型：behavior", "行为丙"),
+                ("需求类型：invariant", "不变量丁"),
+                ("需求类型：failure_behavior", "失败行为乙"),
+            ],
+        )
+
+    def test_requirements_derive_from_content_when_key_missing(self) -> None:
+        payload = {
+            "approval": {
+                "content": {
+                    "recommended_design": "推荐设计",
+                    "invariants": ["乙不变量", "甲不变量"],
+                    "failure_behaviors": ["失败乙", "失败甲"],
+                }
+            }
+        }
+        candidates = _direct_candidates(payload)
+        # codepoint 排序：乙(U+4E59) < 甲(U+7532)。推导的 invariant 候选与
+        # _invariant_candidates_pei 从同一 approval.content.invariants 独立产出
+        # 的 invariant 候选内容相同、candidate_id 不同（kind 不同）——与 CLI
+        # 渲染时代「Requirements 节 + Invariants 节」同源双写的预期一致。
+        self.assertEqual(
+            [(c["body"].splitlines()[0], c["summary"]) for c in candidates],
+            [
+                ("需求类型：behavior", "推荐设计"),
+                ("需求类型：invariant", "乙不变量"),
+                ("需求类型：invariant", "甲不变量"),
+                ("需求类型：failure_behavior", "失败乙"),
+                ("需求类型：failure_behavior", "失败甲"),
+                ("需求类型：invariant", "乙不变量"),
+                ("需求类型：invariant", "甲不变量"),
+            ],
+        )
+        # 同源双写的两条 invariant 候选 candidate_id 必须不同（kind 命名空间隔离）。
+        invariant_ids = [
+            c["candidate_id"] for c in candidates if c["summary"] == "乙不变量"
+        ]
+        self.assertEqual(len(invariant_ids), 2)
+        self.assertNotEqual(invariant_ids[0], invariant_ids[1])
+
+    def test_risks_invariants_tradeoffs_compatibility_map_to_entry_types(self) -> None:
+        candidates = _direct_candidates()
+        by_summary = {c["summary"]: c for c in candidates}
+        risk = by_summary["遥测失败可能拖慢命令"]
+        self.assertEqual(risk["entry_type"], "risk")
+        self.assertEqual(risk["body"], "遥测失败可能拖慢命令\n缓解：上报失败不阻断 commit")
+        self.assertEqual(risk["keywords"], ["risk"])
+        invariant = by_summary["上报失败不影响主命令退出码"]
+        self.assertEqual(invariant["entry_type"], "requirement")
+        self.assertEqual(invariant["body"], "需求类型：invariant\n上报失败不影响主命令退出码")
+        self.assertEqual(invariant["keywords"], ["invariant", "requirement"])
+        tradeoff = by_summary["否决独立入口，因为会制造第二入口"]
+        self.assertEqual(tradeoff["entry_type"], "decision")
+        self.assertEqual(tradeoff["body"], "取舍：否决独立入口，因为会制造第二入口")
+        self.assertEqual(tradeoff["keywords"], ["tradeoff", "decision", "取舍"])
+        compat = by_summary["旧 proposal 没有 auto-scale 字段时不受影响"]
+        self.assertEqual(compat["entry_type"], "api-contract")
+        self.assertEqual(compat["body"], "兼容边界：旧 proposal 没有 auto-scale 字段时不受影响")
+        self.assertEqual(compat["keywords"], ["compatibility", "api-contract", "兼容"])
+
+    def test_tasks_and_scenarios_map(self) -> None:
+        candidates = _direct_candidates()
+        tasks = [c for c in candidates if c["entry_type"] == "implementation"]
+        self.assertEqual([c["summary"] for c in tasks], ["搭建项目骨架", "实现加法与单元测试"])
+        self.assertEqual(tasks[0]["body"], "任务：T1\n搭建项目骨架")
+        self.assertEqual(tasks[0]["keywords"], ["T1", "implementation"])
+        self.assertEqual(tasks[0]["source_refs"], ["plans/parity-change-plan.md"])
+        scenarios = [c for c in candidates if c["entry_type"] == "test-evidence"]
+        self.assertEqual([c["summary"] for c in scenarios], ["加法结果正确", "除零给出明确错误"])
+        self.assertEqual(scenarios[0]["body"], "场景：S1\n加法结果正确")
+        self.assertEqual(scenarios[0]["keywords"], ["S1", "test-evidence"])
+        self.assertEqual(
+            scenarios[0]["source_refs"], ["plans/parity-change-test-scenarios.md"]
+        )
+
+    def test_empty_payload_yields_no_candidates(self) -> None:
+        self.assertEqual(_direct_candidates({}), [])
+
+    def test_every_candidate_is_deterministic_and_hash_stamped(self) -> None:
+        first = _direct_candidates()
+        second = _direct_candidates()
+        self.assertEqual(first, second)
+        for candidate in first:
+            self.assertRegex(
+                candidate["candidate_id"], r"^kc_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$"
+            )
+            self.assertRegex(candidate["content_hash"], r"^sha256:[a-f0-9]{64}$")
+            self.assertEqual(candidate["confidence"], hkc._PLAN_CONFIDENCE)
+
+
+class PlanEvidenceParityTest(unittest.TestCase):
+    """新旧路径逐字段等价：md 反解析的全部候选必须与 JSON 直采一致。
+
+    唯一例外：`_requirements_from_design` 的 kind 切片缺陷使旧路径从未产出
+    requirement 候选（2026-09-17 实证登记）；06B-4 直采修复该缺陷，新增的
+    requirement 候选单独断言。
+    """
+
+    def _legacy(self) -> list[dict]:
+        return hkc._build_plan_candidates_from_markdown(
+            _archive_dir_with_parity_markdown(), change_key="parity-change", **_PLAN_KWARGS
+        )
+
+    def test_legacy_path_never_emits_requirement_candidates(self) -> None:
+        # 登记缺陷：旧路径 kind 切片 bug，Requirements 行永远被跳过。
+        summaries = [c["summary"] for c in self._legacy()]
+        self.assertNotIn(_PARITY_REQUIREMENT_TEXT, summaries)
+
+    def test_direct_candidates_match_legacy_field_for_field(self) -> None:
+        direct = [c for c in _direct_candidates() if c["summary"] != _PARITY_REQUIREMENT_TEXT]
+        self.assertEqual(direct, self._legacy())
+
+    def test_direct_path_emits_the_fixed_requirement_candidate(self) -> None:
+        requirements = [c for c in _direct_candidates() if c["summary"] == _PARITY_REQUIREMENT_TEXT]
+        self.assertEqual(len(requirements), 1)
+        requirement = requirements[0]
+        self.assertEqual(
+            requirement["body"], f"需求类型：failure_behavior\n{_PARITY_REQUIREMENT_TEXT}"
+        )
+        self.assertEqual(requirement["keywords"], ["failure_behavior", "requirement"])
+        self.assertEqual(requirement["entry_type"], "requirement")
+        self.assertEqual(requirement["source_refs"], ["plans/parity-change-design.md"])
+
+
+class PlanEvidenceInputHostileTest(unittest.TestCase):
+    """hostile 输入：文件存在但非法 → ValueError 拒绝（调用方软处理）。"""
+
+    def _assert_rejected(self, payload=None, *, raw: str | None = None) -> str:
+        archive = _archive_dir_with_plan_evidence_input(payload, raw=raw)
+        with self.assertRaises(ValueError) as ctx:
+            hkc.build_plan_candidates(archive, change_key="parity-change", **_PLAN_KWARGS)
+        message = str(ctx.exception)
+        self.assertIn("plan-evidence-input.json", message)
+        return message
+
+    def test_invalid_json_is_rejected(self) -> None:
+        self._assert_rejected(raw="{not json")
+
+    def test_top_level_must_be_an_object(self) -> None:
+        self._assert_rejected(payload=[1, 2, 3])
+
+    def test_section_type_drift_is_rejected(self) -> None:
+        self._assert_rejected(payload={"approval": {"content": {"risks": {"risk": "x"}}}})
+        self._assert_rejected(payload={"approval": {"content": {"invariants": "not-a-list"}}})
+        self._assert_rejected(payload={"structured_input": ["not-an-object"]})
+
+    def test_record_key_set_is_enforced(self) -> None:
+        self.assertIn(
+            "缺少键 mitigation",
+            self._assert_rejected(
+                payload={"approval": {"content": {"risks": [{"risk": "x"}]}}}
+            ),
+        )
+        self.assertIn(
+            "意外键",
+            self._assert_rejected(
+                payload={
+                    "structured_input": {
+                        "requirements": [
+                            {"requirement_id": "r", "kind": "behavior", "text": "t", "evil": 1}
+                        ]
+                    }
+                }
+            ),
+        )
+
+    def test_invalid_requirement_kind_is_rejected(self) -> None:
+        self.assertIn(
+            "kind",
+            self._assert_rejected(
+                payload={
+                    "structured_input": {
+                        "requirements": [
+                            {"requirement_id": "r", "kind": "unknown", "text": "t"}
+                        ]
+                    }
+                }
+            ),
+        )
+
+    def test_task_and_scenario_records_are_validated(self) -> None:
+        self._assert_rejected(payload={"structured_input": {"tasks": [{"task_id": "T1"}]}})
+        self._assert_rejected(
+            payload={
+                "structured_input": {
+                    "scenarios": [{"scenario_id": "S1", "title": "t", "oops": 1}]
+                }
+            }
+        )
+
+    def test_empty_fields_are_skipped_not_rejected(self) -> None:
+        candidates = _direct_candidates(
+            {
+                "structured_input": {
+                    "tasks": [
+                        {"task_id": "T1", "objective": ""},
+                        {"task_id": "T2", "objective": "有效任务"},
+                    ],
+                    "scenarios": [{"scenario_id": "", "title": "缺 id 被跳过"}],
+                },
+                "approval": {"content": {"risks": [{"risk": "None.", "mitigation": "x"}]}},
+            }
+        )
+        self.assertEqual([c["summary"] for c in candidates], ["有效任务"])
+
+
+class PlanCandidateSourceSelectionTest(unittest.TestCase):
+    """来源选择：PEI 缺失 → 软失败/回退；PEI 存在 → 唯一真相源。"""
+
+    def test_no_meta_files_yields_nothing(self) -> None:
+        # 只有旧 plans/*.md 渲染件：06B-4 起生产路径不再解析它们。
+        candidates = hkc.build_plan_candidates(
+            _archive_dir_with_parity_markdown(), change_key="parity-change", **_PLAN_KWARGS
+        )
+        self.assertEqual(candidates, [])
+
+    def test_empty_archive_yields_nothing(self) -> None:
+        import tempfile
+        candidates = hkc.build_plan_candidates(
+            Path(tempfile.mkdtemp(prefix="hkc-empty-")),
+            change_key="parity-change",
+            **_PLAN_KWARGS,
+        )
+        self.assertEqual(candidates, [])
+
+    def test_task_json_fallback_emits_t1_candidate(self) -> None:
+        import tempfile
+        root = Path(tempfile.mkdtemp(prefix="hkc-taskflow-"))
+        meta = root / "meta"
+        meta.mkdir(parents=True)
+        (meta / "task.json").write_text(json.dumps({"change_key": "x"}), encoding="utf-8")
+        candidates = hkc.build_plan_candidates(root, change_key="parity-change", **_PLAN_KWARGS)
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["summary"], hkc._TASK_FLOW_T1_OBJECTIVE)
+        self.assertEqual(candidate["body"], f"任务：T1\n{hkc._TASK_FLOW_T1_OBJECTIVE}")
+        self.assertEqual(candidate["keywords"], ["T1", "implementation"])
+        self.assertEqual(candidate["entry_type"], "implementation")
+        self.assertEqual(candidate["source_refs"], ["plans/parity-change-plan.md"])
+
+    def test_plan_evidence_input_wins_over_task_json(self) -> None:
+        archive = _archive_dir_with_plan_evidence_input(_minimal_plan_evidence_input())
+        (archive / "meta" / "task.json").write_text(
+            json.dumps({"change_key": "x"}), encoding="utf-8"
+        )
+        candidates = hkc.build_plan_candidates(
+            archive, change_key="simple-mode-adoption", **_PLAN_KWARGS
+        )
+        summaries = [c["summary"] for c in candidates]
+        self.assertNotIn(hkc._TASK_FLOW_T1_OBJECTIVE, summaries)
+        self.assertIn("让离线用量不丢失。", summaries)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -38,6 +38,7 @@ import hashlib
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -559,6 +560,575 @@ def _plan_candidate(
     }
 
 
+# ---------------------------------------------------------------------------
+# 计划产物候选：plan-evidence-input.json 直采（06B-4，2026-09-17 冻结映射表）
+#
+# 真相源是随变更目录整树归档的 meta/plan-evidence-input.json（CLI
+# plan evidence-pack 的输入契约，packages/cli/src/commands/plan-evidence-pack.ts
+# 的 EvidencePackInputFile）；渲染件 plans/*.md 归阶段 11 所有，本路径与其
+# 结构变化解耦。
+#
+# 字段映射（聚焦测试 test_harness_knowledge_candidates.py 逐行锁定）：
+#   requirement   structured_input.requirements[] 显式给出时直采（按
+#                 behavior<invariant<failure_behavior、再按 requirement_id
+#                 排序，与 CLI normalizeRequirements 一致）；键缺失时按
+#                 CLI requirementsFrom 同一推导补齐：
+#                 recommended_design→behavior、invariants[]→invariant、
+#                 failure_behaviors[]→failure_behavior
+#   goal          approval.content.goal ?? intent.goal；body 附
+#                 user_visible_outcome（继承规则同 CLI completedApprovalContent）
+#   risk          approval.content.risks[]（{risk, mitigation}）
+#   invariant     approval.content.invariants[]（codepoint 排序）
+#   tradeoff      approval.content.key_alternatives[]（排序）→ decision
+#   compatibility approval.content.compatibility_boundaries[]（排序）→ api-contract
+#   task          structured_input.tasks[]（{task_id, objective}）→ implementation
+#   scenario      structured_input.scenarios[]（{scenario_id, title}）→ test-evidence
+#
+# 稳定性约定：candidate_id / content_hash 的输入（kind、summary、body、keywords）
+# 与 md 反解析时代逐字节一致；source_refs 维持指向 plans/*.md 渲染件——core 包
+# 包含性校验要求 source_refs 存在于包内，而 meta/* 不进 core 包
+# （harness_archive._archive_core_file_specs）。已知差异（验收记录逐条登记）：
+# 多行文本的 goal/task/scenario 旧候选 summary 残留渲染 <br> 字面量、markdown
+# 特殊字符残留反斜杠转义（旧提取未 unescape 这三类），新候选为自然文本。
+#
+# hostile 输入语义：文件缺失 → 软失败 []；文件存在但 JSON 非法 / 顶层非对象 /
+# 消费字段类型漂移 / 消费记录键集不符（缺键或意外键）→ ValueError 拒绝
+# （harness_archive.write_knowledge_candidates 在合并处捕获 (OSError, ValueError)，
+# 记 stderr warning、计划产物候选按空处理，summary 三源候选照常落盘，归档不中断）。
+# 缺失可选分区（无 requirements 键、approval.content.goal 未给出等）→ 对应候选
+# 为空，不报错。
+#
+# 旧 md 反解析路径（_markdown_sections / _goal_from_design / _requirements_from_design
+# / _risks_from_design / _invariants_from_design / _tradeoffs_from_design /
+# _compatibility_from_design / _tasks_from_plan / _scenarios_from_test_scenarios /
+# _build_plan_candidates_from_markdown）保留为 dead code，仅作 06B-4 验收前的
+# 回滚开关与旧版夹具对照，验收后删除。
+# ---------------------------------------------------------------------------
+
+_PLAN_EVIDENCE_INPUT_REL = Path("meta") / "plan-evidence-input.json"
+_TASK_JSON_REL = Path("meta") / "task.json"
+
+# 与 harness_task._generate_plan_md 的 T1 段逐字节一致（轻量任务流的唯一任务
+# 候选锚点；两处必须同步修改）。
+_TASK_FLOW_T1_OBJECTIVE = "完成变更并使验收条件全部通过。"
+
+_REQUIREMENT_KINDS = ("behavior", "invariant", "failure_behavior")
+_REQUIREMENT_KIND_ORDER = {
+    kind: index for index, kind in enumerate(_REQUIREMENT_KINDS)
+}
+_REQUIREMENT_RECORD_ALLOWED_KEYS = (
+    "requirement_id",
+    "kind",
+    "text",
+    "evidence_refs",
+    "approved_scope_refs",
+)
+_RISK_RECORD_KEYS = ("risk", "mitigation")
+_TASK_RECORD_ALLOWED_KEYS = ("task_id", "objective", "affected_paths", "owner_phase")
+_SCENARIO_RECORD_ALLOWED_KEYS = (
+    "scenario_id",
+    "title",
+    "acceptance",
+    "coverage_dimension",
+    "execution_level",
+    "evidence_requirements",
+    "risk_level",
+    "priority",
+    "owner_phase",
+    "applicability",
+    "acceptance_default",
+)
+
+
+def _pei_reject(field_path: str, reason: str) -> None:
+    """拒绝从 hostile plan-evidence-input.json 直采（调用方按软失败处理）。"""
+    raise ValueError(f"meta/plan-evidence-input.json 拒绝直采：{field_path} {reason}")
+
+
+def _pei_object(value: Any, field_path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        _pei_reject(field_path, "必须是对象")
+    return value
+
+
+def _pei_section(record: dict[str, Any], key: str, field_path: str) -> dict[str, Any]:
+    """可选对象分区：缺失/为 null → {}；存在但非对象 → 拒绝。"""
+    if record.get(key) is None:
+        return {}
+    return _pei_object(record[key], f"{field_path}.{key}")
+
+
+def _pei_text(record: dict[str, Any], key: str, field_path: str) -> str | None:
+    """字符串字段：缺失/为 null → None；存在但非字符串 → 拒绝。返回 strip 后文本。"""
+    if record.get(key) is None:
+        return None
+    value = record[key]
+    if not isinstance(value, str):
+        _pei_reject(f"{field_path}.{key}", "必须是字符串")
+    return value.strip()
+
+
+def _pei_text_list(record: dict[str, Any], key: str, field_path: str) -> list[str]:
+    """字符串数组字段：缺失/为 null → []；非数组或元素非字符串 → 拒绝。"""
+    if record.get(key) is None:
+        return []
+    value = record[key]
+    if not isinstance(value, list):
+        _pei_reject(f"{field_path}.{key}", "必须是数组")
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            _pei_reject(f"{field_path}.{key}[{index}]", "必须是字符串")
+    return value
+
+
+def _pei_record_keys(
+    record: dict[str, Any],
+    field_path: str,
+    required: tuple[str, ...],
+    allowed: tuple[str, ...],
+) -> None:
+    present = set(record)
+    missing = [key for key in required if key not in present]
+    if missing:
+        _pei_reject(field_path, f"缺少键 {', '.join(missing)}")
+    extra = sorted(present - set(allowed))
+    if extra:
+        _pei_reject(field_path, f"意外键 {', '.join(extra)}")
+
+
+def _pei_records(
+    record: dict[str, Any],
+    key: str,
+    field_path: str,
+    required: tuple[str, ...],
+    allowed: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """记录数组字段：缺失/为 null → []；存在则逐条校验对象与键集。"""
+    if record.get(key) is None:
+        return []
+    value = record[key]
+    if not isinstance(value, list):
+        _pei_reject(f"{field_path}.{key}", "必须是数组")
+    records: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        item_path = f"{field_path}.{key}[{index}]"
+        item_object = _pei_object(item, item_path)
+        _pei_record_keys(item_object, item_path, required, allowed)
+        records.append(item_object)
+    return records
+
+
+def _pei_approval_content(payload: dict[str, Any]) -> dict[str, Any]:
+    approval = _pei_section(payload, "approval", "$")
+    return _pei_section(approval, "content", "$.approval")
+
+
+def _pei_goal_and_outcome(payload: dict[str, Any]) -> tuple[str, str]:
+    """goal/user_visible_outcome：approval.content 优先，缺失回退 intent（同 CLI）。"""
+    intent = _pei_section(payload, "intent", "$")
+    content = _pei_approval_content(payload)
+    goal = _pei_text(content, "goal", "$.approval.content") or (
+        _pei_text(intent, "goal", "$.intent") or ""
+    )
+    outcome = _pei_text(content, "user_visible_outcome", "$.approval.content") or (
+        _pei_text(intent, "user_visible_outcome", "$.intent") or ""
+    )
+    return goal, outcome
+
+
+def _pei_requirement_pairs(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    """返回 (requirement kind, text) 列表；显式缺失时按 requirementsFrom 推导。"""
+    structured = _pei_section(payload, "structured_input", "$")
+    explicit = structured.get("requirements")
+    if explicit is not None:
+        records = _pei_records(
+            structured,
+            "requirements",
+            "$.structured_input",
+            ("requirement_id", "kind", "text"),
+            _REQUIREMENT_RECORD_ALLOWED_KEYS,
+        )
+        pairs: list[tuple[str, str, str]] = []
+        for index, record in enumerate(records):
+            item_path = f"$.structured_input.requirements[{index}]"
+            requirement_id = _pei_text(record, "requirement_id", item_path) or ""
+            kind = _pei_text(record, "kind", item_path) or ""
+            if kind not in _REQUIREMENT_KIND_ORDER:
+                _pei_reject(
+                    f"{item_path}.kind",
+                    f"必须是 {'/'.join(_REQUIREMENT_KINDS)}",
+                )
+            text = _pei_text(record, "text", item_path) or ""
+            _pei_text_list(record, "evidence_refs", item_path)
+            _pei_text_list(record, "approved_scope_refs", item_path)
+            if text:
+                pairs.append((kind, requirement_id, text))
+        pairs.sort(key=lambda item: (_REQUIREMENT_KIND_ORDER[item[0]], item[1]))
+        return [(kind, text) for kind, _, text in pairs]
+
+    content = _pei_approval_content(payload)
+    derived: list[tuple[str, str]] = []
+    recommended = _pei_text(content, "recommended_design", "$.approval.content")
+    if recommended:
+        derived.append(("behavior", recommended))
+    for text in sorted(_pei_text_list(content, "invariants", "$.approval.content")):
+        if text.strip():
+            derived.append(("invariant", text.strip()))
+    for text in sorted(_pei_text_list(content, "failure_behaviors", "$.approval.content")):
+        if text.strip():
+            derived.append(("failure_behavior", text.strip()))
+    return derived
+
+
+def _pei_sorted_content_list(payload: dict[str, Any], key: str) -> list[str]:
+    """approval.content 的字符串数组：strip、去空与 None. 哨兵、codepoint 排序。"""
+    content = _pei_approval_content(payload)
+    return sorted(
+        item.strip()
+        for item in _pei_text_list(content, key, "$.approval.content")
+        if item.strip() and item.strip() != "None."
+    )
+
+
+def _goal_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    goal, outcome = _pei_goal_and_outcome(payload)
+    if not goal:
+        return []
+    body = f"目标：{goal}"
+    if outcome:
+        body += f"\n用户可见结果：{outcome}"
+    return [_plan_candidate(
+        change_key=change_key,
+        archive_id=archive_id,
+        producer_version=producer_version,
+        created_at=created_at,
+        kind="requirement",
+        entry_type="requirement",
+        summary=goal,
+        body=body,
+        keywords=_keywords("目标", "goal", "requirement"),
+        source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+    )]
+
+
+def _requirement_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    return [
+        _plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="requirement",
+            entry_type="requirement",
+            summary=text,
+            body=f"需求类型：{kind}\n{text}",
+            keywords=_keywords(kind, "requirement"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        )
+        for kind, text in _pei_requirement_pairs(payload)
+    ]
+
+
+def _risk_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    content = _pei_approval_content(payload)
+    records = _pei_records(
+        content, "risks", "$.approval.content", _RISK_RECORD_KEYS, _RISK_RECORD_KEYS
+    )
+    out: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        item_path = f"$.approval.content.risks[{index}]"
+        risk = _pei_text(record, "risk", item_path) or ""
+        mitigation = _pei_text(record, "mitigation", item_path) or ""
+        if not risk or risk == "None.":
+            continue
+        body = risk if not mitigation else f"{risk}\n缓解：{mitigation}"
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="risk",
+            entry_type="risk",
+            summary=risk,
+            body=body,
+            keywords=_keywords("risk"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        ))
+    return out
+
+
+def _invariant_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    return [
+        _plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="invariant",
+            entry_type="requirement",
+            summary=text,
+            body=f"需求类型：invariant\n{text}",
+            keywords=_keywords("invariant", "requirement"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        )
+        for text in _pei_sorted_content_list(payload, "invariants")
+    ]
+
+
+def _tradeoff_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    return [
+        _plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="decision",
+            entry_type="decision",
+            summary=text,
+            body=f"取舍：{text}",
+            keywords=_keywords("tradeoff", "decision", "取舍"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        )
+        for text in _pei_sorted_content_list(payload, "key_alternatives")
+    ]
+
+
+def _compatibility_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    return [
+        _plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="compatibility",
+            entry_type="api-contract",
+            summary=text,
+            body=f"兼容边界：{text}",
+            keywords=_keywords("compatibility", "api-contract", "兼容"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        )
+        for text in _pei_sorted_content_list(payload, "compatibility_boundaries")
+    ]
+
+
+def _task_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    structured = _pei_section(payload, "structured_input", "$")
+    records = _pei_records(
+        structured,
+        "tasks",
+        "$.structured_input",
+        ("task_id", "objective"),
+        _TASK_RECORD_ALLOWED_KEYS,
+    )
+    out: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        item_path = f"$.structured_input.tasks[{index}]"
+        task_id = _pei_text(record, "task_id", item_path) or ""
+        objective = _pei_text(record, "objective", item_path) or ""
+        _pei_text_list(record, "affected_paths", item_path)
+        owner_phase = record.get("owner_phase")
+        if owner_phase is not None and not isinstance(owner_phase, str):
+            _pei_reject(f"{item_path}.owner_phase", "必须是字符串")
+        if not task_id or not objective:
+            continue
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="task",
+            entry_type="implementation",
+            summary=objective,
+            body=f"任务：{task_id}\n{objective}",
+            keywords=_keywords(task_id, "implementation"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-plan.md"),
+        ))
+    return out
+
+
+def _scenario_candidates_pei(
+    payload: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    structured = _pei_section(payload, "structured_input", "$")
+    records = _pei_records(
+        structured,
+        "scenarios",
+        "$.structured_input",
+        ("scenario_id", "title"),
+        _SCENARIO_RECORD_ALLOWED_KEYS,
+    )
+    out: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        item_path = f"$.structured_input.scenarios[{index}]"
+        scenario_id = _pei_text(record, "scenario_id", item_path) or ""
+        title = _pei_text(record, "title", item_path) or ""
+        if not scenario_id or not title:
+            continue
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="scenario",
+            entry_type="test-evidence",
+            summary=title,
+            body=f"场景：{scenario_id}\n{title}",
+            keywords=_keywords(scenario_id, "test-evidence"),
+            source_refs=_plan_source_refs(
+                change_key, f"plans/{change_key}-test-scenarios.md"
+            ),
+        ))
+    return out
+
+
+def _task_flow_candidates(
+    archive_dir: Path,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """轻量任务流回退：meta/task.json 存在即产出与 plan.md T1 段等价的单条候选。"""
+    task_path = archive_dir / _TASK_JSON_REL
+    try:
+        payload = json.loads(task_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"meta/task.json 拒绝直采：读取失败（{exc}）") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("meta/task.json 拒绝直采：顶层必须是对象")
+    return [_plan_candidate(
+        change_key=change_key,
+        archive_id=archive_id,
+        producer_version=producer_version,
+        created_at=created_at,
+        kind="task",
+        entry_type="implementation",
+        summary=_TASK_FLOW_T1_OBJECTIVE,
+        body=f"任务：T1\n{_TASK_FLOW_T1_OBJECTIVE}",
+        keywords=_keywords("T1", "implementation"),
+        source_refs=_plan_source_refs(change_key, f"plans/{change_key}-plan.md"),
+    )]
+
+
+def _load_plan_evidence_input(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"meta/plan-evidence-input.json 拒绝直采：读取失败（{exc}）") from exc
+    return _pei_object(payload, "$")
+
+
+def build_plan_candidates(
+    archive_dir,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """从 meta/plan-evidence-input.json 直采计划产物候选（映射表见上方注释）。
+
+    轻量任务流（无 plan-evidence-input.json、有 meta/task.json）回退产出
+    T1 任务候选；两者皆无返回 []（软失败）；hostile 输入抛 ValueError（拒绝）。
+    """
+    archive_root = Path(archive_dir)
+    candidates: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def collect(items: list[dict[str, Any]]) -> None:
+        for candidate in items:
+            if candidate["candidate_id"] in seen_ids:
+                continue
+            seen_ids.add(candidate["candidate_id"])
+            candidates.append(candidate)
+
+    if (archive_root / _PLAN_EVIDENCE_INPUT_REL).is_file():
+        payload = _load_plan_evidence_input(archive_root / _PLAN_EVIDENCE_INPUT_REL)
+        kwargs = {
+            "change_key": change_key,
+            "archive_id": archive_id,
+            "producer_version": producer_version,
+            "created_at": created_at,
+        }
+        # 提取顺序与旧 md 路径一致（requirements → goal → risks → invariants
+        # → tradeoffs → compatibility → tasks → scenarios），保证候选数组顺序
+        # 与 candidate_id 去重优先级逐字节兼容。
+        collect(_requirement_candidates_pei(payload, **kwargs))
+        collect(_goal_candidates_pei(payload, **kwargs))
+        collect(_risk_candidates_pei(payload, **kwargs))
+        collect(_invariant_candidates_pei(payload, **kwargs))
+        collect(_tradeoff_candidates_pei(payload, **kwargs))
+        collect(_compatibility_candidates_pei(payload, **kwargs))
+        collect(_task_candidates_pei(payload, **kwargs))
+        collect(_scenario_candidates_pei(payload, **kwargs))
+        return candidates
+
+    if (archive_root / _TASK_JSON_REL).is_file():
+        collect(_task_flow_candidates(
+            archive_root,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+    return candidates
+
+
 def _goal_from_design(
     design_text: str,
     *,
@@ -895,7 +1465,7 @@ def _scenarios_from_test_scenarios(
     return out
 
 
-def build_plan_candidates(
+def _build_plan_candidates_from_markdown(
     archive_dir,
     *,
     change_key: str,
@@ -903,11 +1473,10 @@ def build_plan_candidates(
     producer_version: str,
     created_at: str,
 ) -> list[dict[str, Any]]:
-    """Extract knowledge candidates from the archive's plans/*.md artifacts.
+    """DEAD CODE（06B-4 回滚开关，验收后删除）：旧 plans/*.md 反解析路径。
 
-    Complements ``build_knowledge_candidates`` (summary 三源)。没有评审的简单
-    变更仍然产出 plans/*.md；这些是经用户确认批准的结构化真相源，parse 回来
-    就是可沉淀的知识。缺文件/解析失败返回 []（软失败）。
+    新归档一律走 build_plan_candidates 的 meta/plan-evidence-input.json 直采；
+    本函数仅为回滚恢复与旧版夹具对照保留，生产路径不再调用。
     """
     candidates: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
