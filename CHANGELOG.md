@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.0] — hunter-harness
+
+- **变更** `connect`：默认平台地址固定为生产地址 `https://harness.hunter-z.com`，提示与回车兜底恒用该地址（手动输入仍以输入为准）；移除 `last-server` 机制——删 `config/last-server.ts`、connect 写入调用与专属测试，`resolveUserStateRoot` 迁至 `config/user-state.ts`（uninstall 继续消费）（baa8990）
+- **变更** `connect` 的 key-info 摘要：删除 `KeyInfo.scopes`、摘要「权限范围：」行与 JSON summary 的 `scopes` 键（baa8990）
+- **契约** 同步瘦身：content-sync 去 rule 分类、family `required_profiles` 改可选、key-info/platform-information/remote-sync 去 scopes；openapi yaml 与冻结哈希重算（baa8990）
+
 ## [1.0.2] — hunter-harness
 
 - **修复** `uninstall`：0.x 投影面的前缀清扫补齐 `.claude/agents`、`.codebuddy/agents`、`.codebuddy/commands`、`.cursor/commands`、`.codebuddy/.rules`（codebuddy rules 的点前缀双写变体）——0.x adapter 在这些根写入 `harness-*` 文件，而它们此前不在清扫根内，状态缺失时残留无法被删除（02fcda7）
