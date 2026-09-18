@@ -180,7 +180,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **差距**：全量评审（F3，O2 已立项未实施）；三人格与双评估器覆盖面重叠的边际收益未量化；scenario→finding→fixback 闭环状态缺可查询视图。
 - **建议**：
   - [P1] 落地 O2 **增量评审**：以本轮 diff + 受影响接口/调用者构建输入，finding 绑定源内容哈希。依据：审核整改任务书 §9.2 验收标准。
-  - [P2] 评审收益度量（各 persona/evaluator 独立发现数、确认率、阻断率），为裁剪冗余角色提供数据。依据：roadmap 10。
+  - [P2] 评审收益度量（各 persona/evaluator 独立发现数、确认率、阻断率），为裁剪冗余角色提供数据。依据：roadmap 10。 **状态：已实施（18-M1，2026-09-18）**：`harness_efficiency.py --changes-root` 面板新增 reviewYield 块——dimension 级确认率/阻断候选/独立发现/跨轮重现已出数；persona/evaluator 归因字段 schema 未定义，缺数据时降级输出缺口说明（write-findings 对额外字段透传，产出侧携带 source 即自动入统，无需改 schema）。
   - [P3] `harness_review.py status --change <cn>` 输出三链 join 表。**状态：已实施（15-M4，2026-09-17）**：scenario→finding→fixback join，manifest 缺失优雅降级，finding 关联优先 `scenarioRefs`（declared）否则 path 启发式，fixback 经 `issueId == finding.id` 对齐。
 
 ### 4.4 Submit

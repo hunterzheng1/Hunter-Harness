@@ -273,7 +273,7 @@ class EfficiencyPanelTests(unittest.TestCase):
         import json
 
         review_dir = self.changes_root / change / "reports" / "review"
-        review_dir.mkdir(parents=True)
+        review_dir.mkdir(parents=True, exist_ok=True)
         (review_dir / "review-findings.json").write_text(
             json.dumps({"schemaVersion": 3, "runId": "r1", "findings": findings}),
             encoding="utf-8",
@@ -365,7 +365,13 @@ class EfficiencyPanelTests(unittest.TestCase):
             self.changes_root, now_iso="2026-09-18T00:00:00Z"
         )
         self.assertEqual(panel["changes"]["discovered"], 0)
-        for key in ("cycleTime", "gateFirstPass", "reviewFindings", "automation"):
+        for key in (
+            "cycleTime",
+            "gateFirstPass",
+            "reviewFindings",
+            "automation",
+            "reviewYield",
+        ):
             self.assertFalse(panel[key]["available"], key)
             self.assertIn("reason", panel[key], key)
 
@@ -387,7 +393,7 @@ class EfficiencyPanelTests(unittest.TestCase):
             },
         )
         review_dir = self.changes_root / "gamma" / "reports" / "review"
-        review_dir.mkdir(parents=True)
+        review_dir.mkdir(parents=True, exist_ok=True)
         (review_dir / "review-findings.json").write_text("{ not json", encoding="utf-8")
         panel = module.collect_efficiency_panel(
             self.changes_root, now_iso="2026-09-18T00:00:00Z"
@@ -430,6 +436,279 @@ class EfficiencyPanelTests(unittest.TestCase):
                     str(self.changes_root),
                 ]
             )
+
+
+class ReviewYieldTests(unittest.TestCase):
+    """18-M1：评审收益度量（reviewYield 块）。"""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.changes_root = Path(self._tmp.name) / "changes"
+        self.changes_root.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_findings(
+        self, change: str, findings: list, run_id: str = "r1"
+    ) -> None:
+        import json
+
+        review_dir = self.changes_root / change / "reports" / "review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        (review_dir / "review-findings.json").write_text(
+            json.dumps(
+                {"schemaVersion": 3, "runId": run_id, "findings": findings}
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_dispositions(self, change: str, entries: list) -> None:
+        import json
+
+        review_dir = self.changes_root / change / "reports" / "review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "r1",
+                    "dispositions": entries,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _panel(self, module):
+        return module.collect_efficiency_panel(
+            self.changes_root, now_iso="2026-09-18T00:00:00Z"
+        )
+
+    def test_by_dimension_confirmation_and_blocking(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                },
+                {
+                    "id": "F-2",
+                    "dimension": "architecture",
+                    "severity": "YELLOW",
+                    "path": "b.py",
+                    "title": "Y",
+                },
+                {
+                    "id": "F-3",
+                    "dimension": "security",
+                    "severity": "RED",
+                    "path": "c.py",
+                    "title": "Z",
+                },
+            ],
+        )
+        self._write_dispositions(
+            "alpha",
+            [
+                {"findingId": "F-1", "disposition": "FIXED"},
+                {"findingId": "F-2", "disposition": "NOT_APPLICABLE"},
+            ],
+        )
+        block = self._panel(module)["reviewYield"]
+        self.assertTrue(block["available"])
+        self.assertEqual(block["changesWithReview"], 1)
+        self.assertEqual(block["total"], 3)
+        architecture = block["byDimension"]["architecture"]
+        self.assertEqual(architecture["total"], 2)
+        self.assertEqual(architecture["blockingCandidates"], 2)
+        self.assertEqual(architecture["confirmed"], 1)
+        self.assertEqual(architecture["rejected"], 1)
+        self.assertEqual(architecture["unresolved"], 0)
+        self.assertEqual(architecture["confirmationRate"], 0.5)
+        security = block["byDimension"]["security"]
+        self.assertEqual(security["unresolved"], 1)
+        self.assertIsNone(security["confirmationRate"])
+        dispositions = block["dispositions"]
+        self.assertEqual(dispositions["scope"], "latest-round")
+        self.assertEqual(dispositions["confirmed"], 1)
+        self.assertEqual(dispositions["rejected"], 1)
+        self.assertEqual(dispositions["unresolved"], 1)
+        self.assertEqual(dispositions["confirmationRate"], 0.5)
+        self.assertEqual(dispositions["unmatchedDispositions"], 0)
+        self.assertEqual(block["blockingCandidates"], {"total": 3, "share": 1.0})
+
+    def test_recurrence_and_carryover(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                    "firstSeenRunId": "r1",
+                    "lastSeenRunId": "r2",
+                },
+                {
+                    "id": "F-2",
+                    "dimension": "architecture",
+                    "severity": "OK",
+                    "path": "b.py",
+                    "title": "Y",
+                    "carriedOver": True,
+                    "firstSeenRunId": "r1",
+                    "lastSeenRunId": "r1",
+                },
+            ],
+        )
+        recurrence = self._panel(module)["reviewYield"]["recurrence"]
+        self.assertEqual(recurrence["recurredAcrossRuns"], 1)
+        self.assertEqual(recurrence["share"], 0.5)
+        self.assertEqual(recurrence["carriedOver"], 1)
+
+    def test_independent_vs_shared_across_dimensions(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "YELLOW",
+                    "path": "a.py",
+                    "title": "Dup issue",
+                },
+                {
+                    "id": "F-2",
+                    "dimension": "security",
+                    "severity": "YELLOW",
+                    "path": "a.py",
+                    "title": "dup  issue",
+                },
+                {
+                    "id": "F-3",
+                    "dimension": "tests",
+                    "severity": "YELLOW",
+                    "path": "b.py",
+                    "title": "Unique",
+                },
+            ],
+        )
+        block = self._panel(module)["reviewYield"]
+        self.assertEqual(block["independentFindings"], {"total": 1, "share": 0.3333})
+        self.assertEqual(block["byDimension"]["tests"]["independent"], 1)
+        self.assertEqual(block["byDimension"]["architecture"]["independent"], 0)
+        self.assertEqual(block["byDimension"]["security"]["independent"], 0)
+
+    def test_persona_attribution_gap_then_aggregation(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                },
+                {
+                    "id": "F-2",
+                    "dimension": "security",
+                    "severity": "RED",
+                    "path": "b.py",
+                    "title": "Y",
+                    "source": "persona-security",
+                },
+            ],
+        )
+        attribution = self._panel(module)["reviewYield"]["personaAttribution"]
+        self.assertTrue(attribution["available"])
+        self.assertEqual(attribution["attributed"], 1)
+        self.assertEqual(attribution["attributedShare"], 0.5)
+        self.assertEqual(attribution["bySource"], {"persona-security": 1})
+
+    def test_persona_attribution_absent_degrades_to_gap_note(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                }
+            ],
+        )
+        attribution = self._panel(module)["reviewYield"]["personaAttribution"]
+        self.assertFalse(attribution["available"])
+        self.assertIn("归因", attribution["reason"])
+
+    def test_missing_dispositions_marks_all_unresolved(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                },
+                {
+                    "id": "F-2",
+                    "dimension": "tests",
+                    "severity": "YELLOW",
+                    "path": "b.py",
+                    "title": "Y",
+                },
+            ],
+        )
+        block = self._panel(module)["reviewYield"]
+        self.assertTrue(block["available"])
+        dispositions = block["dispositions"]
+        self.assertEqual(dispositions["unresolved"], 2)
+        self.assertEqual(dispositions["confirmed"], 0)
+        self.assertEqual(dispositions["rejected"], 0)
+        self.assertIsNone(dispositions["confirmationRate"])
+        self.assertEqual(dispositions["unmatchedDispositions"], 0)
+
+    def test_unmatched_dispositions_are_counted(self) -> None:
+        module = load_module()
+        self._write_findings(
+            "alpha",
+            [
+                {
+                    "id": "F-1",
+                    "dimension": "architecture",
+                    "severity": "RED",
+                    "path": "a.py",
+                    "title": "X",
+                }
+            ],
+        )
+        self._write_dispositions(
+            "alpha",
+            [
+                {"findingId": "F-1", "disposition": "FIXED"},
+                {"findingId": "F-GONE", "disposition": "ACCEPTED_RISK"},
+            ],
+        )
+        block = self._panel(module)["reviewYield"]
+        self.assertEqual(block["dispositions"]["confirmed"], 1)
+        self.assertEqual(block["dispositions"]["unmatchedDispositions"], 1)
 
 
 if __name__ == "__main__":

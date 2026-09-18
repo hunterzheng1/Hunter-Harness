@@ -57,9 +57,11 @@ flowchart TD
     S11 --> S16
     S15 --> S16
     S11 --> S17
+    S17 --> S18
 
     S16["16 Execute 场景 DAG 波次"]
     S17["17 决策级度量面板"]
+    S18["18 评审收益度量"]
 ```
 
 图中的 `04A/04B`、`06A/06B-1/06B-2/3` 和 `07A/07B` 是同一阶段内的工作包，不新增公共阶段编号。推荐按以下波次实施：
@@ -214,6 +216,7 @@ Interface 发生破坏性变化时，暂停依赖方并更新契约；不得让�
 | 15 | [执行环与支撑环增强](./stages/15-execution-loop-enhancements.md) | 档位裁决可解释、quirk 指纹建议、失败断路器、review 三链状态表 | 已实施（15-M1～M4，2026-09-17；源自 2026-09-17 流程调研报告 P2/P3 执行环建议；DAG 波次与度量面板登记为后续） |
 | 16 | [Execute 场景 DAG 波次](./stages/16-scenario-dag-waves.md) | 场景级 depends_on 契约、引用/成环校验、拓扑波次派生（advisory）、波次派发读模型（execute-wave） | 已实施（16-M1～M2，2026-09-18） |
 | 17 | [决策级度量面板](./stages/17-decision-metrics-panel.md) | 跨 change 效率聚合：周期时长、门禁首过率、评审发现密度、自动度 | 已实施（17-M1，2026-09-18） |
+| 18 | [评审收益度量](./stages/18-review-yield-metrics.md) | per-dimension 确认率/阻断候选/独立发现、跨轮重现、persona 归因（缺口降级） | 已实施（18-M1，2026-09-18） |
 
 ## 阶段与工作包切分规则
 

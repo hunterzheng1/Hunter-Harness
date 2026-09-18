@@ -441,6 +441,196 @@ PANEL_SCHEMA_VERSION = 1
 
 _SKIP_DIR_PREFIXES = (".", "_")
 
+# ---------------------------------------------------------------------------
+# 18-M1 评审收益度量（reviewYield 块）
+#
+# 数据源：review-findings.json（跨轮合并视图，schemaVersion 3）+
+# fixback-dispositions.json（per-change 最新轮单文件，schemaVersion 1）。
+# 口径声明：
+# - 确认率分母只含已裁决条目（confirmed + rejected），未裁决不罚；
+# - 处置 sidecar 只保留最新轮（含继承条目），跨轮历史处置不可追溯，
+#   scope 固定标注 "latest-round"；
+# - persona/evaluator 归因字段 schema 未定义，缺数据时降级输出缺口说明，
+#   不虚构（write-findings 对额外字段透传，产出侧携带 source 即自动入统）。
+# ---------------------------------------------------------------------------
+
+REVIEW_CONFIRMED_DISPOSITIONS = frozenset({"FIXED", "ACCEPTED_RISK", "DEFERRED"})
+REVIEW_REJECTED_DISPOSITIONS = frozenset({"NOT_APPLICABLE"})
+REVIEW_BLOCKING_SEVERITIES = frozenset({"RED", "YELLOW"})
+_ATTRIBUTION_FIELDS = ("source", "persona", "evaluator", "reviewer")
+
+
+def _normalized_title(value: Any) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _load_latest_dispositions(state_root: Path) -> dict[str, str]:
+    """读取 per-change 最新轮处置表，返回 {findingId: disposition}。"""
+    path = state_root / "reports" / "review" / "fixback-dispositions.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(doc, dict) or not isinstance(doc.get("dispositions"), list):
+        return {}
+    result: dict[str, str] = {}
+    for item in doc["dispositions"]:
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("findingId"), str)
+            and isinstance(item.get("disposition"), str)
+        ):
+            result[item["findingId"]] = item["disposition"]
+    return result
+
+
+def _review_yield_record(
+    change: str, finding: dict[str, Any], dispositions: dict[str, str]
+) -> dict[str, Any]:
+    """把单条 finding 压成聚合所需字段，并按 findingId join 最新轮处置。"""
+    finding_id = finding.get("id")
+    first_seen = finding.get("firstSeenRunId")
+    last_seen = finding.get("lastSeenRunId")
+    source = next(
+        (
+            str(finding[field]).strip()
+            for field in _ATTRIBUTION_FIELDS
+            if isinstance(finding.get(field), str) and finding[field].strip()
+        ),
+        None,
+    )
+    return {
+        "change": change,
+        "dimension": str(finding.get("dimension") or "unknown"),
+        "severity": str(finding.get("severity") or "UNKNOWN"),
+        "carriedOver": finding.get("carriedOver") is True,
+        # 跨轮重现 = 在后续轮被再次报告（携带未复报不算重现）
+        "recurred": bool(first_seen and last_seen and first_seen != last_seen),
+        "disposition": (
+            dispositions.get(finding_id) if isinstance(finding_id, str) else None
+        ),
+        "source": source,
+        "overlapKey": (
+            change,
+            str(finding.get("path") or ""),
+            _normalized_title(finding.get("title")),
+        ),
+    }
+
+
+def _aggregate_review_yield(
+    records: list[dict[str, Any]],
+    *,
+    changes_with_review: int,
+    unmatched_dispositions: int,
+) -> dict[str, Any]:
+    """聚合评审收益度量（per-dimension 确认率/阻断候选/独立发现等）。"""
+    if not changes_with_review:
+        return {"available": False, "reason": "no review findings sidecars"}
+    by_dimension: dict[str, dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str], set[str]] = {}
+    confirmed = rejected = unresolved = 0
+    blocking = carried = recurred = 0
+    attr_counts: Counter[str] = Counter()
+    for record in records:
+        dimension = record["dimension"]
+        bucket = by_dimension.setdefault(
+            dimension,
+            {
+                "total": 0,
+                "blockingCandidates": 0,
+                "confirmed": 0,
+                "rejected": 0,
+                "unresolved": 0,
+            },
+        )
+        bucket["total"] += 1
+        if record["severity"] in REVIEW_BLOCKING_SEVERITIES:
+            blocking += 1
+            bucket["blockingCandidates"] += 1
+        disposition = record["disposition"]
+        if disposition in REVIEW_CONFIRMED_DISPOSITIONS:
+            confirmed += 1
+            bucket["confirmed"] += 1
+        elif disposition in REVIEW_REJECTED_DISPOSITIONS:
+            rejected += 1
+            bucket["rejected"] += 1
+        else:
+            unresolved += 1
+            bucket["unresolved"] += 1
+        if record["carriedOver"]:
+            carried += 1
+        if record["recurred"]:
+            recurred += 1
+        groups.setdefault(record["overlapKey"], set()).add(dimension)
+        if record["source"]:
+            attr_counts[record["source"]] += 1
+    # 独立发现：同 change 内 (path, 归一化 title) 组只被单一维度覆盖；
+    # 跨维度同组视为共享发现（启发式去重，为裁剪冗余维度提供数据）。
+    shared_keys = {key for key, dims in groups.items() if len(dims) > 1}
+    independent_by_dimension: Counter[str] = Counter()
+    independent = 0
+    for record in records:
+        if record["overlapKey"] not in shared_keys:
+            independent += 1
+            independent_by_dimension[record["dimension"]] += 1
+    for dimension, bucket in by_dimension.items():
+        adjudicated = bucket["confirmed"] + bucket["rejected"]
+        bucket["confirmationRate"] = (
+            round(bucket["confirmed"] / adjudicated, 4) if adjudicated else None
+        )
+        bucket["independent"] = independent_by_dimension.get(dimension, 0)
+    total = len(records)
+    adjudicated_total = confirmed + rejected
+    attributed = sum(attr_counts.values())
+    persona_attribution = (
+        {
+            "available": True,
+            "attributed": attributed,
+            "attributedShare": round(attributed / total, 4) if total else None,
+            "bySource": dict(sorted(attr_counts.items())),
+        }
+        if attr_counts
+        else {
+            "available": False,
+            "reason": (
+                "findings sidecar 无 persona/evaluator/source 归因字段"
+                "（schema 未定义；write-findings 对额外字段透传，"
+                "归因只需评审产出侧携带，无需改 schema）"
+            ),
+        }
+    )
+    return {
+        "available": True,
+        "changesWithReview": changes_with_review,
+        "total": total,
+        "byDimension": dict(sorted(by_dimension.items())),
+        "blockingCandidates": {
+            "total": blocking,
+            "share": round(blocking / total, 4) if total else None,
+        },
+        "dispositions": {
+            "scope": "latest-round",
+            "confirmed": confirmed,
+            "rejected": rejected,
+            "unresolved": unresolved,
+            "confirmationRate": (
+                round(confirmed / adjudicated_total, 4) if adjudicated_total else None
+            ),
+            "unmatchedDispositions": unmatched_dispositions,
+        },
+        "recurrence": {
+            "recurredAcrossRuns": recurred,
+            "share": round(recurred / total, 4) if total else None,
+            "carriedOver": carried,
+        },
+        "independentFindings": {
+            "total": independent,
+            "share": round(independent / total, 4) if total else None,
+        },
+        "personaAttribution": persona_attribution,
+    }
+
 
 def _discover_change_dirs(changes_root: Path) -> list[Path]:
     """枚举 changes 根下的 change 目录（按名排序保确定性；跳过隐藏/工具目录）。"""
@@ -465,11 +655,13 @@ def _session_stage_key(session: dict[str, Any]) -> str:
 def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, Any]:
     """17-M1：跨 change 决策级度量面板（只读聚合，无任何写入）。
 
-    四类指标（调研报告 F6 口径）全部从已持久化的原始事实聚合：
+    五类指标（调研报告 F6 + §4.3 口径）全部从已持久化的原始事实聚合：
     - cycleTime：每 change 的 run_sessions 最早开始 → 最晚结束跨度，跨 change 分布；
     - gateFirstPass：按 (change, stage) 取时间序首条会话，status OK 记首过；
     - reviewFindings：reports/review/review-findings.json sidecar（跨轮合并视图）的发现密度；
-    - automation：managedByHarness=True 会话占比（包装层自产 vs 手工包装）。
+    - automation：managedByHarness=True 会话占比（包装层自产 vs 手工包装）；
+    - reviewYield（18-M1）：per-dimension 确认率/阻断候选/独立发现、跨轮重现、
+      persona 归因（缺数据降级，见块内 reason）。
     单项数据缺失只降级 available=False，绝不阻断整体面板。
     """
     changes_root = Path(changes_root).resolve()
@@ -483,6 +675,9 @@ def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, A
     changes_with_review = 0
     session_total = 0
     managed_total = 0
+    review_records: list[dict[str, Any]] = []
+    disposition_entries = 0
+    matched_dispositions = 0
 
     for change_dir in change_dirs:
         state_root = resolve_state_dir_for_contract(change_dir)
@@ -529,6 +724,8 @@ def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, A
                 findings_doc.get("findings"), list
             ):
                 changes_with_review += 1
+                dispositions = _load_latest_dispositions(state_root)
+                disposition_entries += len(dispositions)
                 for finding in findings_doc["findings"]:
                     if not isinstance(finding, dict):
                         continue
@@ -536,6 +733,12 @@ def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, A
                     findings_by_severity[
                         str(finding.get("severity") or "UNKNOWN")
                     ] += 1
+                    record = _review_yield_record(
+                        change_dir.name, finding, dispositions
+                    )
+                    if record["disposition"] is not None:
+                        matched_dispositions += 1
+                    review_records.append(record)
 
     stage_count = len(stage_first_seen)
     first_pass_count = sum(
@@ -597,9 +800,15 @@ def collect_efficiency_panel(changes_root: Path, *, now_iso: str) -> dict[str, A
             if session_total
             else {"available": False, "reason": "no run sessions"}
         ),
+        "reviewYield": _aggregate_review_yield(
+            review_records,
+            changes_with_review=changes_with_review,
+            unmatched_dispositions=disposition_entries - matched_dispositions,
+        ),
         "notes": [
             "Metrics aggregate persisted facts only; the panel writes nothing.",
             "First-pass is per (change, stage) by earliest run session.",
+            "Review yield joins findings with latest-round dispositions by finding id.",
             "This panel reports facts and does not assign responsibility.",
         ],
     }
