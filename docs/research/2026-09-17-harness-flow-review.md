@@ -171,7 +171,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
     > 收益预期修正（§2.3-B）：SDLC Playbook 指出并行会话的实际上限是「一个人能评审过来的流数」，且 auto-accept 以门禁/测试成熟为前提。个人场景下 full 档单 change 内波次并行的周期收益有限（评审带宽即瓶颈），主收益场景为 standard 批量任务吞吐；P1 评级保留，立项时应以 standard 档为首个试点。
   - [P1] **修复轮次验收测试防篡改检测**（F10）：修复/重试/fixback 轮次的 diff 若触碰 plan 声明的验收测试文件，确定性阻断并升级人工确认（实现位置可选精确暂存层或 review 门禁；一般测试文件维持现 advisory）。依据：§2.3-A；SDLC Playbook Stage 4「the loop itself needs protecting」。
   - [P2] **失败断路器**：同场景连续 2 次同类失败即暂停升级。依据：OpenAI 指南「护栏失败升级人工」。**状态：已实施（15-M3，2026-09-17）**：`harness_context.py execute_circuit_check` 按（verification kind, 失败指纹）最近连续 >=2 次 FAIL 判定 open 并阻断 `bootstrap-execute`，`--circuit-ack` 人工确认放行；纯派生不持久化。
-  - [P2] manifest 校准自动化（编辑动作后 hook 式触发）。
+  - [P2] manifest 校准自动化（编辑动作后 hook 式触发）。 **状态：已实施（19-M1，2026-09-18）**：`harness_test_guard.py calibrate` 子命令——report 模式只读检出（hashDrift/attributeDrift/missing/untracked 四类），`--apply` 仅对 hashDrift 复用 `record` 重录（同锁同校验，reason 限既有枚举）；attributeDrift（校验器不容 record 旁路）/missing（破坏性）/untracked（新增登记须保留 tdd-created/test-updated 显式意图）只报告不代为决策；hook 式触发落在 `bootstrap-execute` 信封 `manifestCalibration` advisory（每轮 execute 开始自动检出上一轮修复回流造成的漂移并附 `--apply` 提示，失败降级不阻断）。
 
 ### 4.3 Review
 
@@ -199,7 +199,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **差距**：知识候选 `build_plan_candidates` 反解析 plans/*.md——Markdown 降级为视图后形成「从渲染物反向解析」的反向依赖（[精简分析](simplification-analysis-2026-09.md) §6.2）；复用端在 plan 非强制（F4）。
 - **建议**：
   - [P1] 知识候选改从 **JSON 真相源直接生成**，废弃 Markdown 反解析，释放渲染层自由度（四件套收敛的前提）。**状态：已实施（06B-4，commit `5a63442`）。**
-  - [P2] 归档时生成**任务级复盘卡**（周期、attempt 数、门禁首过率、评审统计）喂平台知识库；其中重复出现的失败模式按 §2.3-D 判据（第二次出现）升级为确定性规则或回归用例，而非停留在知识条目。依据：12-Factor「错误压缩进上下文」；SDLC Playbook「a fix ships → add an eval for the incident」。
+  - [P2] 归档时生成**任务级复盘卡**（周期、attempt 数、门禁首过率、评审统计）喂平台知识库；其中重复出现的失败模式按 §2.3-D 判据（第二次出现）升级为确定性规则或回归用例，而非停留在知识条目。依据：12-Factor「错误压缩进上下文」；SDLC Playbook「a fix ships → add an eval for the incident」。 **状态：已实施（19-M2，2026-09-18）**：finalize 管线新增 step 8c——`reports/final/retro-card.json`（周期/attempts 按阶段/门禁首过率含 per-phase 明细/评审统计/验证统计/未裁决丢弃计数），纯从 summary-data 派生不重新读盘，缺数据段降级 `dataGaps` 说明不虚构；复盘卡随 core 包走（`_archive_core_file_specs` 增 retro_card 条目）并折成一条知识候选（entry_type 取枚举内语义最近的 `implementation`，keywords 标 `retro-card`，source_refs 指包内 retro-card.json，空壳卡不发候选）。
 
 ### 4.6 支撑环（入口 / 知识 / 同步 / 地图）
 

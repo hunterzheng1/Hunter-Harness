@@ -2375,5 +2375,76 @@ class ExecuteWaveDispatchTests(unittest.TestCase):
             self.assertEqual(review["dispatch"]["phase"], "review")
 
 
+class BootstrapManifestCalibrationTests(unittest.TestCase):
+    """19-M1：bootstrap-execute 信封 manifestCalibration advisory（失败安全不阻断）。"""
+
+    GUARD_SCRIPT = Path(__file__).resolve().parents[1] / "harness_test_guard.py"
+
+    @classmethod
+    def _guard(cls):
+        spec = importlib.util.spec_from_file_location(
+            "harness_test_guard_for_context", cls.GUARD_SCRIPT
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_missing_manifest_degrades(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change_dir = project / ".harness" / "changes" / "demo"
+            change_dir.mkdir(parents=True)
+
+            result = CONTEXT._bootstrap_manifest_calibration(project, change_dir)
+
+            self.assertFalse(result["available"])
+            self.assertEqual(result["reason"], "manifest-missing")
+
+    def test_drifted_manifest_surfaces_hint(self) -> None:
+        guard = self._guard()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            change_dir = make_change(project, "demo")
+            test_file = project / "src" / "test" / "java" / "AppTest.java"
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text("class AppTest {}\n", encoding="utf-8")
+            recorded = guard.record(
+                project, change_dir, [str(test_file)], "tdd-created"
+            )
+            self.assertTrue(recorded["ok"], recorded)
+            test_file.write_text(
+                "class AppTest { int changed; }\n", encoding="utf-8"
+            )
+
+            result = CONTEXT._bootstrap_manifest_calibration(project, change_dir)
+
+            self.assertTrue(result["available"], result)
+            self.assertTrue(result["drifted"])
+            self.assertEqual(result["hashDrift"], ["src/test/java/AppTest.java"])
+            self.assertIn("--apply", result["hint"])
+
+    def test_clean_manifest_reports_not_drifted(self) -> None:
+        guard = self._guard()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            change_dir = make_change(project, "demo")
+            test_file = project / "src" / "test" / "java" / "AppTest.java"
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text("class AppTest {}\n", encoding="utf-8")
+            recorded = guard.record(
+                project, change_dir, [str(test_file)], "tdd-created"
+            )
+            self.assertTrue(recorded["ok"], recorded)
+
+            result = CONTEXT._bootstrap_manifest_calibration(project, change_dir)
+
+            self.assertTrue(result["available"], result)
+            self.assertFalse(result["drifted"])
+            self.assertIsNone(result["hint"])
+
+
 if __name__ == "__main__":
     unittest.main()

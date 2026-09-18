@@ -1096,5 +1096,193 @@ class PlanCandidateSourceSelectionTest(unittest.TestCase):
         self.assertIn("让离线用量不丢失。", summaries)
 
 
+_RETRO_SUMMARY = {
+    "changeName": "demo-change",
+    "archiveIntent": "publish",
+    "closureDisposition": "COMPLETED",
+    "releaseEligible": True,
+    "releaseTarget": "production",
+    "timeline": [
+        {"phase": "plan", "attempt": 1, "startedAt": "2026-09-10T08:00:00+00:00",
+         "endedAt": "2026-09-10T09:00:00+00:00", "durationMs": 3600000, "status": "OK"},
+        {"phase": "execute", "attempt": 1, "startedAt": "2026-09-10T09:30:00+00:00",
+         "endedAt": "2026-09-10T11:00:00+00:00", "durationMs": 5400000, "status": "FAIL"},
+        {"phase": "execute", "attempt": 2, "startedAt": "2026-09-11T08:00:00+00:00",
+         "endedAt": "2026-09-11T10:00:00+00:00", "durationMs": 7200000, "status": "OK"},
+        {"phase": "review", "attempt": 1, "startedAt": "2026-09-11T10:30:00+00:00",
+         "endedAt": "2026-09-11T11:30:00+00:00", "durationMs": 3600000, "status": "WARN"},
+        # 非 attempt 条目（决策/问题）不得计入
+        {"type": "decision", "phase": "execute", "decision": "采用方案 A"},
+    ],
+    "efficiency": {
+        "executionAttempts": 2,
+        "verificationAttempts": 3,
+        "statusCounts": {"OK": 2, "FAIL": 1},
+        "failureClasses": {"tests": 1},
+        "manualWrapperCount": 0,
+        "repeatedCommandsWithoutNewEvidence": 1,
+        "reviewFindings": {
+            "count": 3, "adjudicated": 3, "carriedOver": 1,
+            "invalidated": 0, "blocking": 1, "warnings": 2,
+        },
+        "timing": {"activeMs": 100000, "wallClockMs": 99000000},
+    },
+    "reviewSummary": {
+        "red": 1, "yellow": 2, "redFixed": 1, "yellowFixed": 1,
+        "redCarriedOver": 0, "yellowCarriedOver": 1,
+    },
+}
+
+
+class RetroCardTests(unittest.TestCase):
+    """19-M2：任务级复盘卡（研究报告 §4.5 P2）——周期/attempt/门禁首过率/评审统计。
+
+    纯从 summary-data 派生，缺数据段降级 dataGaps，不虚构（不重新读盘，
+    与 candidates 生成共享同一份事实）。
+    """
+
+    def _card(self, summary=None):
+        return hkc.build_retro_card(
+            _RETRO_SUMMARY if summary is None else summary,
+            change_key="demo-change",
+            archive_id="2026-09-11-demo-change",
+            created_at="2026-09-11T12:00:00+00:00",
+        )
+
+    def test_cycle_and_attempts(self) -> None:
+        card = self._card()
+
+        self.assertEqual(card["schemaVersion"], 1)
+        self.assertEqual(card["kind"], "retro-card")
+        self.assertEqual(card["changeName"], "demo-change")
+        self.assertEqual(card["cycle"]["startedAt"], "2026-09-10T08:00:00+00:00")
+        self.assertEqual(card["cycle"]["endedAt"], "2026-09-11T11:30:00+00:00")
+        # 09-10T08:00 → 09-11T11:30 = 27.5h
+        self.assertEqual(card["cycle"]["wallClockMs"], 99000000)
+        self.assertEqual(card["cycle"]["activeMs"], 100000)
+        self.assertEqual(card["attempts"]["total"], 4)
+        self.assertEqual(
+            card["attempts"]["byPhase"], {"execute": 2, "plan": 1, "review": 1}
+        )
+        self.assertEqual(card["dataGaps"], [])
+
+    def test_gate_first_pass(self) -> None:
+        card = self._card()
+        gate = card["gateFirstPass"]
+
+        self.assertEqual(gate["phaseCount"], 3)
+        # plan OK 首过；execute 第 1 轮 FAIL 非首过；review WARN 门禁语义放行记首过
+        self.assertEqual(gate["firstPassCount"], 2)
+        self.assertEqual(gate["rate"], round(2 / 3, 3))
+        by_phase = {row["phase"]: row for row in gate["phases"]}
+        self.assertTrue(by_phase["plan"]["firstPass"])
+        self.assertFalse(by_phase["execute"]["firstPass"])
+        self.assertEqual(by_phase["execute"]["firstAttemptStatus"], "FAIL")
+        self.assertEqual(by_phase["execute"]["attempts"], 2)
+        self.assertTrue(by_phase["review"]["firstPass"])
+
+    def test_review_and_verification_stats(self) -> None:
+        card = self._card()
+
+        self.assertEqual(card["review"]["red"], 1)
+        self.assertEqual(card["review"]["redFixed"], 1)
+        self.assertEqual(card["review"]["yellowCarriedOver"], 1)
+        self.assertEqual(card["review"]["carriedOver"], 1)
+        self.assertEqual(card["verification"]["executionAttempts"], 2)
+        self.assertEqual(card["verification"]["statusCounts"], {"OK": 2, "FAIL": 1})
+        self.assertEqual(card["verification"]["repeatedCommandsWithoutNewEvidence"], 1)
+        self.assertEqual(card["outcome"]["closureDisposition"], "COMPLETED")
+        self.assertTrue(card["outcome"]["releaseEligible"])
+
+    def test_empty_summary_degrades_with_data_gaps(self) -> None:
+        card = self._card(summary={})
+
+        self.assertEqual(len(card["dataGaps"]), 3)
+        self.assertIsNone(card["cycle"]["startedAt"])
+        self.assertIsNone(card["cycle"]["wallClockMs"])
+        self.assertEqual(card["attempts"]["total"], 0)
+        self.assertEqual(card["attempts"]["byPhase"], {})
+        self.assertIsNone(card["gateFirstPass"]["rate"])
+        self.assertEqual(card["gateFirstPass"]["phaseCount"], 0)
+
+    def test_non_dict_summary_and_missing_sections(self) -> None:
+        card = hkc.build_retro_card(
+            None,
+            change_key="x",
+            archive_id="x",
+            created_at="2026-09-11T12:00:00+00:00",
+        )
+        self.assertEqual(len(card["dataGaps"]), 3)
+
+        partial = self._card(summary={"timeline": _RETRO_SUMMARY["timeline"]})
+        self.assertEqual(partial["attempts"]["total"], 4)
+        self.assertIn("efficiency-empty:无 run-sessions，验证统计不可得", partial["dataGaps"])
+        self.assertIn("reviewSummary-empty:无评审 sidecar，评审统计不可得", partial["dataGaps"])
+
+    def test_unadjudicated_findings_counted(self) -> None:
+        summary = dict(_RETRO_SUMMARY)
+        summary["reviewFindings"] = [
+            {"severity": "RED", "disposition": "OPEN", "title": "t", "path": "a.py"},
+            {"severity": "YELLOW", "disposition": "FIXED", "title": "u", "path": "b.py"},
+        ]
+        card = self._card(summary=summary)
+        self.assertEqual(card["droppedUnadjudicatedCandidates"], 1)
+
+
+class RetroCandidateTests(unittest.TestCase):
+    """19-M2：复盘卡折成知识候选喂平台知识库；空壳卡（三源全缺）不发候选。"""
+
+    _KW = {
+        "change_key": "demo-change",
+        "archive_id": "2026-09-11-demo-change",
+        "producer_version": "1.2.0",
+        "created_at": "2026-09-11T12:00:00+00:00",
+    }
+
+    def _candidate(self, summary=None):
+        card = hkc.build_retro_card(
+            _RETRO_SUMMARY if summary is None else summary,
+            change_key=self._KW["change_key"],
+            archive_id=self._KW["archive_id"],
+            created_at=self._KW["created_at"],
+        )
+        return hkc.build_retro_candidate(card, **self._KW)
+
+    def test_candidate_shape(self) -> None:
+        candidate = self._candidate()
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["entry_type"], "implementation")
+        self.assertEqual(candidate["status"], "pending")
+        self.assertEqual(candidate["source_change_key"], "demo-change")
+        self.assertEqual(candidate["source_refs"], ["reports/final/retro-card.json"])
+        self.assertEqual(candidate["reusability_scope"], "project")
+        self.assertEqual(candidate["confidence"], 0.8)
+        self.assertEqual(candidate["provenance"]["source_kind"], "archive")
+        self.assertEqual(candidate["provenance"]["source_ref"], "archive:2026-09-11-demo-change")
+        self.assertEqual(candidate["provenance"]["producer"], "harness-archive")
+        self.assertIn("retro-card", candidate["keywords"])
+        self.assertIn("demo-change", candidate["summary"])
+        self.assertTrue(candidate["content_hash"].startswith("sha256:"))
+        self.assertTrue(candidate["candidate_id"].startswith("kc_"))
+        self.assertIn("门禁首过 2/3", candidate["summary"])
+        self.assertIn("任务复盘卡：demo-change", candidate["body"])
+        self.assertIn("attempts：4", candidate["body"])
+
+    def test_candidate_deterministic(self) -> None:
+        first = self._candidate()
+        second = self._candidate()
+        self.assertEqual(first["candidate_id"], second["candidate_id"])
+        self.assertEqual(first["content_hash"], second["content_hash"])
+
+    def test_empty_card_emits_no_candidate(self) -> None:
+        self.assertIsNone(self._candidate(summary={}))
+
+    def test_partial_card_still_emits(self) -> None:
+        candidate = self._candidate(summary={"timeline": _RETRO_SUMMARY["timeline"]})
+        self.assertIsNotNone(candidate)
+        self.assertIn("数据缺口", candidate["body"])
+
+
 if __name__ == "__main__":
     unittest.main()

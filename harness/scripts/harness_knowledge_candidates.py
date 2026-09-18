@@ -465,6 +465,286 @@ def count_unadjudicated_findings(summary: dict[str, Any]) -> int:
     return count
 
 
+# --- task-level retrospective card（19-M2，研究报告 §4.5 P2）-------------------
+#
+# 归档时从 summary-data 派生一张任务级复盘卡：周期、attempt 数、门禁首过率、
+# 评审统计。纯数据派生、不虚构；缺数据段降级为 dataGaps 说明（沿用 16-M2
+# reviewYield / 18-M1 的缺数据口径）。复盘卡本身是归档产物
+# （reports/final/retro-card.json），并折成一条知识候选喂平台知识库——
+# entry_type 枚举（contracts/content-sync.ts 与 knowledge.ts 逐值对齐）无
+# retrospective/metric，取语义最近的 "implementation"，keywords 标 retro-card。
+
+
+def _retro_parse_ts(value: Any):
+    """ISO 时间戳 → epoch 毫秒；不可解析返回 None（harness 时间戳格式不保证 Z/offset）。"""
+    import datetime as _dt
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    for candidate in (text, text.replace("Z", "+00:00")):
+        try:
+            parsed = _dt.datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    return None
+
+
+def build_retro_card(
+    summary: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    created_at: str,
+) -> dict[str, Any]:
+    """Derive the task-level retrospective card from summary-data.
+
+    数据源全部来自 summary：timeline（phase attempts/decisions/issues）、
+    efficiency（collect_efficiency_summary）、reviewSummary。不重新读盘，
+    与 candidates 生成共享同一份事实。任何段缺失记 dataGaps，字段保留空值。
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    timeline = summary.get("timeline")
+    attempts = [
+        item
+        for item in (timeline if isinstance(timeline, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("attempt"), int)
+    ]
+    efficiency = summary.get("efficiency")
+    efficiency = efficiency if isinstance(efficiency, dict) else {}
+    review_summary = summary.get("reviewSummary")
+    review_summary = review_summary if isinstance(review_summary, dict) else {}
+
+    data_gaps: list[str] = []
+    if not attempts:
+        data_gaps.append("timeline-empty:无 phase 事件，周期/attempt/首过率不可得")
+    if not efficiency:
+        data_gaps.append("efficiency-empty:无 run-sessions，验证统计不可得")
+    if not review_summary:
+        data_gaps.append("reviewSummary-empty:无评审 sidecar，评审统计不可得")
+
+    starts = [ms for ms in (_retro_parse_ts(a.get("startedAt")) for a in attempts) if ms is not None]
+    ends = [ms for ms in (_retro_parse_ts(a.get("endedAt")) for a in attempts) if ms is not None]
+    started_ms = min(starts) if starts else None
+    ended_ms = max(ends) if ends else None
+    started_at = None
+    ended_at = None
+    for item in attempts:
+        if started_ms is not None and _retro_parse_ts(item.get("startedAt")) == started_ms:
+            started_at = item.get("startedAt")
+        if ended_ms is not None and _retro_parse_ts(item.get("endedAt")) == ended_ms:
+            ended_at = item.get("endedAt")
+
+    # attempt 数：按 phase 分组的 distinct attempt 序号（决策/问题条目不含 attempt，已过滤）
+    by_phase: dict[str, set[int]] = {}
+    for item in attempts:
+        phase = _text(item.get("phase")) or "unknown"
+        by_phase.setdefault(phase, set()).add(int(item["attempt"]))
+    attempts_by_phase = {
+        phase: len(values) for phase, values in sorted(by_phase.items())
+    }
+
+    # 门禁首过率：每个有 attempt 的 phase，其第 1 轮（最小 attempt 序号）
+    # phase.end 状态 ∈ {OK, WARN} 记首过（WARN 是通过带警告，门禁语义上放行）。
+    _PASS_STATUSES = {"OK", "WARN"}
+    first_pass_phases: list[dict[str, Any]] = []
+    for phase, values in sorted(by_phase.items()):
+        first_attempt = min(values)
+        first = next(
+            (
+                item
+                for item in attempts
+                if (_text(item.get("phase")) or "unknown") == phase
+                and item.get("attempt") == first_attempt
+            ),
+            None,
+        )
+        first_status = _text(first.get("status")).upper() if isinstance(first, dict) else ""
+        first_pass_phases.append(
+            {
+                "phase": phase,
+                "attempts": len(values),
+                "firstAttemptStatus": first_status or None,
+                "firstPass": first_status in _PASS_STATUSES,
+            }
+        )
+    first_pass_count = sum(1 for row in first_pass_phases if row["firstPass"])
+    phase_count = len(first_pass_phases)
+
+    review_findings = efficiency.get("reviewFindings")
+    review_findings = review_findings if isinstance(review_findings, dict) else {}
+    timing = efficiency.get("timing")
+    timing = timing if isinstance(timing, dict) else {}
+
+    return {
+        "schemaVersion": 1,
+        "kind": "retro-card",
+        "changeName": change_key,
+        "archiveId": archive_id,
+        "generatedAt": created_at,
+        "outcome": {
+            "archiveIntent": summary.get("archiveIntent"),
+            "closureDisposition": summary.get("closureDisposition"),
+            "releaseEligible": summary.get("releaseEligible"),
+            "releaseTarget": summary.get("releaseTarget"),
+        },
+        "cycle": {
+            "startedAt": started_at,
+            "endedAt": ended_at,
+            "wallClockMs": (
+                ended_ms - started_ms
+                if started_ms is not None and ended_ms is not None
+                else None
+            ),
+            "activeMs": timing.get("activeMs"),
+        },
+        "attempts": {
+            "total": sum(attempts_by_phase.values()),
+            "byPhase": attempts_by_phase,
+        },
+        "gateFirstPass": {
+            "phases": first_pass_phases,
+            "firstPassCount": first_pass_count,
+            "phaseCount": phase_count,
+            "rate": (round(first_pass_count / phase_count, 3) if phase_count else None),
+        },
+        "review": {
+            "red": review_summary.get("red"),
+            "yellow": review_summary.get("yellow"),
+            "redFixed": review_summary.get("redFixed"),
+            "yellowFixed": review_summary.get("yellowFixed"),
+            "redCarriedOver": review_summary.get("redCarriedOver"),
+            "yellowCarriedOver": review_summary.get("yellowCarriedOver"),
+            "findings": review_findings.get("count"),
+            "adjudicated": review_findings.get("adjudicated"),
+            "carriedOver": review_findings.get("carriedOver"),
+            "invalidated": review_findings.get("invalidated"),
+            "blocking": review_findings.get("blocking"),
+            "warnings": review_findings.get("warnings"),
+        },
+        "verification": {
+            "executionAttempts": efficiency.get("executionAttempts"),
+            "verificationAttempts": efficiency.get("verificationAttempts"),
+            "statusCounts": efficiency.get("statusCounts"),
+            "failureClasses": efficiency.get("failureClasses"),
+            "manualWrapperCount": efficiency.get("manualWrapperCount"),
+            "repeatedCommandsWithoutNewEvidence": efficiency.get(
+                "repeatedCommandsWithoutNewEvidence"
+            ),
+        },
+        "droppedUnadjudicatedCandidates": count_unadjudicated_findings(summary),
+        "dataGaps": data_gaps,
+    }
+
+
+_RETRO_CONFIDENCE = 0.8
+
+
+def build_retro_candidate(
+    card: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> dict[str, Any] | None:
+    """Fold the retro card into one KnowledgeCandidate (entry_type=implementation).
+
+    卡为空壳（无 timeline/efficiency/reviewSummary 任何一段）时不发候选——
+    避免把纯 record-only 的空转也沉淀进知识库。
+    """
+    if not isinstance(card, dict):
+        return None
+    gaps = card.get("dataGaps")
+    if isinstance(gaps, list) and len(gaps) >= 3:
+        return None
+
+    cycle = card.get("cycle") if isinstance(card.get("cycle"), dict) else {}
+    attempts = card.get("attempts") if isinstance(card.get("attempts"), dict) else {}
+    gate = card.get("gateFirstPass") if isinstance(card.get("gateFirstPass"), dict) else {}
+    review = card.get("review") if isinstance(card.get("review"), dict) else {}
+    verification = (
+        card.get("verification") if isinstance(card.get("verification"), dict) else {}
+    )
+    outcome = card.get("outcome") if isinstance(card.get("outcome"), dict) else {}
+
+    wall_ms = cycle.get("wallClockMs")
+    wall_text = (
+        f"{round(wall_ms / 3600000, 2)}h" if isinstance(wall_ms, (int, float)) else "n/a"
+    )
+    rate = gate.get("rate")
+    rate_text = (
+        f"{gate.get('firstPassCount')}/{gate.get('phaseCount')}"
+        if rate is not None
+        else "n/a"
+    )
+
+    summary_text = (
+        f"任务复盘卡 {change_key}：周期 {wall_text}，attempts "
+        f"{attempts.get('total') or 0}，门禁首过 {rate_text}，评审 RED "
+        f"{review.get('red') or 0}/YELLOW {review.get('yellow') or 0}，"
+        f"closure={_text(outcome.get('closureDisposition')) or 'n/a'}"
+    )
+    body_lines = [
+        f"# 任务复盘卡：{change_key}",
+        "",
+        f"- archiveId：{archive_id}",
+        f"- closureDisposition：{_text(outcome.get('closureDisposition')) or 'n/a'}；"
+        f"releaseEligible：{outcome.get('releaseEligible')}",
+        f"- 周期：{wall_text}（active {cycle.get('activeMs')} ms）；"
+        f"{_text(cycle.get('startedAt')) or '?'} → {_text(cycle.get('endedAt')) or '?'}",
+        f"- attempts：{attempts.get('total') or 0}，按阶段 "
+        f"{json.dumps(attempts.get('byPhase') or {}, ensure_ascii=False)}",
+        f"- 门禁首过率：{rate_text}"
+        + (
+            "；明细 "
+            + json.dumps(gate.get("phases") or [], ensure_ascii=False)
+            if gate.get("phases")
+            else ""
+        ),
+        f"- 评审：RED {review.get('red') or 0}（修复 {review.get('redFixed') or 0}、"
+        f"携带 {review.get('redCarriedOver') or 0}）、YELLOW {review.get('yellow') or 0}"
+        f"（修复 {review.get('yellowFixed') or 0}、携带 {review.get('yellowCarriedOver') or 0}）；"
+        f"findings {review.get('findings') or 0}、驳回 {review.get('invalidated') or 0}",
+        f"- 验证：executionAttempts {verification.get('executionAttempts') or 0}、"
+        f"verificationAttempts {verification.get('verificationAttempts') or 0}、"
+        f"repeatedCommandsWithoutNewEvidence "
+        f"{verification.get('repeatedCommandsWithoutNewEvidence') or 0}；"
+        f"failureClasses "
+        f"{json.dumps(verification.get('failureClasses') or {}, ensure_ascii=False)}",
+        f"- droppedUnadjudicatedCandidates：{card.get('droppedUnadjudicatedCandidates') or 0}",
+    ]
+    if isinstance(gaps, list) and gaps:
+        body_lines.append(f"- 数据缺口：{'; '.join(str(g) for g in gaps)}")
+    body = "\n".join(body_lines)[:_MAX_BODY_CHARS]
+    keywords = _keywords("retro-card", "metrics", change_key)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "candidate_id": _candidate_id(change_key, "retro", archive_id),
+        "source_change_key": change_key,
+        "source_refs": ["reports/final/retro-card.json"],
+        "summary": summary_text,
+        "reusability_scope": "project",
+        "content_hash": _content_hash("implementation", summary_text, body, keywords),
+        "confidence": _RETRO_CONFIDENCE,
+        "status": "pending",
+        "entry_type": "implementation",
+        "body": body,
+        "keywords": keywords,
+        **_asset_fields(),
+        "provenance": {
+            "source_kind": "archive",
+            "source_ref": f"archive:{archive_id}",
+            "producer": PRODUCER,
+            "producer_version": producer_version,
+            "created_at": created_at,
+        },
+    }
+
+
 # --- plan/design-derived knowledge candidates ---------------------------------
 #
 # reviewFindings/knownRisks/decisions 只覆盖“经对抗评审的变更”。没有评审的简单

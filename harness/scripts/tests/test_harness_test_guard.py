@@ -1135,5 +1135,159 @@ class NestedPackageTestPathTests(unittest.TestCase):
         self.assertFalse(guard._standard_test_path("kld-sdd/test"))
 
 
+class CalibrateTests(unittest.TestCase):
+    """19-M1：calibrate —— manifest 漂移检出（report）与哈希漂移自动重录（--apply）。
+
+    report 纯只读；--apply 仅对 hashDrift 复用 record 重录（同锁同校验），
+    attributeDrift / missing / untracked 只报告——校验器不容旁路、破坏性、
+    意图性操作均不代为决策。
+    """
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="test-guard-calibrate-"))
+        self.change = self.project / ".harness" / "changes" / "demo"
+        self.change.mkdir(parents=True)
+        self._write(self.project / ".gitignore", "src/test/\nignored-secret.txt\n")
+        self._git("init")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "baseline")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    @staticmethod
+    def _write(path: Path, text: str = "x\n") -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.project), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+    def _record(self, path: Path, reason: str = "tdd-created") -> dict:
+        return guard.record(self.project, self.change, [str(path)], reason)
+
+    def _manifest(self) -> dict:
+        return json.loads(
+            (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+        )
+
+    def test_no_manifest_reports_no_manifest(self) -> None:
+        result = guard.calibrate(self.project, self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "NO_MANIFEST")
+        self.assertEqual(result["summary"]["tracked"], 0)
+
+    def test_report_detects_hash_drift_without_touching_disk(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file, "class AppTest {}\n")
+        self.assertTrue(self._record(test_file)["ok"])
+        before = json.dumps(self._manifest(), sort_keys=True)
+
+        self._write(test_file, "class AppTest { int changed; }\n")
+        result = guard.calibrate(self.project, self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "CALIBRATE_REPORT")
+        self.assertEqual(result["mode"], "report")
+        rel = "src/test/java/AppTest.java"
+        self.assertEqual(result["hashDrift"], [rel])
+        self.assertEqual(result["summary"]["hashDrift"], 1)
+        self.assertIn("--apply", result["hint"])
+        # report 模式纯只读：manifest 字节级不变
+        self.assertEqual(json.dumps(self._manifest(), sort_keys=True), before)
+
+    def test_apply_rerecords_hash_drift(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file, "class AppTest {}\n")
+        self.assertTrue(self._record(test_file)["ok"])
+        self._write(test_file, "class AppTest { int changed; }\n")
+
+        applied = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(applied["ok"], applied)
+        self.assertEqual(applied["code"], "CALIBRATED")
+        self.assertEqual(applied["applied"]["reason"], "stale-test-repair")
+        self.assertEqual(applied["applied"]["files"], ["src/test/java/AppTest.java"])
+        entry = self._manifest()["files"][0]
+        self.assertEqual(entry["reason"], "stale-test-repair")
+
+        after = guard.calibrate(self.project, self.change)
+        self.assertEqual(after["summary"]["hashDrift"], 0)
+        self.assertIsNone(after["hint"])
+
+    def test_apply_without_drift_reports_already_calibrated(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file)
+        self.assertTrue(self._record(test_file)["ok"])
+
+        result = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "ALREADY_CALIBRATED")
+        self.assertIsNone(result["applied"])
+
+    def test_missing_entry_reported_not_repaired(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "GoneTest.java"
+        self._write(test_file)
+        self.assertTrue(self._record(test_file)["ok"])
+        test_file.unlink()
+
+        result = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(result["ok"], result)
+        rel = "src/test/java/GoneTest.java"
+        self.assertEqual(result["missing"], [rel])
+        self.assertEqual(result["summary"]["missing"], 1)
+        # 删除条目属破坏性操作：--apply 不代为处理
+        self.assertIsNone(result["applied"])
+        self.assertIn(rel, [item["path"] for item in self._manifest()["files"]])
+
+    def test_untracked_reported_not_recorded(self) -> None:
+        known = self.project / "src" / "test" / "java" / "KnownTest.java"
+        self._write(known)
+        self.assertTrue(self._record(known)["ok"])
+        self._write(self.project / "src" / "test" / "java" / "ExtraTest.java")
+
+        result = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(result["ok"], result)
+        rel = "src/test/java/ExtraTest.java"
+        self.assertEqual(result["untracked"], [rel])
+        self.assertEqual(result["summary"]["untracked"], 1)
+        # 新增登记须保留 tdd-created/test-updated 显式意图：不自动 record
+        self.assertNotIn(rel, [item["path"] for item in self._manifest()["files"]])
+
+    def test_attribute_drift_reported_not_repaired(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "AttrTest.java"
+        self._write(test_file)
+        self.assertTrue(self._record(test_file)["ok"])
+        # .gitignore 移除 src/test/ → ignored True→False（校验器不容 record 旁路）
+        self._write(self.project / ".gitignore", "ignored-secret.txt\n")
+
+        result = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(result["ok"], result)
+        rel = "src/test/java/AttrTest.java"
+        self.assertEqual(result["attributeDrift"], [rel])
+        self.assertEqual(result["summary"]["attributeDrift"], 1)
+        self.assertIsNone(result["applied"])
+
+    def test_invalid_reason_rejected(self) -> None:
+        result = guard.calibrate(self.project, self.change, reason="bogus")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "INVALID_REASON")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -690,6 +690,198 @@ def record(
     return _result(True, action, "RECORDED", [rel for _, rel in validated], manifestPath=str(manifest_path))
 
 
+# ---------------------------------------------------------------------------
+# 19-M1 manifest 校准自动化（calibrate）
+#
+# 背景（调研报告 2026-09-17 §4.2 [P2]）：修复回流改完测试后须手动
+# `record --files <精确路径>` 重录 manifest；该步骤靠 agent 自觉，漏跑
+# 会在下一次 gate/stage 以 HASH_DRIFT 硬阻断，且要求人工精确列路径。
+# calibrate 把"找漂移文件"自动化：扫描 manifest 全部条目，分类为
+#   hashDrift      文件存在但内容哈希漂移 —— 可自动重录（record 同款路径）
+#   attributeDrift ignored/trackedBefore 属性漂移 —— 校验器刻意不允许经
+#                  record 旁路（MANIFEST_INVALID），只报告不自动改
+#   missing        条目登记的文件已不存在 —— 只报告（删除属破坏性操作）
+#   untracked      磁盘上允许登记但未登记的测试文件 —— 只报告（新增登记
+#                  须保留 tdd-created/test-updated 的显式意图）
+# 默认 report 模式纯只读；--apply 仅对 hashDrift 条目复用 record() 重录
+# （同一锁与校验路径，reason 默认 stale-test-repair）。
+# ---------------------------------------------------------------------------
+
+
+def _calibrate_entry_status(
+    project: Path, rel: str, entry: dict[str, Any], *, is_v2: bool
+) -> str:
+    """单条目状态：clean / hashDrift / attributeDrift / missing。"""
+    path, normalized, error = _validate_file(project, rel)
+    if error or path is None or normalized != rel:
+        return "missing"
+    if is_v2:
+        expected = entry.get("logicalHash") or entry.get("binaryHash")
+        if expected != logical_file_hash(project, rel):
+            return "hashDrift"
+        if entry.get("ignored") != _is_ignored(project, rel):
+            return "attributeDrift"
+        return "clean"
+    if entry.get("sha256") != _sha256(path):
+        return "hashDrift"
+    tracked_now = (
+        _git(project, "ls-files", "--error-unmatch", "--", rel).returncode == 0
+    )
+    ignored_now = _is_ignored(project, rel)
+    # 与 v1 校验器同口径：trackedBefore False→True 属合法 checkpoint，
+    # 其余属性翻转视为漂移（校验器同样判 MANIFEST_INVALID，不容忍）。
+    checkpointed = not entry.get("trackedBefore") and tracked_now
+    if not checkpointed and (
+        entry.get("trackedBefore") != tracked_now
+        or entry.get("ignored") != ignored_now
+    ):
+        return "attributeDrift"
+    return "clean"
+
+
+def calibrate(
+    project: Path | str,
+    change_dir: Path | str,
+    *,
+    apply_changes: bool = False,
+    reason: str = "stale-test-repair",
+) -> dict[str, Any]:
+    """校准 manifest：report 检出漂移；--apply 自动重录 hashDrift 条目。"""
+    action = "calibrate"
+    project_root = Path(project).resolve()
+    invalid_root = _invalid_project_root(action, project, project_root)
+    if invalid_root is not None:
+        return invalid_root
+    if reason not in REASONS:
+        return _result(False, action, "INVALID_REASON", [])
+    change_root = _change_dir(project_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is None:
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+    mode = "apply" if apply_changes else "report"
+
+    if not manifest_path.is_file():
+        return _result(
+            True,
+            action,
+            "NO_MANIFEST",
+            [],
+            mode=mode,
+            manifest=None,
+            summary={
+                "tracked": 0,
+                "hashDrift": 0,
+                "attributeDrift": 0,
+                "missing": 0,
+                "untracked": 0,
+            },
+            hashDrift=[],
+            attributeDrift=[],
+            missing=[],
+            untracked=[],
+            applied=None,
+            hint=None,
+        )
+    try:
+        manifest = _read_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result(
+            False, action, "MANIFEST_INVALID", [], mode=mode, error=str(exc)
+        )
+    if not isinstance(manifest, dict) or manifest.get("mode") != MODE:
+        return _result(False, action, "MANIFEST_INVALID", [], mode=mode)
+    is_v2 = manifest.get("schemaVersion") == 2
+    shape_valid = _entry_shape_valid_v2 if is_v2 else _entry_shape_valid
+    raw_entries = manifest.get("files")
+    if not isinstance(raw_entries, list):
+        return _result(False, action, "MANIFEST_INVALID", [], mode=mode)
+    entries: dict[str, dict[str, Any]] = {}
+    for item in raw_entries:
+        if not shape_valid(item):
+            bad = item.get("path") if isinstance(item, dict) else None
+            return _result(
+                False,
+                action,
+                "MANIFEST_INVALID",
+                [bad] if isinstance(bad, str) else [],
+                mode=mode,
+            )
+        if item["path"] in entries:
+            return _result(
+                False, action, "MANIFEST_INVALID", [item["path"]], mode=mode
+            )
+        entries[item["path"]] = item
+
+    hash_drift: list[str] = []
+    attribute_drift: list[str] = []
+    missing: list[str] = []
+    for rel, entry in entries.items():
+        status = _calibrate_entry_status(project_root, rel, entry, is_v2=is_v2)
+        if status == "hashDrift":
+            hash_drift.append(rel)
+        elif status == "attributeDrift":
+            attribute_drift.append(rel)
+        elif status == "missing":
+            missing.append(rel)
+    untracked = sorted(
+        rel
+        for rel in _enumerate_allowed_test_files(project_root)
+        if rel not in entries
+    )
+    summary = {
+        "tracked": len(entries),
+        "hashDrift": len(hash_drift),
+        "attributeDrift": len(attribute_drift),
+        "missing": len(missing),
+        "untracked": len(untracked),
+    }
+    hint = (
+        "python harness/scripts/harness_test_guard.py calibrate "
+        "--project <root> --change-dir <dir> --apply"
+        if hash_drift
+        else None
+    )
+    applied: dict[str, Any] | None = None
+    if apply_changes and hash_drift:
+        recorded = record(project_root, change_root, sorted(hash_drift), reason)
+        if not recorded.get("ok"):
+            return _result(
+                False,
+                action,
+                str(recorded.get("code") or "RECORD_FAILED"),
+                sorted(hash_drift),
+                mode=mode,
+                manifest="v2" if is_v2 else "v1",
+                summary=summary,
+                applied=None,
+                hint=hint,
+            )
+        applied = {"reason": reason, "files": recorded.get("files") or []}
+    code = (
+        "CALIBRATED"
+        if applied
+        else ("ALREADY_CALIBRATED" if apply_changes else "CALIBRATE_REPORT")
+    )
+    return _result(
+        True,
+        action,
+        code,
+        [],
+        mode=mode,
+        manifest="v2" if is_v2 else "v1",
+        manifestPath=str(manifest_path),
+        summary=summary,
+        hashDrift=sorted(hash_drift),
+        attributeDrift=sorted(attribute_drift),
+        missing=sorted(missing),
+        untracked=untracked,
+        applied=applied,
+        hint=hint,
+    )
+
+
 def rehome(
     from_project: Path | str,
     to_project: Path | str,
@@ -1870,6 +2062,17 @@ def main(argv: list[str] | None = None) -> int:
     mark_parser.add_argument("--change-dir", required=True)
     mark_parser.add_argument("--files", required=True)
     mark_parser.add_argument("--json", action="store_true")
+    calibrate_parser = sub.add_parser(
+        "calibrate",
+        help="校准 manifest：检出漂移；--apply 自动重录哈希漂移条目（19-M1）",
+    )
+    calibrate_parser.add_argument("--project", required=True)
+    calibrate_parser.add_argument("--change-dir", required=True)
+    calibrate_parser.add_argument("--apply", action="store_true")
+    calibrate_parser.add_argument(
+        "--reason", choices=REASONS, default="stale-test-repair"
+    )
+    calibrate_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.action == "record":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
@@ -1881,6 +2084,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.action == "mark":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
         result = mark(args.project, args.change_dir, files)
+    elif args.action == "calibrate":
+        result = calibrate(
+            args.project,
+            args.change_dir,
+            apply_changes=bool(args.apply),
+            reason=args.reason,
+        )
     elif args.action == "rehome":
         result = rehome(
             args.from_project, args.to_project, args.change_dir, args.expected_head

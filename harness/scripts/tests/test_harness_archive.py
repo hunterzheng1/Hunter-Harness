@@ -242,6 +242,30 @@ class FinalizeSuccessTests(unittest.TestCase):
         serialized = json.dumps(summary, ensure_ascii=False)
         self.assertNotIn("final-summary.html", serialized)
 
+        # 19-M2：任务级复盘卡（研究报告 §4.5 P2）——归档产物 + 知识候选双通道。
+        retro_step = payload["steps"].get("retro_card")
+        self.assertIsNotNone(retro_step, "finalize must run the retro card step")
+        self.assertTrue(retro_step["ok"], msg=json.dumps(retro_step, ensure_ascii=False))
+        retro_path = archive_dir / "reports" / "final" / "retro-card.json"
+        self.assertTrue(retro_path.is_file())
+        retro = json.loads(retro_path.read_text(encoding="utf-8"))
+        self.assertEqual(retro["kind"], "retro-card")
+        self.assertEqual(retro["changeName"], "demo-change")
+        self.assertGreaterEqual(retro["attempts"]["total"], 3)
+        self.assertEqual(retro["attempts"]["byPhase"].get("execute"), 2)
+        self.assertGreater(retro["gateFirstPass"]["phaseCount"], 0)
+        candidates = json.loads(
+            (archive_dir / "candidates" / "knowledge.json").read_text(encoding="utf-8")
+        )
+        retro_candidates = [
+            item for item in candidates if "retro-card" in (item.get("keywords") or [])
+        ]
+        self.assertEqual(len(retro_candidates), 1)
+        self.assertEqual(retro_candidates[0]["entry_type"], "implementation")
+        self.assertEqual(
+            retro_candidates[0]["source_refs"], ["reports/final/retro-card.json"]
+        )
+
     def test_finalize_refuses_invalid_artifact_projection_and_preserves_change(self) -> None:
         invalid = {
             "ok": False,

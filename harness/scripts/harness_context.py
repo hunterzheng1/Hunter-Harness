@@ -1534,6 +1534,9 @@ def bootstrap_execute(
             lease.get("ttlSeconds") if isinstance(lease, dict) else None
         ),
         "testBaseline": test_guard,
+        "manifestCalibration": _bootstrap_manifest_calibration(
+            project, change_dir
+        ),
         "plannedPhases": prepared.get("plannedPhases"),
         "scenarioWaves": _bootstrap_scenario_waves(change_dir),
         "waveDispatch": _bootstrap_wave_dispatch(change_dir),
@@ -1638,6 +1641,50 @@ def _derive_completed_scenarios(change_dir: Path) -> set[str]:
                 text for text in (str(item).strip() for item in ids) if text
             )
     return completed
+
+
+def _bootstrap_manifest_calibration(
+    project: Path, change_dir: Path
+) -> dict[str, Any]:
+    """19-M1：test manifest 校准 advisory（只读 report，失败安全不阻断）。
+
+    修复回流编辑测试文件后 manifest 哈希漂移曾靠人工 record 校准
+    （研究报告 §4.2 P2）。bootstrap 时自动检出漂移并附 ``calibrate
+    --apply`` 提示；attributeDrift/missing/untracked 只报告——校验器
+    语义不容许旁路或属破坏性/意图性操作，自动化不代为决策。
+    信封不带 untracked 明细（可能很长，属噪音），只带计数。
+    """
+    try:
+        import harness_test_guard as htg
+
+        report = htg.calibrate(project, change_dir)
+    except Exception as exc:  # advisory 绝不阻断 bootstrap
+        return {
+            "available": False,
+            "reason": f"calibrate-error:{type(exc).__name__}",
+        }
+    if not report.get("ok"):
+        return {
+            "available": False,
+            "reason": str(report.get("code") or "calibrate-failed"),
+        }
+    if report.get("code") == "NO_MANIFEST":
+        return {"available": False, "reason": "manifest-missing"}
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    drifted = bool(
+        summary.get("hashDrift")
+        or summary.get("attributeDrift")
+        or summary.get("missing")
+    )
+    return {
+        "available": True,
+        "drifted": drifted,
+        "summary": summary,
+        "hashDrift": report.get("hashDrift") or [],
+        "attributeDrift": report.get("attributeDrift") or [],
+        "missing": report.get("missing") or [],
+        "hint": report.get("hint"),
+    }
 
 
 def _bootstrap_wave_dispatch(

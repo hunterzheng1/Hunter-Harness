@@ -4852,10 +4852,55 @@ def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
             existing_ids.add(candidate["candidate_id"])
             candidates.append(candidate)
 
+    # Merge retro-card candidate（19-M2，研究报告 §4.5 P2）：与复盘卡同源
+    # 从 summary 纯派生；卡为空壳（timeline/efficiency/reviewSummary 全缺）
+    # 时不发候选，避免把纯 record-only 的空转沉淀进知识库。
+    retro_candidate = hkc.build_retro_candidate(
+        hkc.build_retro_card(
+            summary,
+            change_key=change_key,
+            archive_id=archive_id,
+            created_at=created_at,
+        ),
+        change_key=change_key,
+        archive_id=archive_id,
+        producer_version=producer_version,
+        created_at=created_at,
+    )
+    if (
+        retro_candidate is not None
+        and retro_candidate["candidate_id"] not in existing_ids
+    ):
+        candidates.append(retro_candidate)
+
     out = work_dir / "candidates" / "knowledge.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         hkc.render_knowledge_candidates_json(candidates),
+        encoding="utf-8",
+        newline="\n",
+    )
+    return out
+
+
+def write_retro_card(work_dir: Path, summary: dict[str, Any]) -> Path:
+    """Write reports/final/retro-card.json（19-M2，研究报告 §4.5 P2）。
+
+    任务级复盘卡：周期 / attempt 数 / 门禁首过率 / 评审统计，从 summary-data
+    纯派生（与 write_knowledge_candidates 同一份事实，不重新读盘），写于
+    after-manifest 之前使字节被覆盖校验；缺数据段降级为 dataGaps 说明
+    （不虚构）。
+    """
+    card = hkc.build_retro_card(
+        summary,
+        change_key=str(summary.get("changeName") or work_dir.name),
+        archive_id=work_dir.name,
+        created_at=now_iso(),
+    )
+    out = work_dir / "reports" / "final" / "retro-card.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(card, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -8868,6 +8913,20 @@ def cmd_finalize(
         warnings.append(f"knowledge candidates write failed: {exc}")
         payload["steps"]["knowledge_candidates"] = {"ok": False, "error": str(exc)}
 
+    # --- 8c. retro card（19-M2，研究报告 §4.5）——任务级复盘卡。
+    # Soft-fail 同 knowledge candidates：复盘卡是派生产物，归档主链不因此
+    # 回滚；写于 after-manifest（9/10）之前，字节进覆盖校验。
+    try:
+        summary = read_json(summary_path)
+        retro_card_path = write_retro_card(work_dir, summary)
+        payload["steps"]["retro_card"] = {
+            "ok": True,
+            "path": str(retro_card_path),
+        }
+    except Exception as exc:  # noqa: BLE001 — retro card soft-fail
+        warnings.append(f"retro card write failed: {exc}")
+        payload["steps"]["retro_card"] = {"ok": False, "error": str(exc)}
+
     # --- 9/10. final summary stats, then LAST manifest (IA-7) ---
     # Post-manifest rewrites of covered bytes are forbidden. We update the
     # summary first, regenerate after-manifest last, then verify on-disk hashes.
@@ -9420,6 +9479,14 @@ def _archive_core_file_specs(
         archive / "reports" / "final" / "summary-data.json",
         "reports/final/summary-data.json",
         "summary",
+        "application/json",
+    )
+    # 19-M2：任务级复盘卡随 core 包走（研究报告 §4.5 P2「喂平台知识库」）。
+    # retro 候选的 source_refs 指向此路径，core-v1 包含性校验要求它在包内。
+    add_if_file(
+        archive / "reports" / "final" / "retro-card.json",
+        "reports/final/retro-card.json",
+        "retro_card",
         "application/json",
     )
     for folder, role in (("spec", "spec"), ("plans", "plan")):
