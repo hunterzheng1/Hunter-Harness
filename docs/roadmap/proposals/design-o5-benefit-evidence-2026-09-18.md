@@ -3,7 +3,7 @@
 > 依据：审核整改任务书（[review-remediation-execution-2026-09-12.md](./review-remediation-execution-2026-09-12.md)）§11 与检查点 G；
 > 证据汇总（[review-remediation-evidence-2026-09-12.md](./review-remediation-evidence-2026-09-12.md)）O5 条目。
 > 状态：**设计定稿**（待裁决决策点见 §0，按建议值先行，推翻须记录理由）。
-> Part A（现有试点报告范围校正）已执行（§2）；Part B（新对照实验）待执行窗口（§3-§6）。
+> Part A（现有试点报告范围校正）已执行（§2）；Part B：WI-O5.2（度量工具）已完成（2026-09-18，见 ../batches/batch4/metrics-tooling.md，token 探测结论：可采集）；WI-O5.3~O5.5 待执行窗口（§3-§6）。
 > 目标锁定，不得自行下调（§11）：轻任务端到端中位时间下降 ≥20%、流程维护时间下降 ≥50%，
 > 以质量约束为前提；未达标则继续诊断或明确报告未达标。
 
@@ -118,7 +118,7 @@
 | 端到端墙钟 | `summary-data.json` durations + 会话计时（已用） | 无 |
 | 流程维护口径 | batch0 方法学 §4（协调命令 + 仪式写作） | 仪式写作靠模型自报，建议命令埋点 |
 | 执行效率汇总 | `harness_efficiency.py`（只读聚合，FAILURE_CLASSES 五类归因） | 未接入试点流程，需写采集壳 |
-| token 采集 | **无自动采集能力**（batch0 §5 已标注） | D5 探测；宿主不暴露则标未知 |
+| token 采集 | ~~无自动采集能力~~ **已探测可采集**（2026-09-18：`~/.codebuddy/traces/` generation span usage；`harness_run_metrics.py` 聚合） | 已补齐；宿主移除落盘则自动降级回标未知 |
 | 采纳度度量 | `harness_adoption_metrics.py`（只读，roadmap 14 判据） | 与收益证据不同维度，不混用 |
 
 ## 5. 资产短期验收（§11 末条）
@@ -132,7 +132,7 @@
 | WI | 内容 | 交付物 | 状态 |
 |---|---|---|---|
 | WI-O5.1 | 现有试点报告范围校正（Part A） | 本设计文档 §2 + 三处校正块 | ✅ 完成（2026-09-18） |
-| WI-O5.2 | 度量工具补齐：token 可行性探测、采集壳、方法学口径脚本化 | `batches/batch4/metrics-tooling.md` + 探测结论 | 待执行 |
+| WI-O5.2 | 度量工具补齐：token 可行性探测、采集壳、方法学口径脚本化 | `batches/batch4/metrics-tooling.md` + `harness_run_metrics.py`（探测结论：token 可采集） | ✅ 完成（2026-09-18） |
 | WI-O5.3 | 批 A 执行（轻任务 3 类 × 3 组 × 3 重复 = 27 次） | `batches/batch4/collected/*` + 初步试点报告 | 待执行 |
 | WI-O5.4 | 批 B 执行（T4/T5/T6 × 3 组 × 3 重复 = 27 次）+ 完整报告 | 完整对照报告 + 目标判定 | 待执行 |
 | WI-O5.5 | 资产短期验收 | 验收记录（1 有用 + 1 正确拒绝） | 待执行 |
