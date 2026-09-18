@@ -185,7 +185,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **当前表现**：finding schema、carryover 继承、增量账本复用、`blockingFor` 白点机制，形式化程度高于业界同类。
 - **差距**：全量评审（F3，O2 已立项未实施）；三人格与双评估器覆盖面重叠的边际收益未量化；scenario→finding→fixback 闭环状态缺可查询视图。
 - **建议**：
-  - [P1] 落地 O2 **增量评审**：以本轮 diff + 受影响接口/调用者构建输入，finding 绑定源内容哈希。依据：审核整改任务书 §9.2 验收标准。
+  - [P1] 落地 O2 **增量评审**：以本轮 diff + 受影响接口/调用者构建输入，finding 绑定源内容哈希。依据：审核整改任务书 §9.2 验收标准。 **状态：已收口（2026-09-18）**：O2 代码侧完成（WI-3.3 `697ace4` + WI-3.4 `9965bb5`，2026-09-14）；逐项证据归档于 [审核整改证据汇总](../roadmap/proposals/review-remediation-evidence-2026-09-12.md)，漏审率对照属 O5 未执行项。
   - [P2] 评审收益度量（各 persona/evaluator 独立发现数、确认率、阻断率），为裁剪冗余角色提供数据。依据：roadmap 10。 **状态：已实施（18-M1，2026-09-18）**：`harness_efficiency.py --changes-root` 面板新增 reviewYield 块——dimension 级确认率/阻断候选/独立发现/跨轮重现已出数；persona/evaluator 归因字段 schema 未定义，缺数据时降级输出缺口说明（write-findings 对额外字段透传，产出侧携带 source 即自动入统，无需改 schema）。
   - [P3] `harness_review.py status --change <cn>` 输出三链 join 表。**状态：已实施（15-M4，2026-09-17）**：scenario→finding→fixback join，manifest 缺失优雅降级，finding 关联优先 `scenarioRefs`（declared）否则 path 启发式，fixback 经 `issueId == finding.id` 对齐。
 
@@ -196,7 +196,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 - **差距**：record-quirk 依赖人工写签名；R4/R5 所涉 CI 证据绑定影响 submit 前置可信度（专项在修）。
 - **建议**：
   - [P2] record-quirk 增加**失败指纹自动建议**（人工确认后写入），不改变门禁语义。触发判据采用 §2.3-D：同一 finding 第二次出现即建议固化，替代人工判断沉淀时机。**状态：已实施（15-M2，2026-09-17）**：`record-quirk --suggest` 扫描 ledger validations 与 run-sessions FAIL 收据，按归一化命令 + exitCode + 归一化输出尾部 sha1 前 12 位聚类，>=2 次才建议，只读不写盘。
-  - [P1] 跟踪 R4/R5 修复落地。依据：审核整改任务书 §7/§8。
+  - [P1] 跟踪 R4/R5 修复落地。依据：审核整改任务书 §7/§8。 **状态：已收口（2026-09-18）**：R1–R5 全部落地，逐项证据归档于 [审核整改证据汇总](../roadmap/proposals/review-remediation-evidence-2026-09-12.md)。
 
 ### 4.5 Archive
 
@@ -210,7 +210,7 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 ### 4.6 支撑环（入口 / 知识 / 同步 / 地图）
 
 - **入口分层（task vs plan）**：设计正确且业界独有；风险在裁决语义边角（F8，专项在修）。建议 [P2]：档位裁决信号开放 `harness_task.py classify --dry-run`，让升档可解释。**状态：已实施（15-M1，2026-09-17）**：以 `task begin --dry-run` 落地（begin 路径信号与裁决同源，比独立 classify 子命令更少分叉），纯只读零副作用；信号源为 `--write-scope` 声明路径 + 当前脏树（与 finish post-run 同视图），`_dirty_paths` 同步修复为 `--untracked-files=all`（untracked 目录折叠曾漏判 auth marker）。
-- **知识闭环**：建议 [P1] 查询结果结构化注入 plan evidence（同 F4）。
+- **知识闭环**：建议 [P1] 查询结果结构化注入 plan evidence（同 F4）。 **状态：已实施（09-M4，commit `bbaba0f`）**，同 §4.1 知识查询门禁化条目。
 - **sync / codebase-map**：定位合理；建议 [P3] codebase-map 产物作为 Clarify 步自动输入。**状态：已实施（10-M4，2026-09-17）**：`harness_clarify.py` 新增 `codebase_map_refs_known` 检查项——`path_scope.type=paths` 时 task `affected_paths` 越出扫描范围给 `CLARIFY_MAP_REF_UNKNOWN` 定位缺陷；`full`/`fast`/`focus` 视为整仓覆盖；manifest 缺失/不可读跳过不失败；`clarify check` 与 plan 关门门禁同源消费。
 
 ## 5. 理想形态重构（抛开现有架构）
