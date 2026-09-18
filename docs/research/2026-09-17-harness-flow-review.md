@@ -27,6 +27,12 @@
 > 修订 5：2026-09-17 标注实施状态——plan 侧两件套落地：10-M4（codebase-map 进
 > Clarify 静态检查）与 11-M4（plan publish --patch 补丁式修订）；§4.1/§4.6 与 §6
 > 就地标注。
+>
+> 修订 6：2026-09-18 标注实施状态——19-M1（manifest 校准自动化）与 19-M2
+> （归档任务级复盘卡）已落地（commit f84fe1a）：calibrate 子命令（report 只读 /
+> --apply 仅重录 hashDrift）+ bootstrap 信封 manifestCalibration advisory；finalize
+> step 8c 写 retro-card.json 随 core 包并折成知识候选。§4.2/§4.5 就地标注；至此报告
+> P1–P3 建议全部落地，仅剩 P0 编排引擎化（D4 暂缓）与 F10 防篡改（已登记暂不立项）。
 
 ## 0. 执行摘要
 
