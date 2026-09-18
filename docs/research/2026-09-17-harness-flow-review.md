@@ -260,9 +260,9 @@ Anthropic Applied AI 团队的六阶段（Plan/Design/Build/Test/Deploy/Maintain
 | **P1** | 知识查询门禁化 + 注入 plan evidence | F4；OpenAI 护栏分层 | 经验复用从「靠自觉」到「被保证」 | **已实施**（09-M4，commit `bbaba0f`） |
 | **P1** | 知识候选 JSON 直采，废弃 Markdown 反解析 | 精简分析 §6.2 | 解锁渲染层自由；为四件套收敛铺路 | **已实施**（06B-4，commit `5a63442`） |
 | **P1** | Execute 场景 DAG 波次并行（首试点 standard 档） | F2；Kiro Wave；WI-3.3 现成冲突检测 | standard 批量吞吐提升；full 档收益受个人评审带宽约束（§2.3-B） | **16-M1～M2 已实施**（2026-09-18：契约 + 校验 + advisory 波次派生 + `execute-wave` 派发读模型） |
-| **P1** | 增量评审（跟踪 O2 专项） | F3；审核整改任务书 §9.2 | 评审 token 与质量双赢 | 移交跟踪（O2 专项） |
+| **P1** | 增量评审（跟踪 O2 专项） | F3；审核整改任务书 §9.2 | 评审 token 与质量双赢 | **已收口**（O2 代码侧完成：WI-3.3 97ace4\ + WI-3.4 \9965bb5\，2026-09-14；逐项证据 2026-09-18 归档于 [审核整改证据汇总](../roadmap/proposals/review-remediation-evidence-2026-09-12.md)；漏审率对照属 O5 未执行项） |
 | **P1** | 修复轮次验收测试防篡改检测 | F10；SDLC Playbook Stage 4（§2.3-A） | 修复证据可信度从「靠自觉」到「被保证」 | 已登记，暂不立项（2026-09-17 决策） |
-| **P1** | R1–R5 专项落地跟踪 | 审核整改任务书 | 轻任务路径可信度 | 移交跟踪（审核整改任务书） |
+| **P1** | R1–R5 专项落地跟踪 | 审核整改任务书 | 轻任务路径可信度 | **已收口**（R1-R5/O1/O3/O6 完成、O2 代码侧完成、O4 部分随 v1.0 瘦身决策退役、O5 未执行；逐项证据 2026-09-18 归档于 [审核整改证据汇总](../roadmap/proposals/review-remediation-evidence-2026-09-12.md)） |
 | **P2** | 四件套→两件套 | roadmap 09；精简分析 §6.4-3 | 渲染/阅读 token 下降 | **已实施**（11-M3，commit `871c354` + `aef737e`） |
 | **P2** | 失败断路器、quirk 指纹建议、档位裁决可解释 | §4.2/§4.4/§4.6 | 减少无效 attempt 与人工摩擦 | **已实施**（15-M1/M2/M3，commit `c87a1c3`） |
 | **P2** | 决策级度量面板 | F6；roadmap 10 | 后续优化有数据依据 | **已实施**（17-M1，2026-09-18：`harness_efficiency.py --changes-root` 跨 change 聚合周期时长/门禁首过率/评审发现密度/自动度，只读） |
