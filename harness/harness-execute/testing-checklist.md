@@ -276,7 +276,7 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] `can-reuse` 返回 `reuse:false` 时直接读默认输出里的 `reason`/`executionNeed`/`detail` 定位原因，不必再补跑 `--verbose`
 - [ ] 复用判断前以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算指纹；test-tracking manifest 无效或 hash 漂移即停止
 - [ ] 测试失败若明确为陈旧测试，仅在当前代码/批准计划/可验证历史唯一确定新契约且只改测试时自动修复；否则记录 `BLOCKED_PREEXISTING`
-- [ ] 自动修复后立即重跑该测试与目标测试，并以 `harness_test_guard.py record ... --reason stale-test-repair` 记录精确路径
+- [ ] 自动修复后立即重跑该测试与目标测试，并以 `harness_test_guard.py record ... --reason stale-test-repair` 记录精确路径；命中 plan 验收测试时须人工确认后追加 `--acceptance-ack "<说明>"` 重录
 - [ ] **禁止临时排除测试**：未使用 `.bak`/改名/移目录/删除/禁用注解/build exclude/skip-tests 制造通过；服务启动的 `maven.test.skip` 不作为测试证据
 
 ### 批量执行器（强制单次 PowerShell + 执行器绝对路径执行）

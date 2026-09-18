@@ -25,7 +25,9 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import harness_events  # noqa: E402
 import harness_paths  # noqa: E402
+import harness_plan_finalize as hpf  # noqa: E402
 
 SCHEMA_VERSION = 1
 MODE = "force-track-touched"
@@ -577,11 +579,80 @@ def _validate_existing_manifest(
     return None, validated
 
 
+# ---------------------------------------------------------------------------
+# 20-M1 验收测试防篡改（acceptance test tamper guard）
+#
+# 背景（调研报告 2026-09-17 §4.2/§5.3 [P1] F10）：修复/重试/fixback 轮次
+# 改断言"洗绿"此前只有提示词级约束（execute SKILL）与 coding-checklist 的
+# WARN，无确定性防线。规则：plan 声明的验收测试文件（scenario `testFile`）
+# 在创建之后的任何修改登记（test-updated / stale-test-repair）必须带非空
+# `--acceptance-ack` 说明（人工确认），否则 record 直接失败且不写 manifest；
+# calibrate --apply 不代为重录验收文件（只报告 ackRequired），杜绝自动旁路。
+# 验收测试集读取沿用 scenario manifest（含 v2 包装体）解包口径；manifest
+# 缺失/不可读/为空时降级跳过检查（不阻断），与 16-M1/19-M1 同语义。
+# ---------------------------------------------------------------------------
+
+
+def _acceptance_test_files(
+    change_root: Path,
+) -> tuple[set[str] | None, str | None]:
+    """plan 声明的验收测试文件集（scenario manifest 的 ``testFile`` 值）。
+
+    返回 ``(files, None)`` 或 ``(None, reason)``；reason 说明降级原因
+    （scenario-manifest-missing/unreadable/empty/unsupported 或 unpack 错误码）。
+    集合元素为 posix 相对路径，与 manifest 条目 ``path`` 同口径。
+    """
+    manifest_path = change_root / "meta" / "scenario-manifest.json"
+    if not manifest_path.is_file():
+        return None, "scenario-manifest-missing"
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, "scenario-manifest-unreadable"
+    if not isinstance(raw, dict):
+        return None, "scenario-manifest-unreadable"
+    unpacked = hpf.unpack_v2_scenario_manifest(raw)
+    if isinstance(unpacked, dict):
+        if not unpacked.get("ok"):
+            return None, str(
+                unpacked.get("code") or "scenario-manifest-unsupported"
+            )
+        manifest = unpacked.get("manifest")
+    elif isinstance(raw.get("scenarios"), list):
+        manifest = raw
+    else:
+        return None, "scenario-manifest-unsupported"
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list) or not scenarios:
+        return None, "scenario-manifest-empty"
+    files: set[str] = set()
+    for item in scenarios:
+        if not isinstance(item, dict):
+            continue
+        raw_file = item.get("testFile")
+        if not isinstance(raw_file, str):
+            continue
+        normalized = raw_file.strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized:
+            files.add(normalized)
+    if not files:
+        return None, "scenario-manifest-no-test-file"
+    return files, None
+
+
+def _acceptance_ack_entry(note: str) -> dict[str, str]:
+    return {"note": note, "at": harness_events.now_iso()}
+
+
 def record(
     project: Path | str,
     change_dir: Path | str,
     files: list[str],
     reason: str,
+    *,
+    acceptance_ack: str | None = None,
 ) -> dict[str, Any]:
     action = "record"
     project_root = Path(project).resolve()
@@ -603,6 +674,29 @@ def record(
             return _result(False, action, error, [rel or str(raw)])
         assert path is not None and rel is not None
         validated.append((path, rel))
+
+    # 20-M1：plan 声明的验收测试（scenario testFile）创建后修改须人工 ack
+    acceptance_files, acceptance_reason = _acceptance_test_files(change_root)
+    ack_note = (acceptance_ack or "").strip()
+    acked_set = {
+        rel
+        for _, rel in validated
+        if acceptance_files is not None
+        and rel in acceptance_files
+        and reason in ("test-updated", "stale-test-repair")
+    }
+    acked_acceptance = sorted(acked_set)
+    if acked_acceptance and not ack_note:
+        return _result(
+            False,
+            action,
+            "ACCEPTANCE_TEST_ACK_REQUIRED",
+            acked_acceptance,
+            hint=(
+                "这些文件是 plan 声明的验收测试（scenario testFile）；创建后的"
+                "修改须先向用户确认，再用 --acceptance-ack \"<变更原因>\" 重新登记"
+            ),
+        )
 
     manifest_path = _manifest_path(change_root)
     if manifest_path is None:
@@ -657,6 +751,11 @@ def record(
                         "introducedBy": previous.get("introducedBy", change_id),
                         "touchedBy": touched,
                         "commitScope": "current-change",
+                        "acceptanceAck": (
+                            _acceptance_ack_entry(ack_note)
+                            if ack_note and rel in acked_set
+                            else None
+                        ),
                     }
                 manifest = {
                     "schemaVersion": 2,
@@ -676,6 +775,11 @@ def record(
                         "reason": reason,
                         "ignored": ignored,
                         "trackedBefore": tracked,
+                        "acceptanceAck": (
+                            _acceptance_ack_entry(ack_note)
+                            if ack_note and rel in acked_set
+                            else None
+                        ),
                     }
 
                 manifest = {
@@ -687,7 +791,22 @@ def record(
             _write_json(manifest_path, manifest)
     except LockUnavailable:
         return _result(False, action, "MANIFEST_LOCKED", [])
-    return _result(True, action, "RECORDED", [rel for _, rel in validated], manifestPath=str(manifest_path))
+    return _result(
+        True,
+        action,
+        "RECORDED",
+        [rel for _, rel in validated],
+        manifestPath=str(manifest_path),
+        acceptanceGuard={
+            "available": acceptance_files is not None,
+            "reason": acceptance_reason,
+        },
+        acceptanceAck=(
+            {"note": ack_note, "files": acked_acceptance}
+            if acked_acceptance
+            else None
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +824,9 @@ def record(
 #                  须保留 tdd-created/test-updated 的显式意图）
 # 默认 report 模式纯只读；--apply 仅对 hashDrift 条目复用 record() 重录
 # （同一锁与校验路径，reason 默认 stale-test-repair）。
+# 20-M1：hashDrift 中含 plan 声明的验收测试文件时，--apply 整体放弃自动
+# 重录（record 全量校验不容子集重录），报 ACK_REQUIRED 并给出带
+# --acceptance-ack 的人工命令，杜绝自动旁路。
 # ---------------------------------------------------------------------------
 
 
@@ -781,6 +903,7 @@ def calibrate(
             attributeDrift=[],
             missing=[],
             untracked=[],
+            ackRequired=[],
             applied=None,
             hint=None,
         )
@@ -830,31 +953,54 @@ def calibrate(
         for rel in _enumerate_allowed_test_files(project_root)
         if rel not in entries
     )
+    # 20-M1：plan 声明的验收测试（scenario testFile）哈希漂移只报告、不自动
+    # 重录——自动重录会旁路 record 的 --acceptance-ack 人工确认要求。
+    acceptance_files, acceptance_reason = _acceptance_test_files(change_root)
+    ack_required = sorted(
+        rel
+        for rel in hash_drift
+        if acceptance_files is not None and rel in acceptance_files
+    )
+    auto_drift = sorted(rel for rel in hash_drift if rel not in set(ack_required))
     summary = {
         "tracked": len(entries),
         "hashDrift": len(hash_drift),
         "attributeDrift": len(attribute_drift),
         "missing": len(missing),
         "untracked": len(untracked),
+        "ackRequired": len(ack_required),
     }
-    hint = (
-        "python harness/scripts/harness_test_guard.py calibrate "
-        "--project <root> --change-dir <dir> --apply"
-        if hash_drift
-        else None
-    )
+    if ack_required:
+        hint = (
+            "plan 声明的验收测试文件内容已变化：须先向用户确认，再执行 "
+            "python harness/scripts/harness_test_guard.py record --project <root> "
+            '--change-dir <dir> --files "<全部漂移路径,逗号分隔>" '
+            '--reason stale-test-repair --acceptance-ack "<变更原因>"'
+            "（record 全量校验不允许子集重录，须一次列全漂移文件）"
+        )
+    elif hash_drift:
+        hint = (
+            "python harness/scripts/harness_test_guard.py calibrate "
+            "--project <root> --change-dir <dir> --apply"
+        )
+    else:
+        hint = None
     applied: dict[str, Any] | None = None
-    if apply_changes and hash_drift:
-        recorded = record(project_root, change_root, sorted(hash_drift), reason)
+    # 20-M1：验收测试漂移在列时整体放弃自动重录——record 的全量校验要求
+    # 一次列全漂移文件，无法只重录非验收子集；自动重录验收文件则会旁路
+    # --acceptance-ack 人工确认。故交回 ACK_REQUIRED + 人工命令提示。
+    if apply_changes and auto_drift and not ack_required:
+        recorded = record(project_root, change_root, auto_drift, reason)
         if not recorded.get("ok"):
             return _result(
                 False,
                 action,
                 str(recorded.get("code") or "RECORD_FAILED"),
-                sorted(hash_drift),
+                auto_drift,
                 mode=mode,
                 manifest="v2" if is_v2 else "v1",
                 summary=summary,
+                ackRequired=ack_required,
                 applied=None,
                 hint=hint,
             )
@@ -862,7 +1008,11 @@ def calibrate(
     code = (
         "CALIBRATED"
         if applied
-        else ("ALREADY_CALIBRATED" if apply_changes else "CALIBRATE_REPORT")
+        else (
+            "ACK_REQUIRED"
+            if apply_changes and ack_required
+            else ("ALREADY_CALIBRATED" if apply_changes else "CALIBRATE_REPORT")
+        )
     )
     return _result(
         True,
@@ -877,6 +1027,11 @@ def calibrate(
         attributeDrift=sorted(attribute_drift),
         missing=sorted(missing),
         untracked=untracked,
+        ackRequired=ack_required,
+        acceptanceGuard={
+            "available": acceptance_files is not None,
+            "reason": acceptance_reason,
+        },
         applied=applied,
         hint=hint,
     )
@@ -1984,8 +2139,16 @@ def mark(
     project: Path | str,
     change_dir: Path | str,
     files: list[str],
+    *,
+    acceptance_ack: str | None = None,
 ) -> dict[str, Any]:
-    return record(project, change_dir, files, "stale-test-repair")
+    return record(
+        project,
+        change_dir,
+        files,
+        "stale-test-repair",
+        acceptance_ack=acceptance_ack,
+    )
 
 
 def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
@@ -2032,6 +2195,14 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument("--change-dir", required=True)
     record_parser.add_argument("--files", required=True)
     record_parser.add_argument("--reason", required=True, choices=REASONS)
+    record_parser.add_argument(
+        "--acceptance-ack",
+        default=None,
+        help=(
+            "20-M1：plan 声明的验收测试（scenario testFile）创建后修改时必须"
+            "携带的人工确认说明（非空）；tdd-created 创建无需此参数"
+        ),
+    )
     record_parser.add_argument("--json", action="store_true")
     stage_parser = sub.add_parser("stage")
     stage_parser.add_argument("--project", required=True)
@@ -2061,10 +2232,18 @@ def main(argv: list[str] | None = None) -> int:
     mark_parser.add_argument("--project", required=True)
     mark_parser.add_argument("--change-dir", required=True)
     mark_parser.add_argument("--files", required=True)
+    mark_parser.add_argument(
+        "--acceptance-ack",
+        default=None,
+        help="同 record：验收测试修改须携带的人工确认说明（20-M1）",
+    )
     mark_parser.add_argument("--json", action="store_true")
     calibrate_parser = sub.add_parser(
         "calibrate",
-        help="校准 manifest：检出漂移；--apply 自动重录哈希漂移条目（19-M1）",
+        help=(
+            "校准 manifest：检出漂移；--apply 自动重录哈希漂移条目"
+            "（19-M1；plan 声明的验收测试只报告 ackRequired，20-M1）"
+        ),
     )
     calibrate_parser.add_argument("--project", required=True)
     calibrate_parser.add_argument("--change-dir", required=True)
@@ -2076,14 +2255,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.action == "record":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
-        result = record(args.project, args.change_dir, files, args.reason)
+        result = record(
+            args.project,
+            args.change_dir,
+            files,
+            args.reason,
+            acceptance_ack=args.acceptance_ack,
+        )
     elif args.action == "begin":
         result = begin(args.project, args.change_dir)
     elif args.action == "close":
         result = close(args.project, args.change_dir)
     elif args.action == "mark":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
-        result = mark(args.project, args.change_dir, files)
+        result = mark(
+            args.project,
+            args.change_dir,
+            files,
+            acceptance_ack=args.acceptance_ack,
+        )
     elif args.action == "calibrate":
         result = calibrate(
             args.project,

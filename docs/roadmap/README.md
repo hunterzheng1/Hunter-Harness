@@ -223,7 +223,7 @@ Interface 发生破坏性变化时，暂停依赖方并更新契约；不得让�
 | 17 | [决策级度量面板](./stages/17-decision-metrics-panel.md) | 跨 change 效率聚合：周期时长、门禁首过率、评审发现密度、自动度 | 已实施（17-M1，2026-09-18） |
 | 18 | [评审收益度量](./stages/18-review-yield-metrics.md) | per-dimension 确认率/阻断候选/独立发现、跨轮重现、persona 归因（缺口降级） | 已实施（18-M1，2026-09-18） |
 | 19 | [manifest 校准与复盘卡](./stages/19-manifest-calibration-and-retro-cards.md) | manifest 漂移自动检出与校准（calibrate）、归档任务级复盘卡（retro-card）喂知识库 | 已实施（19-M1～M2，2026-09-18） |
-| 20 | [验收测试防篡改](./stages/20-acceptance-test-tamper-guard.md) | 修复轮次触碰 plan 声明验收测试文件须人工 ack（确定性阻断）、calibrate 不代为重录 | 实施中（20-M1，2026-09-18） |
+| 20 | [验收测试防篡改](./stages/20-acceptance-test-tamper-guard.md) | 修复轮次触碰 plan 声明验收测试文件须人工 ack（确定性阻断）、calibrate 不代为重录 | 已实施（20-M1，2026-09-18） |
 
 ## 阶段与工作包切分规则
 

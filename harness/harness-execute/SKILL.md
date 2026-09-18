@@ -90,7 +90,7 @@ python <skills-root>/scripts/harness_test_runner.py exec --project . --timeout-s
 python <skills-root>/scripts/harness_test_guard.py record --project . --change-dir ".harness/changes/<change-name>" --files "<精确测试文件路径，逗号分隔>" --reason stale-test-repair --json
 ```
 
-新建或正常更新测试分别使用 `tdd-created` / `test-updated`；存在业务歧义时记录 `BLOCKED_PREEXISTING` 并停止。**禁止临时排除测试**（`.bak`/改名/移出目录/禁用注解/exclude/`skipTests` 充当通过证据）。
+新建或正常更新测试分别使用 `tdd-created` / `test-updated`；存在业务歧义时记录 `BLOCKED_PREEXISTING` 并停止。**禁止临时排除测试**（`.bak`/改名/移出目录/禁用注解/exclude/`skipTests` 充当通过证据）。修复/重试轮次改写 plan 声明的验收测试时，`record`/`calibrate --apply` 会被拒（`ACCEPTANCE_TEST_ACK_REQUIRED` / `ACK_REQUIRED`），须经人工确认后追加 `--acceptance-ack "<说明>"` 按提示命令重录。
 
 **Foundation Gate**：若 `meta/implementation-checkpoints.json` 中 `foundation-gate` 为 pending，不得开始 plan 中任务 6+；由 `harness_gate.py` 硬阻断。
 

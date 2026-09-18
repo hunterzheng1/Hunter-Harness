@@ -1683,6 +1683,8 @@ def _bootstrap_manifest_calibration(
         "hashDrift": report.get("hashDrift") or [],
         "attributeDrift": report.get("attributeDrift") or [],
         "missing": report.get("missing") or [],
+        # 20-M1：plan 声明的验收测试漂移只报告不重录，须人工 ack
+        "ackRequired": report.get("ackRequired") or [],
         "hint": report.get("hint"),
     }
 

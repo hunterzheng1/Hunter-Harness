@@ -1289,5 +1289,237 @@ class CalibrateTests(unittest.TestCase):
         self.assertEqual(result["code"], "INVALID_REASON")
 
 
+class AcceptanceTamperTests(unittest.TestCase):
+    """20-M1：plan 声明的验收测试（scenario testFile）创建后修改须人工 ack。
+
+    record 对 test-updated / stale-test-repair 且命中验收测试集的登记
+    fail-closed（不写 manifest）；带 --acceptance-ack 时条目落审计戳；
+    calibrate --apply 不代为重录验收文件（ackRequired 只报告）。
+    """
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="test-guard-acceptance-"))
+        self.change = self.project / ".harness" / "changes" / "demo"
+        self.change.mkdir(parents=True)
+        self._write(self.project / ".gitignore", "src/test/\nignored-secret.txt\n")
+        self._git("init")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "baseline")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    @staticmethod
+    def _write(path: Path, text: str = "x\n") -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.project), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+
+    def _acceptance_file(self) -> Path:
+        path = self.project / "src" / "test" / "java" / "AccTest.java"
+        self._write(path, "class AccTest {}\n")
+        return path
+
+    def _scenario_manifest(self, test_file: str, wrapper: bool = False) -> None:
+        manifest = {
+            "schemaVersion": 2,
+            "scenarios": [
+                {
+                    "id": "S1",
+                    "priority": "P1",
+                    "requiredEvidenceKind": "ledger",
+                    "ownerPhase": "execute",
+                    "executableTestId": "accTest",
+                    "testFile": test_file,
+                    "testTitle": "acceptance",
+                }
+            ],
+        }
+        if wrapper:
+            payload = {
+                "artifact_type": "scenario_manifest",
+                "content": {
+                    "scenarios": [
+                        {
+                            "scenario_id": "S1",
+                            "priority": "P1",
+                            "required_evidence_kind": "ledger",
+                            "owner_phase": "execute",
+                            "executable_test_id": "accTest",
+                            "test_file": test_file,
+                            "test_title": "acceptance",
+                        }
+                    ]
+                },
+            }
+        else:
+            payload = manifest
+        self._write(
+            self.change / "meta" / "scenario-manifest.json",
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    def _record(
+        self, path: Path, reason: str = "tdd-created", ack: str | None = None
+    ) -> dict:
+        return guard.record(
+            self.project, self.change, [str(path)], reason, acceptance_ack=ack
+        )
+
+    def _manifest(self) -> dict:
+        return json.loads(
+            (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+        )
+
+    def _entry(self, rel: str) -> dict:
+        for item in self._manifest()["files"]:
+            if item["path"] == rel:
+                return item
+        raise AssertionError(f"entry not found: {rel}")
+
+    def test_modify_acceptance_without_ack_blocked(self) -> None:
+        test_file = self._acceptance_file()
+        self._scenario_manifest("src/test/java/AccTest.java")
+        self.assertTrue(self._record(test_file)["ok"])
+        before = json.dumps(self._manifest(), sort_keys=True)
+
+        self._write(test_file, "class AccTest { int changed; }\n")
+        result = self._record(test_file, "test-updated")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "ACCEPTANCE_TEST_ACK_REQUIRED")
+        self.assertEqual(result["files"], ["src/test/java/AccTest.java"])
+        self.assertIn("--acceptance-ack", result["hint"])
+        # fail-closed：manifest 字节级不变
+        self.assertEqual(json.dumps(self._manifest(), sort_keys=True), before)
+
+    def test_modify_acceptance_with_ack_stamps_entry(self) -> None:
+        test_file = self._acceptance_file()
+        self._scenario_manifest("src/test/java/AccTest.java")
+        self.assertTrue(self._record(test_file)["ok"])
+
+        self._write(test_file, "class AccTest { int changed; }\n")
+        result = self._record(test_file, "test-updated", ack="需求澄清，断言同步")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["acceptanceAck"]["note"], "需求澄清，断言同步")
+        entry = self._entry("src/test/java/AccTest.java")
+        self.assertEqual(entry["reason"], "test-updated")
+        self.assertEqual(entry["acceptanceAck"]["note"], "需求澄清，断言同步")
+        self.assertTrue(entry["acceptanceAck"]["at"])
+
+    def test_tdd_created_acceptance_needs_no_ack(self) -> None:
+        test_file = self._acceptance_file()
+        self._scenario_manifest("src/test/java/AccTest.java")
+
+        result = self._record(test_file, "tdd-created")
+
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(self._entry("src/test/java/AccTest.java")["acceptanceAck"])
+
+    def test_non_acceptance_modification_needs_no_ack(self) -> None:
+        other = self.project / "src" / "test" / "java" / "OtherTest.java"
+        self._scenario_manifest("src/test/java/AccTest.java")
+        self._acceptance_file()
+        self._write(other, "class OtherTest {}\n")
+        self.assertTrue(self._record(other)["ok"])
+
+        self._write(other, "class OtherTest { int changed; }\n")
+        result = self._record(other, "test-updated")
+
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(
+            self._entry("src/test/java/OtherTest.java")["acceptanceAck"]
+        )
+
+    def test_manifest_missing_degrades_open(self) -> None:
+        test_file = self._acceptance_file()
+        self.assertTrue(self._record(test_file)["ok"])
+
+        self._write(test_file, "class AccTest { int changed; }\n")
+        result = self._record(test_file, "test-updated")
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["acceptanceGuard"]["available"])
+        self.assertEqual(
+            result["acceptanceGuard"]["reason"], "scenario-manifest-missing"
+        )
+
+    def test_wrapped_manifest_still_enforced(self) -> None:
+        test_file = self._acceptance_file()
+        self._scenario_manifest("src/test/java/AccTest.java", wrapper=True)
+        self.assertTrue(self._record(test_file)["ok"])
+
+        self._write(test_file, "class AccTest { int changed; }\n")
+        result = self._record(test_file, "test-updated")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "ACCEPTANCE_TEST_ACK_REQUIRED")
+
+    def test_calibrate_apply_halts_on_acceptance_drift(self) -> None:
+        acc = self._acceptance_file()
+        other = self.project / "src" / "test" / "java" / "OtherTest.java"
+        self._write(other, "class OtherTest {}\n")
+        self._scenario_manifest("src/test/java/AccTest.java")
+        self.assertTrue(self._record(acc)["ok"])
+        self.assertTrue(self._record(other)["ok"])
+        manifest_before = json.dumps(self._manifest(), sort_keys=True)
+        self._write(acc, "class AccTest { int changed; }\n")
+        self._write(other, "class OtherTest { int changed; }\n")
+
+        applied = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(applied["ok"], applied)
+        # 验收漂移在列：整体放弃自动重录（record 全量校验不容子集重录）
+        self.assertEqual(applied["code"], "ACK_REQUIRED")
+        self.assertEqual(applied["ackRequired"], ["src/test/java/AccTest.java"])
+        self.assertIsNone(applied["applied"])
+        self.assertIn("--acceptance-ack", applied["hint"])
+        # 两个条目的 manifest 都未被自动重录（字节级不变）
+        self.assertEqual(
+            json.dumps(self._manifest(), sort_keys=True), manifest_before
+        )
+        # 人工路径：一次列全漂移文件 + ack，验收条目落审计戳
+        manual = guard.record(
+            self.project,
+            self.change,
+            ["src/test/java/AccTest.java", "src/test/java/OtherTest.java"],
+            "stale-test-repair",
+            acceptance_ack="评审反馈后人工确认调整",
+        )
+        self.assertTrue(manual["ok"], manual)
+        entry = self._entry("src/test/java/AccTest.java")
+        self.assertEqual(entry["reason"], "stale-test-repair")
+        self.assertEqual(
+            entry["acceptanceAck"]["note"], "评审反馈后人工确认调整"
+        )
+
+    def test_calibrate_apply_only_acceptance_reports_ack_required(self) -> None:
+        acc = self._acceptance_file()
+        self._scenario_manifest("src/test/java/AccTest.java")
+        self.assertTrue(self._record(acc)["ok"])
+        self._write(acc, "class AccTest { int changed; }\n")
+
+        result = guard.calibrate(self.project, self.change, apply_changes=True)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "ACK_REQUIRED")
+        self.assertEqual(result["ackRequired"], ["src/test/java/AccTest.java"])
+        self.assertIsNone(result["applied"])
+        self.assertEqual(result["summary"]["ackRequired"], 1)
+        self.assertIn("--acceptance-ack", result["hint"])
+
+
 if __name__ == "__main__":
     unittest.main()

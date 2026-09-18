@@ -17,7 +17,7 @@
 - Module / Adapter：`harness_test_guard.py`（新增验收测试集读取 `_acceptance_test_files`；`record` 增 `--acceptance-ack`；`calibrate` 对 hashDrift 做「可自动 / 需 ack」分区）、`harness_context.py`（bootstrap-execute 校准 advisory 透传 `ackRequired`）、`harness-execute/SKILL.md` 与 `testing-checklist.md` 规程更新。
 - 输入 Interface：`meta/scenario-manifest.json`（含 v2 包装体，沿用 `hpf.unpack_v2_scenario_manifest` 解包）+ test_guard manifest。
 - 输出 Interface：`ACCEPTANCE_TEST_ACK_REQUIRED` 阻断码（列出命中文件与提示）；manifest 条目新增可选审计戳 `acceptanceAck: {note, at}`；calibrate 结果新增 `ackRequired` 分区与对应 hint。
-- 判定规则：plan 声明的验收测试文件（scenario `testFile` 值）以 `test-updated` / `stale-test-repair` 登记（即**创建之后**的修改）必须带非空 `--acceptance-ack` 说明；`tdd-created`（首次创建）不受限；非验收测试文件维持原行为；`calibrate --apply` 只自动重录非验收文件的 hashDrift，验收文件并入 `ackRequired` 只报告。
+- 判定规则：plan 声明的验收测试文件（scenario `testFile` 值）以 `test-updated` / `stale-test-repair` 登记（即**创建之后**的修改）必须带非空 `--acceptance-ack` 说明；`tdd-created`（首次创建）不受限；非验收测试文件维持原行为;`calibrate --apply` 只要存在验收测试漂移即整体放弃自动重录（含同批非验收漂移——manifest 全量校验不容子集重录），验收文件并入 `ackRequired` 只报告并给出列全漂移文件的人工 record 命令。
 - 允许修改的路径：`harness/scripts/harness_test_guard.py`、`harness/scripts/harness_context.py`、`harness/harness-execute/SKILL.md`、`harness/harness-execute/testing-checklist.md`、`harness/scripts/tests/test_harness_test_guard.py`、`harness/scripts/tests/test_harness_context.py`。
 - 禁止修改的共享区域：manifest 既有字段语义与 `record` 锁/校验语义、门禁链其它规则、scenario manifest schema。
 - 是否访问网络 / 调用模型 / 写文件：否 / 否 / 经既有 `record` 路径写 manifest。
@@ -25,6 +25,7 @@
 - 聚焦测试：`test_harness_test_guard.py` `AcceptanceTamperTests`；`test_harness_context.py` 校准 advisory 透传断言。
 - 依赖的 fixture：合成 scenario manifest（legacy 形态、v2 包装体、缺失三态）。
 - 汇合门禁：聚焦测试全绿，且 test_guard / context 既有测试无回归。
+- 状态：已实施（20-M1，2026-09-18）。
 - 状态：实施中（2026-09-18）。
 
 ## 验收条件

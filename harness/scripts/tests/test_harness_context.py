@@ -2445,6 +2445,46 @@ class BootstrapManifestCalibrationTests(unittest.TestCase):
             self.assertFalse(result["drifted"])
             self.assertIsNone(result["hint"])
 
+    def test_ack_required_acceptance_drift_surfaces(self) -> None:
+        guard = self._guard()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            change_dir = make_change(project, "demo")
+            (change_dir / "meta" / "scenario-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "scenarios": [
+                            {
+                                "id": "S1",
+                                "priority": "P1",
+                                "requiredEvidenceKind": "ledger",
+                                "ownerPhase": "execute",
+                                "testFile": "src/test/java/AccTest.java",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            test_file = project / "src" / "test" / "java" / "AccTest.java"
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text("class AccTest {}\n", encoding="utf-8")
+            guard.record(project, change_dir, [str(test_file)], "tdd-created")
+            test_file.write_text(
+                "class AccTest { int changed; }\n", encoding="utf-8"
+            )
+
+            result = CONTEXT._bootstrap_manifest_calibration(project, change_dir)
+
+            self.assertTrue(result["available"], result)
+            self.assertTrue(result["drifted"])
+            self.assertEqual(
+                result["ackRequired"], ["src/test/java/AccTest.java"]
+            )
+            self.assertIn("--acceptance-ack", result["hint"])
+
 
 if __name__ == "__main__":
     unittest.main()
