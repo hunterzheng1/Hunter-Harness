@@ -30,6 +30,9 @@
 | P9：重入时验证副作用文件被误判 foreign | 新引导/采集命令必须处理 ownership 重建，不重蹈通道误判 |
 | P12/P13 已修（CONTRACT_SCHEMA_PATHS、--tier floor、tier 措辞） | 档位裁决无需模型补记；status 视图需暴露档位来源（声明 floor vs classify 裁决） |
 | P14 决策-不接入 can-reuse | 统一操作不加复用检查；`decide_can_reuse`（harness_ledger.py:2037）保持封存 |
+
+> 注（2026-09-18）：上表批次 0-1 学习（「契约学习清零、质量零回退」等）的样本范围与不确定性，见
+> `batch0/pilot-g3-2026-09-07.md` 头部「证据范围校正」块（审核整改任务书 §11 / O5）。
 | T6：中断面集中在验证执行中（分钟级） | 恢复视图必须能表达「验证执行中被中断」——ledger 收据 + status 是对应工具 |
 
 ## 2. 记账不对称盘点（现状，基线 a336d44）
