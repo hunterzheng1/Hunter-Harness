@@ -220,6 +220,64 @@ class CollectRunMetricsTests(unittest.TestCase):
         self.assertEqual(commands["totalDurationMs"], 2000)
         self.assertEqual(commands["byKind"]["hunter-harness"], 1)
 
+    def test_artifact_writes_classified(self) -> None:
+        _write_trace(
+            self.root,
+            "111",
+            "trace_a.json",
+            [
+                _span(
+                    "Write",
+                    "2026-09-18T10:03:00Z",
+                    tool_input=json.dumps(
+                        {
+                            "file_path": "repo/.harness/changes/cn-1/plan.md",
+                            "content": "abc计划",
+                        }
+                    ),
+                ),
+                _span(
+                    "Edit",
+                    "2026-09-18T10:04:00Z",
+                    tool_input=json.dumps(
+                        {
+                            "file_path": "repo/harness/scripts/harness_change.py",
+                            "new_str": "x" * 10,
+                        }
+                    ),
+                ),
+                _span(
+                    "Write",
+                    "2026-09-18T10:05:00Z",
+                    tool_input="{broken json",
+                ),
+            ],
+        )
+        result = self._collect()
+        writes = result["artifactWrites"]
+        self.assertTrue(writes["available"])
+        self.assertEqual(writes["writeSpans"], 3)
+        self.assertEqual(writes["artifactWriteSpans"], 1)
+        self.assertEqual(
+            writes["artifactContentBytes"], len("abc计划".encode("utf-8"))
+        )
+
+    def test_artifact_writes_unavailable_without_write_spans(self) -> None:
+        _write_trace(
+            self.root,
+            "111",
+            "trace_a.json",
+            [
+                _span(
+                    "generation",
+                    "2026-09-18T10:05:00Z",
+                    tool_output=_generation_output(),
+                )
+            ],
+        )
+        result = self._collect()
+        self.assertFalse(result["artifactWrites"]["available"])
+
     def test_failure_spans_counted(self) -> None:
         _write_trace(
             self.root,

@@ -6,7 +6,8 @@ Read-only collector for controlled comparison runs: given a run window
 (命令埋点), generation time and span failures from host traces under
 ``~/.codebuddy/traces/<pid>/trace_*.json``. Manual interventions and ritual
 writing are not observable from traces and are reported as unavailable
-degradations instead of being guessed.
+degradations instead of being guessed; writes to workflow artifact paths
+(.harness/) are reported separately as the ``artifactWrites`` proxy.
 """
 
 from __future__ import annotations
@@ -28,6 +29,20 @@ DEFAULT_TRACES_ROOT = Path.home() / ".codebuddy" / "traces"
 DEFAULT_COMMAND_PATTERN = r"hunter-harness|harness_[a-z_]+\.py"
 
 COMMAND_SPAN_NAMES = {"bash", "powershell"}
+
+# Write/Edit 类工具 span 名（小写匹配）；写向工作流产物路径的此类 span
+# 用作「仪式写作」的可观测代理（ritual writing 本身无法从 trace 观测）。
+WRITE_SPAN_NAMES = {
+    "write",
+    "edit",
+    "multiedit",
+    "notebookedit",
+    "write_to_file",
+    "replace_in_file",
+}
+
+# 工作流产物路径标记（分隔符归一化为 / 后匹配）。
+WORKFLOW_ARTIFACT_MARKERS = (".harness/",)
 
 
 def _timestamp(value: Any) -> dt.datetime | None:
@@ -125,6 +140,36 @@ def _command_kind(tool_input: str, pattern: re.Pattern[str]) -> str | None:
     return match.group(0) if match else None
 
 
+def _artifact_write_bytes(tool_input: Any) -> int | None:
+    """Content bytes when a Write/Edit span targets a workflow artifact path.
+
+    toolInput 为 JSON（含 file_path 与内容字段）；目标路径含 .harness/ 时
+    返回写入内容的 UTF-8 字节数，否则（含解析失败）返回 None。
+    """
+    if not isinstance(tool_input, str):
+        return None
+    try:
+        payload = json.loads(tool_input)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_path = (
+        payload.get("file_path") or payload.get("filePath") or payload.get("path")
+    )
+    if not isinstance(raw_path, str):
+        return None
+    path = raw_path.replace("\\", "/")
+    if not any(marker in path for marker in WORKFLOW_ARTIFACT_MARKERS):
+        return None
+    size = 0
+    for key in ("content", "new_str", "source"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            size += len(value.encode("utf-8"))
+    return size
+
+
 def collect_run_metrics(
     traces_root: Path,
     *,
@@ -161,6 +206,9 @@ def collect_run_metrics(
     command_count = 0
     command_duration_ms = 0
     command_kinds: dict[str, int] = defaultdict(int)
+    write_span_count = 0
+    artifact_write_count = 0
+    artifact_write_bytes = 0
     failure_count = 0
     failure_duration_ms = 0
     seen_pids: set[str] = set()
@@ -202,6 +250,12 @@ def collect_run_metrics(
                         command_count += 1
                         command_duration_ms += _duration_ms(span)
                         command_kinds[kind] += 1
+            elif name.lower() in WRITE_SPAN_NAMES:
+                write_span_count += 1
+                written = _artifact_write_bytes(span.get("toolInput"))
+                if written is not None:
+                    artifact_write_count += 1
+                    artifact_write_bytes += written
 
     totals = {
         key: sum(bucket[key] for bucket in by_model.values())
@@ -260,8 +314,18 @@ def collect_run_metrics(
         },
         "ritualWriting": {
             "available": False,
-            "reason": "not observable from host traces; keep model self-report in the run record",
+            "reason": "not observable from host traces; use artifactWrites proxy plus model self-report",
         },
+        "artifactWrites": (
+            {
+                "available": True,
+                "writeSpans": write_span_count,
+                "artifactWriteSpans": artifact_write_count,
+                "artifactContentBytes": artifact_write_bytes,
+            }
+            if write_span_count
+            else {"available": False, "reason": "no Write/Edit spans in window"}
+        ),
         "manualIntervention": {
             "available": False,
             "reason": "not observable from host traces; record manually in the run record",
@@ -272,6 +336,8 @@ def collect_run_metrics(
             "trace header totalTokens is unreliable (observed 0).",
             "Coordination command time is instrumented from Bash/PowerShell spans "
             "matching the harness invocation pattern, replacing self-report.",
+            "artifactWrites proxies ritual writing: Write/Edit spans whose target "
+            "path lives under .harness/ (count plus UTF-8 content bytes).",
             "Concurrent sessions sharing the window pollute the aggregate; pass "
             "--pids to isolate the worker under measurement.",
         ],
