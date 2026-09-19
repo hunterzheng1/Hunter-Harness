@@ -3,7 +3,7 @@
 > 依据：审核整改任务书（[review-remediation-execution-2026-09-12.md](./review-remediation-execution-2026-09-12.md)）§11 与检查点 G；
 > 证据汇总（[review-remediation-evidence-2026-09-12.md](./review-remediation-evidence-2026-09-12.md)）O5 条目。
 > 状态：**设计定稿**（待裁决决策点见 §0，按建议值先行，推翻须记录理由）。
-> Part A（现有试点报告范围校正）已执行（§2）；Part B：WI-O5.2（度量工具）已完成（2026-09-18，见 ../batches/batch4/metrics-tooling.md，token 探测结论：可采集）；WI-O5.3~O5.5 待执行窗口（§3-§6）。
+> Part A（现有试点报告范围校正）已执行（§2）；Part B：WI-O5.2（度量工具）已完成（2026-09-18，见 ../batches/batch4/metrics-tooling.md，token 探测结论：可采集）；WI-O5.3（批 A 试点）已完成（2026-09-19，见 ../batches/batch4/pilot-batchA-2026-09-19.md）；WI-O5.4~O5.5 待执行窗口（§3-§6）。
 > 目标锁定，不得自行下调（§11）：轻任务端到端中位时间下降 ≥20%、流程维护时间下降 ≥50%，
 > 以质量约束为前提；未达标则继续诊断或明确报告未达标。
 
